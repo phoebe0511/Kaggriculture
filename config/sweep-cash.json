@@ -1,0 +1,15 @@
+{
+  "name": "cash-sweep",
+  "note": "現金底線的兩個參數。A 固定用 ref-v1，每個對手只跟現在的預設差一個值。cash_reserve_days = 日常開銷(雇工+飼料+種子)要留幾天份；seed_buffer_days = 種子存幾天份。",
+  "opponents": [
+    {"name": "crd-1", "entry": "agents.gen0:act", "params": {"cash_reserve_days": 1}},
+    {"name": "crd-2", "entry": "agents.gen0:act", "params": {"cash_reserve_days": 2}},
+    {"name": "crd-3", "entry": "agents.gen0:act", "params": {"cash_reserve_days": 3}},
+    {"name": "crd-5", "entry": "agents.gen0:act", "params": {"cash_reserve_days": 5}},
+    {"name": "crd-8", "entry": "agents.gen0:act", "params": {"cash_reserve_days": 8}},
+    {"name": "sbd-1", "entry": "agents.gen0:act", "params": {"seed_buffer_days": 1}},
+    {"name": "sbd-2", "entry": "agents.gen0:act", "params": {"seed_buffer_days": 2}},
+    {"name": "sbd-4", "entry": "agents.gen0:act", "params": {"seed_buffer_days": 4}},
+    {"name": "sbd-6", "entry": "agents.gen0:act", "params": {"seed_buffer_days": 6}}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "hands-iso",
+  "note": "A = ref-v1（固定）。每個對手只跟現在的預設差一個參數，看哪一個造成差距。ref-v1 是 max_hands=8 + hands_per_quadrant=6。",
+  "opponents": [
+    {"name": "cur-12-5", "entry": "agents.gen0:act",
+     "params": {"max_hands": 12, "hands_per_quadrant": 5}},
+    {"name": "only-mh8", "entry": "agents.gen0:act",
+     "params": {"max_hands": 8, "hands_per_quadrant": 5}},
+    {"name": "only-hpq6", "entry": "agents.gen0:act",
+     "params": {"max_hands": 12, "hands_per_quadrant": 6}},
+    {"name": "both-8-6", "entry": "agents.gen0:act",
+     "params": {"max_hands": 8, "hands_per_quadrant": 6}}
+  ]
+}

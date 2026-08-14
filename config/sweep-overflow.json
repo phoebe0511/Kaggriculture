@@ -1,0 +1,16 @@
+{
+  "note": "溢出防護 + 清倉時機。overflow 是新加的：看『shed + 大家手上拿著的』會不會超過 100，不是看 shed 幾成滿。A = ref-v1 固定。",
+  "name": "overflow",
+  "opponents": [
+    {"name": "sfs-0.75-liq2", "entry": "agents.gen0:act",
+     "params": {"shed_force_sell": 0.75, "liquidate_days_left": 2}},
+    {"name": "sfs-0.9-liq2", "entry": "agents.gen0:act",
+     "params": {"shed_force_sell": 0.9, "liquidate_days_left": 2}},
+    {"name": "sfs-0.9-liq5", "entry": "agents.gen0:act",
+     "params": {"shed_force_sell": 0.9, "liquidate_days_left": 5}},
+    {"name": "sfs-1.0-liq5", "entry": "agents.gen0:act",
+     "params": {"shed_force_sell": 1.0, "liquidate_days_left": 5}},
+    {"name": "sfs-1.0-liq8", "entry": "agents.gen0:act",
+     "params": {"shed_force_sell": 1.0, "liquidate_days_left": 8}}
+  ]
+}

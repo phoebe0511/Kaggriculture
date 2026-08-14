@@ -81,6 +81,12 @@ DEFAULT_PARAMS = {
     "max_crop_share": 0.4,
     # 同上，單一動物species最多佔多少個建物。
     "max_animal_share": 0.5,
+    # 估作物/動物價值時，從「當下的市場庫存」起算還是從中性的 MARKET_I0 起算。
+    # 開著的話市場缺貨（價格高於 base）就會被視為機會，反之亦然。
+    "market_aware_pricing": True,
+    # 估價時往前看幾天的在途產量（自己的田 + **對手的田**）。
+    # 0 = 只看當下庫存。市場共用，對手種一樣的東西時實際崩盤速度是兩倍。
+    "supply_lookahead_days": 6,
     # 留幾格蓋動物建物。挑離 shed 最近的格子 —— 動物每天要餵、要收、要收肥，
     # 是全場最耗回合的東西，走路成本要壓到最低。
     "n_structures": 6,
@@ -103,10 +109,17 @@ DEFAULT_PARAMS = {
     "use_fertilizer": True,      # 收到的肥料拿去施肥，還是純賣錢
 
     # --- 市場 ---
-    "seed_buffer": 6,            # 每種作物的種子存量低於這個數就補貨
+    # 種子存幾天份。目標量 = 該作物每天要種幾顆 × 這個天數，不是固定顆數 ——
+    # 固定 6 顆的話光 STRAWBERRY($100) + MELON($80) 開局就要 $1,080。
+    "seed_buffer_days": 2,
+    # 現金底線 = 維持現有規模的日常開銷（雇工 + 飼料 + 種子）× 這個天數。
+    # 低於底線就不買動物、不買地。
+    "cash_reserve_days": 3,
     "sell_chunk": 40,
     "sell_price_frac": 0.55,     # 市價低於 base 的這個比例就不賣，等城鎮消耗拉回來
     "shed_force_sell": 0.75,     # shed 用量超過這個比例就無視價格照賣（溢出會被丟掉）
+    # 剩幾天就無視價格清倉。期末只算現金，留在 shed 的東西一毛都不算。
+    "liquidate_days_left": 2,
     "animal_reserve": 800,       # 買動物後要留多少現金
 
     # --- 擴張 ---
@@ -117,6 +130,13 @@ DEFAULT_PARAMS = {
     # 最早第幾天買地。day 0 買會同時少 $1,000、又讓要照顧的格數從 25 變 50，
     # 撐不到 day 3 的第一次 CARROT 收成（實測 0 勝 20 負、差 $17,402）。
     "land_first_min_day": 3,
+    # 最多解鎖幾個象限（含一開始就有的 NW）。3 = 買 NE 和 SW，不買 SE。
+    # 不設上限的話會三塊全買，100 格配 12 個 hand 根本顧不動 ——
+    # 實測 0 勝 16 負、$9,828 vs $50,694。
+    "max_quadrants": 3,
+    # 剩餘天數少於這個就不買了。新的 25 格要有時間生產才回得了本 ——
+    # day 23 花 $4,000 買 SE，剩 7 天連一輪 MELON（11 天）都跑不完。
+    "land_min_days_left": 12,
 }
 
 # 任務優先序，數字小的先做。
@@ -258,7 +278,47 @@ def _avg_sell_price(crop, inv0, excess):
                for k in range(1, 9)) / 8.0
 
 
-def _inv_key(obs, items, bucket=25):
+def incoming_supply(obs, days):
+    """未來 `days` 天內，**雙方**的田和動物會產出多少（每個產品幾個）。
+
+    市場是共用的，價格由兩邊產量相加決定。`obs["farms"]` 是 `shared: true`，
+    對手每一格種什麼、種幾天了、動物放多久了全部看得到（看不到的只有他的
+    shed、inventory 和種子），所以他未來幾天要倒多少貨是算得出來的。
+
+    不算這個的話會低估供給：模型只看自己會不會超過城鎮消耗，對手種一樣的東西
+    時實際崩盤速度是估計的兩倍。實測 MELON 期末 $7（base 250）就是這樣來的。
+    """
+    day = obs["day"]
+    out = {item: 0.0 for item in PRODUCTS}
+    for farm in obs["farms"]:
+        for row in farm["tiles"]:
+            for t in row:
+                if not isinstance(t, dict):
+                    continue
+                if t.get("kind") == "PLANT":
+                    crop = t["crop"]
+                    cd = CROPS[crop]
+                    age = day - t["planted_day"]
+                    if cd["ongoing"]:
+                        # 每 interval 天產一次，數落在窗口內的次數
+                        for a in range(age, age + days + 1):
+                            if (a >= cd["first_yield_day"]
+                                    and (a - cd["first_yield_day"]) % cd["interval"] == 0):
+                                out[crop] += 1
+                    else:
+                        harvest_age, units = crop_cycle(crop)
+                        if age <= harvest_age <= age + days:
+                            out[crop] += units
+                elif "animal" in t:
+                    a = ANIMALS[t["animal"]]
+                    age = day - t["placed_day"]
+                    active = days - max(0, a["first_yield_day"] - age)
+                    if active > 0:
+                        out[a["product"]] += active * (1 + a["interval"]) / a["interval"]
+    return out
+
+
+def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0):
     """把當下的市場庫存分桶當 cache key。
 
     ⚠️ 必須用**當下庫存**而不是 `MARKET_I0` 起算。城鎮一直在消耗，實測期末
@@ -266,8 +326,12 @@ def _inv_key(obs, items, bucket=25):
     代表市場長期缺貨。用 base 估價值的話，模型會把漲到 $307 的草莓當成 $120，
     永遠不去補那些最值錢的缺口。
     """
+    if not market_aware:
+        return tuple((i, MARKET_I0) for i in items)
     inv = obs["market"]["inventory"]
-    return tuple((i, int(inv[i] / bucket) * bucket) for i in items)
+    soon = incoming_supply(obs, lookahead) if lookahead > 0 else {}
+    return tuple((i, int((inv[i] + soon.get(i, 0.0)) / bucket) * bucket)
+                 for i in items)
 
 
 @functools.lru_cache(maxsize=8192)
@@ -425,7 +489,9 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
     demand = town_demand(obs, config)
     demand_key = tuple(sorted((c, round(demand[c], 3)) for c in CROPS))
     return _plan_basket(_days_left(obs, config), demand_key,
-                        _inv_key(obs, sorted(CROPS)), n_crop_tiles,
+                        _inv_key(obs, sorted(CROPS), params["market_aware_pricing"],
+                                 lookahead=params["supply_lookahead_days"]),
+                        n_crop_tiles,
                         params["fallback_crop"], params["max_crop_share"])
 
 
@@ -435,7 +501,9 @@ def dynamic_animals(obs, config, params, n_structures):
     products = sorted({ANIMALS[s]["product"] for s in ANIMALS})
     demand_key = tuple((p, round(demand[p], 3)) for p in products)
     return _plan_animals(_days_left(obs, config), demand_key,
-                         _inv_key(obs, products), n_structures,
+                         _inv_key(obs, products, params["market_aware_pricing"],
+                                  lookahead=params["supply_lookahead_days"]),
+                         n_structures,
                          params["max_animal_share"])
 
 
@@ -669,60 +737,116 @@ def _task_action(pos, target, op, arg, params, board):
 # 市場
 # --------------------------------------------------------------------------
 
-def _market(obs, farm, private, params, shed_capacity, tasks, board):
+def _sell_qty(item, inv, avail, floor_price):
+    """從庫存 `inv` 開始賣，賣到第幾個時單價會掉破 `floor_price`。
+
+    價格對庫存單調遞減，所以二分搜尋。回傳可以賣的數量（0 ~ avail）。
+    """
+    if avail <= 0 or market_price(item, inv) < floor_price:
+        return 0
+    lo, hi = 0, avail
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        # 賣掉 mid 個之後，最後那一個的成交價
+        if market_price(item, inv + mid - 1) >= floor_price:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _seed_burn_per_day(basket, n_crop_tiles):
+    """維持所有格子都有東西種，每天要花多少錢買種子。
+
+    一格每 `cycle` 天要重種一次，所以日耗 = 格數 / cycle。各作物差很多：
+    CARROT 4 天一輪、種子 $20 → 每格每天 $5；STRAWBERRY 17 天一輪、$100 →
+    每格每天 $5.9；MELON 11 天、$80 → $7.3。
+    """
+    if not basket or n_crop_tiles <= 0:
+        return 0.0
+    total = 0.0
+    for crop in set(basket):
+        share = basket.count(crop) / len(basket)
+        days = crop_cycle(crop)[0]
+        total += n_crop_tiles * share / days * CROPS[crop]["seed"]
+    return total
+
+
+def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     orders = []
     shed = private["shed"]
     prices = obs["market"]["prices"]
     money = farm["money"]
 
-    # 1) 雇工。hands 每天結束會全部消失，所以每天重新雇。
-    #    成本是 fib(當天已雇人數)：1, 1, 2, 3, 5, 8, 13, 21...
+    # --- 現金底線 -----------------------------------------------------------
+    # 底線 = **維持現有規模的日常開銷 × cash_reserve_days**。
     #
-    #    分批雇：一回合最多送 hire_per_turn 筆，不夠就下個回合繼續。
-    #    `hire_per_turn` 存在是因為市場訂單一回合上限 10 筆，
-    #    全部拿去雇工就沒額度買種子、買動物、賣貨了。
+    # 第一版只算「明天的雇工 + 飼料」，day 0 一隻動物都還沒放（`n_animals = 0`）、
+    # 只有 5 個 hand（fib 總和 $12），所以底線是 $12 —— 等於沒有。log 顯示它
+    # 精準地把 $3,000 花到只剩 $12，day 1 hour 2 歸零，然後 day 2~10 現金 $0、
+    # crew 0、雜草 8~11，整整 10 天空轉。
     #
-    #    人數上限跟土地綁在一起：只有一塊地時最多補到 8 個，
-    #    買了第二塊才往上補到 max_hands。
+    # 漏掉的是**種子的續買**：`seed_buffer: 6` 對五種作物各補到 6 顆，
+    # 光 STRAWBERRY（$100）和 MELON（$80）開局就是 $1,080，而且收成後還會一直補。
     cap = min(params["max_hands"],
               params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
-    want = cap - len(farm["hands"])
-    for _ in range(max(0, min(want, params["hire_per_turn"]))):
-        orders.append(["HIRE"])
-
-    # --- 現金底線 -----------------------------------------------------------
-    # 買種子和買動物都要留錢給「明天的雇工」和「飼料」，不能花到見底。
-    #
-    # 沒有這條的話：day 0 從 $3,000 一路買 MELON 種子（$80/顆）買到 $6，
-    # 之後 day 3~24 現金都是 $0，連 $1 的第一個 hand 都雇不起。1 個農夫顧
-    # 50 格 → 作物來不及澆水 → day 5 就有 27 格雜草 → 沒收成 → 更沒錢。
-    # 實測期末 $1,134，而擋住 day 0 買地的版本是 $77,098。
     n_animals = sum(1 for t in tasks if t[1] in ("FEED", "CARE"))
-    hire_floor = sum(hire_cost(i) for i in range(cap))       # 明天雇滿要多少
-    feed_floor = n_animals * params["wheat_reserve_days"] * prices["WHEAT"]
-    floor = hire_floor + feed_floor
+    n_crop_tiles = max(0, sum(1 for row in farm["tiles"] for t in row
+                              if t != "LOCKED") - params["n_structures"])
+    seed_rate = _seed_burn_per_day(params["basket"], n_crop_tiles)
+
+    daily_ops = (
+        sum(hire_cost(i) for i in range(cap))          # 每天重雇一次
+        + n_animals * prices["WHEAT"]                  # 每隻動物每天 1 個 WHEAT
+        + seed_rate                                    # 維持所有格子有東西種
+    )
+    floor = daily_ops * params["cash_reserve_days"]
     spendable = max(0.0, money - floor)
 
-    # 2) 買地。價格 1000/2000/4000，順序 hardcoded 在引擎的 `LAND_ORDER`。
+    # 1) 買地。價格 1000/2000/4000，順序 hardcoded 在引擎的 `LAND_ORDER`。
     #
     #    ⚠️ 本機引擎的 `LAND_ORDER` 被改成 `["NE"]`（原本是 NE/SW/SE），
     #    所以實際上只買得到一塊。這裡照 `len(LAND_ORDER)` 走，引擎改回去就會
     #    自動支援多塊，不用改這裡。
     #
-    #    排在種子和動物**前面**：每回合的餘裕會先被那兩項花掉，排最後的話
-    #    現金永遠累積不到地價。
-    n_extra = len(farm["unlocked_quadrants"]) - 1
-    if params["buy_land"] and n_extra < len(LAND_ORDER):
-        price = LAND_PRICES[n_extra]
-        if obs["day"] >= params["land_first_min_day"] and spendable >= price:
-            orders.append(["BUY_LAND"])
-            spendable -= price
+    #    **排在所有採購最前面**，連雇工都在它後面。它是唯一「錯過就沒了」的
+    #    支出 —— 種子和動物下個回合再買價格一樣，但土地買得越晚，多出來的
+    #    25 格能生產的天數就越少。
+    #    四個條件：夠晚（有收入了）、夠早（新地來得及生產）、沒買滿、付得起。
+    n_owned = len(farm["unlocked_quadrants"])
+    n_extra = n_owned - 1
+    if (
+        params["buy_land"]
+        and n_extra < len(LAND_ORDER)
+        and n_owned < params["max_quadrants"]
+        and obs["day"] >= params["land_first_min_day"]
+        and _days_left(obs, config) >= params["land_min_days_left"]
+        and spendable >= LAND_PRICES[n_extra]
+    ):
+        orders.append(["BUY_LAND"])
+        spendable -= LAND_PRICES[n_extra]
+
+    # 2) 雇工。hands 每天結束會全部消失，所以每天重新雇。
+    #    成本是 fib(當天已雇人數)：1, 1, 2, 3, 5, 8, 13, 21...
+    #
+    #    分批雇：一回合最多送 hire_per_turn 筆，不夠就下個回合繼續。
+    #    `hire_per_turn` 存在是因為市場訂單一回合上限 10 筆，
+    #    全部拿去雇工就沒額度買種子、買動物、賣貨了。
+    want = cap - len(farm["hands"])
+    for _ in range(max(0, min(want, params["hire_per_turn"]))):
+        orders.append(["HIRE"])
 
     # 3) 補種子。種子不佔 shed，PLANT 直接從 private["seeds"] 扣。
     #    只買買得起的數量 —— 引擎對付不起的訂單是靜默失敗，全額送出的話
     #    會變成每回合重試、把現金刮到 0。
-    for crop in sorted(set(params["basket"])):
-        need = params["seed_buffer"] - private["seeds"].get(crop, 0)
+    #    存量目標照**種植速率**算，不是每種都固定 6 顆。長週期的作物種得慢，
+    #    囤 6 顆 STRAWBERRY（$600）是把現金鎖死在倉庫裡好幾天。
+    basket = params["basket"]
+    for crop in sorted(set(basket)):
+        share = basket.count(crop) / len(basket)
+        per_day = n_crop_tiles * share / crop_cycle(crop)[0]
+        target = max(1, int(per_day * params["seed_buffer_days"] + 0.5))
+        need = target - private["seeds"].get(crop, 0)
         if need <= 0:
             continue
         price = CROPS[crop]["seed"]
@@ -754,19 +878,51 @@ def _market(obs, farm, private, params, shed_capacity, tasks, board):
             orders.append(["BUY_ANIMAL", species, n_buy])
             budget -= n_buy * cost
 
-    # 6) 賣貨。價格太低就先囤著等城鎮消耗把它拉回來，
-    #    但 shed 快滿時照賣 —— 每日結算溢出的部分會被直接丟掉。
-    forced = sum(shed.values()) >= params["shed_force_sell"] * shed_capacity
+    # 6) 賣貨。**賣到價格掉到門檻為止**，不是固定賣 40 個。
+    #
+    #    逐一單位重新報價，所以一次倒 40 個進去，後面幾個的成交價會比第一個
+    #    低很多。曲線陡的（MELON 是 `sq`）賣 40 個價格砍半，平的（WHEAT 是
+    #    `log`）賣 400 個才掉 $5 —— 用同一個數字對兩者都不對。
+    #
+    #    shed 快滿時無視門檻照賣：每日結算溢出的部分會被直接丟掉。
+    #    兩種情況無視價格門檻照賣：
+    #
+    #    a) **今晚會裝不下**。每日結算把所有 unit 的 inventory 倒進 shed，
+    #       裝不下的部分是 `del inv[item]` —— 直接消失。所以要看的是
+    #       「shed 現有量 + 大家手上拿著的量」會不會超過 100，
+    #       不是 shed 現在幾成滿。
+    #    b) **賽季最後幾天**。`reward = farm["money"]`，留在 shed 裡的東西
+    #       一毛都不算，價格再爛也比作廢好。
+    inv = obs["market"]["inventory"]
+    carried = sum(sum(i.values()) for i in private["inventories"])
+    tonight = sum(shed.values()) + carried
+    forced = (tonight > shed_capacity
+              or sum(shed.values()) >= params["shed_force_sell"] * shed_capacity
+              or _days_left(obs, config) <= params["liquidate_days_left"])
     for item in PRODUCTS:
         n = shed.get(item, 0)
         if item == "WHEAT":
             n -= reserve          # 飼料不賣
+        n = min(n, params["sell_chunk"])
         if n <= 0:
             continue
-        if not forced and prices[item] < params["sell_price_frac"] * MARKET_PARAMS[item]["base"]:
+        if forced:
+            orders.append(["SELL", item, n])
             continue
-        orders.append(["SELL", item, min(n, params["sell_chunk"])])
+        floor_price = params["sell_price_frac"] * MARKET_PARAMS[item]["base"]
+        qty = _sell_qty(item, inv[item], n, floor_price)
+        if qty > 0:
+            orders.append(["SELL", item, qty])
 
+    # 給 log 用：買地買不成的時候要分得出是「錢不夠」還是「條件沒過」。
+    _market.last_budget = {
+        "money": round(money),
+        "floor": round(floor),
+        "spendable": round(spendable),
+        "daily_ops": round(daily_ops),
+        "seed_rate": round(seed_rate),
+        "hire_cap": cap,
+    }
     return orders[:MAX_MARKET_ORDERS]
 
 
@@ -826,7 +982,7 @@ def act(obs, config=None, params=None):
     action = {
         "farmer": unit_actions[0],
         "hands": unit_actions[1:],
-        "market": _market(obs, farm, private, p, shed_capacity, tasks, board),
+        "market": _market(obs, config, farm, private, p, shed_capacity, tasks, board),
     }
 
     if LOG_LEVEL >= 2:
@@ -873,6 +1029,7 @@ def _log(obs, farm, private, tasks, assigned, action):
         "day": obs["day"],
         "hour": obs["hour"],
         "cash": farm["money"],
+        "budget": getattr(_market, "last_budget", None),
         "crew": len(farm["hands"]),
         # 已解鎖的象限。不能從 action 的 BUY_LAND 反推 —— 那是「送出訂單」，
         # 錢不夠的話引擎會靜默 return，成功和失敗看起來一樣。

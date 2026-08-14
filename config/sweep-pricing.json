@@ -1,0 +1,10 @@
+{
+  "name": "pricing",
+  "note": "估價時從當下市場庫存起算 vs 從中性的 MARKET_I0 起算。A = ref-v1 固定。",
+  "opponents": [
+    {"name": "market-aware", "entry": "agents.gen0:act",
+     "params": {"market_aware_pricing": true}},
+    {"name": "neutral-I0", "entry": "agents.gen0:act",
+     "params": {"market_aware_pricing": false}}
+  ]
+}
