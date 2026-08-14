@@ -1,0 +1,18 @@
+{
+  "name": "land-ab",
+  "note": "第一塊地最早可以在第幾天買。注意這只是下限——還要現金 >= $1,000，修了現金底線之後實際購入日是 day 9~10，所以 d0 以外的變體可能全部同一天買。",
+  "opponents": [
+    {"name": "first-d0", "entry": "agents.gen0:act",
+     "params": {"land_first_min_day": 0}},
+    {"name": "first-d3", "entry": "agents.gen0:act",
+     "params": {"land_first_min_day": 3}},
+    {"name": "first-d6", "entry": "agents.gen0:act",
+     "params": {"land_first_min_day": 6}},
+    {"name": "first-d10", "entry": "agents.gen0:act",
+     "params": {"land_first_min_day": 10}},
+    {"name": "first-d14", "entry": "agents.gen0:act",
+     "params": {"land_first_min_day": 14}},
+    {"name": "no-land", "entry": "agents.gen0:act",
+     "params": {"buy_land": false}}
+  ]
+}

@@ -7,9 +7,9 @@
 **每個資料夾只有一個 owner，別人要動就開 PR。**
 
 ```
-engine/  encoding/  harness/  serving/  submission.py   → A
-agents/  model/  eval/                                  → B
-contracts.py                                            → 凍結
+encoding/  harness/  serving/  submission/   → A
+agents/  model/  eval/                       → B
+contracts.py                                 → 凍結
 ```
 
 原因：兩人改同一個 repo，衝突不是出在 git merge，是出在**同一個函式有兩個人在改它的行為**。

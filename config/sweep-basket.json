@@ -1,0 +1,18 @@
+{
+  "name": "basket-sweep",
+  "note": "動態 basket（依當局開出來的 shop 決定種什麼）vs 各種固定的 basket。shop 是抽取有放回的，實測 CARROT 的日消耗量在不同 seed 之間從 1.0 到 18.0。",
+  "opponents": [
+    {"name": "static-3", "entry": "agents.gen0:act",
+     "params": {"dynamic_basket": false,
+                "basket": ["MELON", "CARROT", "CARROT", "WHEAT", "WHEAT"]}},
+    {"name": "static-5", "entry": "agents.gen0:act",
+     "params": {"dynamic_basket": false,
+                "basket": ["MELON", "CARROT", "TOMATO", "STRAWBERRY", "WHEAT"]}},
+    {"name": "static-wheat", "entry": "agents.gen0:act",
+     "params": {"dynamic_basket": false, "basket": ["WHEAT"]}},
+    {"name": "static-melon", "entry": "agents.gen0:act",
+     "params": {"dynamic_basket": false, "basket": ["MELON"]}},
+    {"name": "dynamic", "entry": "agents.gen0:act",
+     "params": {"dynamic_basket": true}}
+  ]
+}

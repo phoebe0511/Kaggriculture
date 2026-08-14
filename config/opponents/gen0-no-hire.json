@@ -1,0 +1,8 @@
+{
+  "name": "gen0-no-hire",
+  "entry": "agents.gen0:act",
+  "params": {
+    "max_hands": 0
+  },
+  "note": "gen0 不雇工的版本。用來量「雇工到底值多少」——前 10 個 hand 累計只要 $143，這條差距應該很大。"
+}

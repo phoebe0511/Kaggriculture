@@ -1,0 +1,12 @@
+{
+  "name": "hire-sweep",
+  "note": "雇工人數掃描。inline 定義，不用開一堆檔。用法：python -m eval.runner --a gen0 --ladder config/sweep-hire.json",
+  "opponents": [
+    {"name": "hire-0",  "entry": "agents.gen0:act", "params": {"max_hands": 0}},
+    {"name": "hire-2",  "entry": "agents.gen0:act", "params": {"max_hands": 2}},
+    {"name": "hire-4",  "entry": "agents.gen0:act", "params": {"max_hands": 4}},
+    {"name": "hire-8",  "entry": "agents.gen0:act", "params": {"max_hands": 8}},
+    {"name": "hire-12", "entry": "agents.gen0:act", "params": {"max_hands": 12}},
+    {"name": "hire-16", "entry": "agents.gen0:act", "params": {"max_hands": 16}}
+  ]
+}

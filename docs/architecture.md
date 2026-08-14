@@ -41,38 +41,40 @@
 ## 2. 模組清單
 
 ```
-kaggri/
-├── engine/          遊戲規則的鏡像（從原始碼抄過來的常數與公式）
-├── encoding/        obs ↔ 數字陣列的轉換     ⚠️ 兩邊共用
-├── harness/         平行 self-play，產棋譜
-├── serving/         inference server、submission 打包
-├── agents/          第 0 代規則式 AI、搜尋演算法
-├── model/           網路定義、訓練
-├── eval/            對戰天梯、統計判定
-└── contracts.py     介面定義（凍結）
+encoding/        obs ↔ 數字陣列的轉換     ⚠️ 兩邊共用
+harness/         平行 self-play，產棋譜
+serving/         inference server、submission 打包
+agents/          第 0 代規則式 AI、搜尋演算法、經濟評估器
+model/           網路定義、訓練
+eval/            對戰天梯、統計判定
+contracts.py     介面定義（凍結）
 ```
 
-### engine/ — 遊戲規則鏡像
+### 遊戲規則從哪裡來
 
-從 Kaggle 引擎原始碼**抄出來**的東西：
+**直接 import 引擎，不抄。**
 
 ```python
-GROWTH_HOURS = {"wheat": 48, ...}     # 成熟時間
-MOVE_COST_HOURS = 1                    # 走一格幾小時
-def price_impact(qty, market_state):   # 賣 qty 個，價格變多少
-    ...
+from kaggle_environments.envs.kaggriculture.kaggriculture import (
+    CROPS, ANIMALS, MARKET_PARAMS, market_price,
+)
 ```
 
-**不是猜的，不是學的，是抄的。** 每個常數必須標註在原始碼的哪一行（見 `rules.md` §5）。
+抄一份常數表會有兩個風險：抄錯、上游改版沒跟上。兩者都**不會報錯**，只會表現成
+「分數莫名其妙上不去」。上游 1.30.1 → 1.32.6 就改過 COW 成本（600→400）
+和四項產品的價格曲線。
 
-還包含**經濟評估器**：
+引擎裡沒有、要自己寫的只有兩樣，都放在 `agents/`：
 
 ```python
 def profit_per_hour(product, market, inventory) -> float:
     """種/養這個東西，換算成每投入一小時能賺多少"""
 ```
 
-每回合重算。這是第 0 代 AI 的決策依據，也是搜尋的評分基礎。
+每回合重算，是第 0 代 AI 的決策依據，也是搜尋的評分基礎。
+
+另一樣是搜尋用的 forward model —— 引擎的 `interpreter()` 就地修改 state、
+一次處理兩個玩家、每步固定跑完市場撮合和城鎮消耗，不能拿來做 what-if 展開。
 
 ### encoding/ — 最危險的模組
 

@@ -1,0 +1,21 @@
+{
+  "name": "animal-sweep",
+  "note": "只改動物那一邊，作物一律用動態 basket。第一版把 dynamic_basket 一起關掉，量到的是兩者混在一起的結果。",
+  "opponents": [
+    {"name": "goose-only", "entry": "agents.gen0:act",
+     "params": {"dynamic_animals": false, "animal": "GOOSE"}},
+    {"name": "cow-only", "entry": "agents.gen0:act",
+     "params": {"dynamic_animals": false, "animal": "COW"}},
+    {"name": "sheep-only", "entry": "agents.gen0:act",
+     "params": {"dynamic_animals": false, "animal": "SHEEP"}},
+    {"name": "no-animals", "entry": "agents.gen0:act",
+     "params": {"n_structures": 0}},
+    {"name": "structures-3", "entry": "agents.gen0:act",
+     "params": {"n_structures": 3}},
+    {"name": "structures-10", "entry": "agents.gen0:act",
+     "params": {"n_structures": 10}},
+    {"name": "structures-14", "entry": "agents.gen0:act",
+     "params": {"n_structures": 14}},
+    {"name": "dynamic", "entry": "agents.gen0:act", "params": {}}
+  ]
+}

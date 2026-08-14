@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- 測試與工具快取 ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- 訓練產物（大檔，走 Git LFS 或外部儲存，見 docs/rules.md §6）---
+*.npz
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+runs/
+
+# --- 棋譜與 log ---
+replays/
+logs/
+out/
+temp/
+*.jsonl
+*.log
+
+# --- eval 輸出 ---
+eval_out/
+*.eval.json
+
+# --- 編輯器 / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- 不要忽略的（明確放行）---
+!tests/baselines.json

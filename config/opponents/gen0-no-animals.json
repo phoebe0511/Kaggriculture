@@ -1,0 +1,8 @@
+{
+  "name": "gen0-no-animals",
+  "entry": "agents.gen0:act",
+  "params": {
+    "n_structures": 0
+  },
+  "note": "gen0 不養動物、全部土地種作物。用來量動物那條線值多少——動物每天要餵、要收、要收肥、要搬飼料，是全場最耗回合的東西。"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "baseline-ladder",
+  "frozen": "2026-08-14",
+  "note": "凍結的評估對手池（docs/division-of-labor.md §6）。任何改動都跑這一池、固定種子。新增對手可以，改既有對手的參數不行——改了就沒得比。",
+  "opponents": [
+    "pass",
+    "random",
+    "starter",
+    "gen0",
+    "gen0-carrot-only",
+    "gen0-no-hire",
+    "gen0-no-animals"
+  ]
+}

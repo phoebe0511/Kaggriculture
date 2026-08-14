@@ -1,0 +1,20 @@
+{
+  "name": "land-sweep",
+  "note": "買地 × 人力。土地本身不產出，產能上限是 unit-turns 不是格數，所以買地要跟人力一起掃。一個象限 25 格。",
+  "opponents": [
+    {"name": "land-off", "entry": "agents.gen0:act",
+     "params": {"buy_land": false}},
+    {"name": "land-h8-t3", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 8, "tiles_per_unit": 3}},
+    {"name": "land-h8-t6", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 8, "tiles_per_unit": 6}},
+    {"name": "land-h8-t10", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 8, "tiles_per_unit": 10}},
+    {"name": "land-h14-t3", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 14, "tiles_per_unit": 3}},
+    {"name": "land-h20-t4", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 20, "tiles_per_unit": 4}},
+    {"name": "land-nogate", "entry": "agents.gen0:act",
+     "params": {"buy_land": true, "max_hands": 14, "tiles_per_unit": 999}}
+  ]
+}

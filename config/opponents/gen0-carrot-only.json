@@ -1,0 +1,8 @@
+{
+  "name": "gen0-carrot-only",
+  "entry": "agents.gen0:act",
+  "params": {
+    "basket": ["CARROT"]
+  },
+  "note": "gen0 的單一作物版本，留著當反面教材：每天往市場倒 60+ 根胡蘿蔔，CARROT 的 glut 曲線是 sqrt，累積約 900 個就打到 $1 地板。實測 30 天只賺 $437。"
+}
