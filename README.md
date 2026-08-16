@@ -37,8 +37,17 @@ kaggle competitions submit kaggriculture \
 
 ## 目前基準（engine 1.32.7）
 
-- 30 個固定 seeds 對 starter：平均現金 `$83,667`（Gen0/ref-v2 為 `$77,336`）。
-- 60 局 paired 對 ref-v2：`55 / 0 / 5`，勝率 `91.7%`。
-- MOVE 比例：`68.1% → 52.2%`。
-- `main.py` 使用 Gen1 三地版；條件式四地版保留在
-  `config/opponents/gen1-four-land.json`，尚未升主版。
+`main.py` = Gen1 三地版，`tiles_per_unit=4`（active tiles 上限 52 格 / 可種 69 格）。
+
+- 30 個固定 seeds 對 starter：平均現金 `$86,306`
+  （t3 版 `$83,667`、Gen0/ref-v2 `$77,336`）。
+- 80 局 paired 對 ref-v3（t3 凍結量尺），兩組獨立種子：
+  `32/8` + `29/11` = 勝率 `76.3%`，CI 都不跨 50%。
+- 動作分布：MOVE `61.2%`／生產 `28.4%`／PASS `10.4%`；全季作物覆蓋 `56.7%`。
+- 條件式四地版保留在 `config/opponents/gen1-four-land.json`，尚未升主版。
+
+⚠️ **已知的失敗模式**：格數變多會連帶讓 `max_crop_share` 分到更多 MELON 格。
+MELON 不在任何 shop 的需求清單、`above_func=sq` 最凶，量大時會自己把價格砸到地板。
+對手很弱（市場供給幾乎全是自己的）時最明顯 —— seed 41003 對 starter 從
+`$86,263` 掉到 `$49,892`，期末 MELON 價 `$43 → $10`、MILK `$275 → $84`。
+對 ref-v3 這類強對手沒有這條左尾。`max_crop_share` 待跟 `tiles_per_unit` 一起重掃。

@@ -33,11 +33,28 @@ def test_ref_v2_expands_every_gen0_default():
     assert spec["params"] == _json_value(GEN0_PARAMS)
 
 
-def test_ref_v3_expands_every_gen1_default():
+def test_ref_v3_stays_frozen_at_its_original_params():
+    """ref-v3 是 2026-08-16 凍結的 Gen1 三地量尺（tiles_per_unit=3）。
+
+    tiles_per_unit 升到 4 之後，「展開現行預設」的角色交給 ref-v4；ref-v3 保留
+    成歷史量尺，參數永遠不准動 —— 改了的話 08-16 那批 sweep 結果就沒得比。
+    """
     spec = json.loads(
         (REPO_ROOT / "config/opponents/ref-v3.json").read_text(encoding="utf-8")
     )
     assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["tiles_per_unit"] == 3
+    assert spec["params"]["max_quadrants"] == 3
+    assert spec["params"]["water_on_demand"] is True
+
+
+def test_ref_v4_expands_every_gen1_default():
+    spec = json.loads(
+        (REPO_ROOT / "config/opponents/ref-v4.json").read_text(encoding="utf-8")
+    )
+    assert spec["engine_version"] == "1.32.7"
+    # DEFAULT_PARAMS 再變動時這裡應該失敗並要求建立 ref-v5；
+    # 不可以為了讓測試通過而修改已凍結的 ref-v4。
     expected = dict(GEN0_PARAMS)
     expected.update(GEN1_PARAMS)
     assert spec["params"] == _json_value(expected)

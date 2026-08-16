@@ -134,10 +134,11 @@ contracts.py                             → 凍結
 - 引擎固定 `kaggle-environments==1.32.7`。升級引擎要重核 `engine-notes.md` 並重跑 L0。
 - `main.py` = Gen1 三地版（`agents/gen1.py` 疊在 `agents/gen0.py` 核心上）
   + `serving/action_validation.py` 每個動作嚴格驗證。
-- 凍結量尺：`ref-v2`（Gen0）、`ref-v3`（Gen1 三地）。**params 完整展開，不指向
-  `DEFAULT_PARAMS`** —— 對手池指向預設值的話，每次調預設就等於換了量尺。
-- L0 = `pytest`（8 項，約 10 秒）；baseline 在 `tests/baselines.json`。
-- 成績：30 seeds 對 starter 平均 `$83,667`；60 局 paired 對 ref-v2 `55/0/5`。
+- 凍結量尺：`ref-v2`（Gen0）、`ref-v3`（Gen1 t3）、`ref-v4`（Gen1 t4 = 現行預設）。
+  **params 完整展開，不指向 `DEFAULT_PARAMS`** —— 對手池指向預設值的話，
+  每次調預設就等於換了量尺。改了預設就新增一版，不要改舊的。
+- L0 = `pytest`（9 項，約 10 秒）；baseline 在 `tests/baselines.json`。
+- 成績：30 seeds 對 starter 平均 `$86,306`；80 局 paired 對 ref-v3 勝率 `76.3%`。
 
 ### 還沒有的
 

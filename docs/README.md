@@ -165,10 +165,13 @@ Leaderboard = skill rating（多局累積）
 🟡 **Phase 1 進行中。**
 
 - 第一輪引擎閱讀已完成；目前本機與 L0 固定使用 `kaggle-environments 1.32.7`。
-- Gen1 三地版已升為 submission 主入口：按需澆水，並按 unit 產能限制 active tiles。
-- 平行 eval runner 會輸出土地利用率與 MOVE／生產／PASS 比例；`ref-v2`、`ref-v3`
-  與 L0 baseline 已凍結。
-- 30-seed 對 starter 平均現金 `$83,667`；60 局 paired 對 ref-v2 為 55 勝 5 負。
+- Gen1 三地版已升為 submission 主入口：按需澆水，並按 unit 產能限制 active tiles
+  （`tiles_per_unit=4`，上限 52 格 / 可種 69 格）。
+- 平行 eval runner 會輸出土地利用率與 MOVE／生產／PASS 比例；`ref-v2`、`ref-v3`、
+  `ref-v4` 與 L0 baseline 已凍結。
+- 30-seed 對 starter 平均現金 `$86,306`；80 局 paired 對 ref-v3 勝率 76.3%。
+- 已知失敗模式：格數變多會讓 MELON 配額變多而自己砸盤，對弱對手最明顯
+  （見 `README.md`）。`max_crop_share` 待重掃。
 - 條件式四地版已實作，但 30-seed 平均 `$78,831`，暫不取代三地主版。
 - T00 仍待第二人獨立閱讀後交叉確認。
 - 下一個工程重點是路徑規劃與對戰產線吞吐。
