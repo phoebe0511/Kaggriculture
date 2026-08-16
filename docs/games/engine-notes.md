@@ -1,8 +1,12 @@
 # 遊戲引擎規則筆記（T00）
 
-來源：`kaggle-environments 1.32.6`
+原始完整稽核來源：`kaggle-environments 1.32.6`
 `site-packages/kaggle_environments/envs/kaggriculture/kaggriculture.py`（1073 行）
 + `kaggriculture.json` + 核心的 `core.py` / `agent.py`。
+
+**2026-08-16 更新**：專案與 L0 已固定使用 `kaggle-environments 1.32.7`。新版把
+CARROT、TOMATO、EGG 的稀缺側價格函式改為 `hinge`；§6 的表格已更新。其餘舊行號
+仍指 1.32.6 原始碼，待 T00 第二人複核時一併重標。
 
 **標記規則**（見 `CLAUDE.md`）：
 `VERIFIED` = 有原始碼行號或實測支撐；`UNVERIFIED` = 未經證實；`UNKNOWN` = 不知道。
@@ -234,11 +238,11 @@ f ∈ {linear, sq, sqrt, log(=ln(1+x)), log10}
 | item | base | T | below_func | below_target | above_func | above_target |
 |---|---|---|---|---|---|---|
 | WHEAT | 25 | 400 | sqrt | 0.80 | log | 0.20 |
-| CARROT | 35 | 450 | log | 0.20 | sqrt | 0.70 |
-| TOMATO | 60 | 200 | linear | 0.40 | sqrt | 0.60 |
+| CARROT | 35 | 450 | hinge | 1.00 | sqrt | 0.70 |
+| TOMATO | 60 | 200 | hinge | 0.40 | sqrt | 0.60 |
 | STRAWBERRY | 120 | 100 | sqrt | 0.70 | linear | **1.60** |
 | MELON | 250 | 300 | log | 0.20 | sq | **3.60** |
-| EGG | 50 | 332 | linear | 0.40 | log | 0.20 |
+| EGG | 50 | 332 | hinge | 0.40 | log | 0.20 |
 | MILK | 160 | 122 | sqrt | 0.60 | linear | **1.60** |
 | WOOL | 200 | 105 | log | 0.20 | sq | **3.20** |
 | FERTILIZER | 100 | 200 | linear | 0.40 | linear | 0.40 |
@@ -367,13 +371,14 @@ if duration - actTimeout > remainingOverageTime:     # 銀行不夠
 
 ---
 
-## 9. 仍然 UNKNOWN
+`hinge` 在 `x <= T` 時等同 `x/T`；超過 T 後增加二次項
+`8 × max(0, x/T - 1)²`，讓真正短缺時價格快速上升。
 
-### #8 — rating 怎麼算
+## 9. Rating（已確認）
 
-引擎只提供 `reward = 期末現金`（行 950），**rating 公式不在引擎裡**。
-要查比賽頁面的 Evaluation 章節，或用公開 episodes 資料集畫圖。
-**owner: B。**
+引擎只提供 `reward = 期末現金`；排行榜 rating 由 Kaggle 平台計算。官方 Evaluation
+已確認：rating 只看勝／負／和，現金差額不影響 rating 變化；最終排行榜會對累積
+episodes 跑 Bradley–Terry tournament。
 
 ---
 
@@ -383,8 +388,7 @@ if duration - actTimeout > remainingOverageTime:     # 銀行不夠
 2. **hands 每天全部消失**（行 867），inventory 會先存進 shed（行 865 在 867 之前）。
 3. **收成品每天結算自動入庫**（行 865）—— 不需要手動搬回 shed，
    除非當天就要賣，或會超過 `shedCapacity = 100`（**超過的部分直接丟棄**，行 830-844）。
-   > 📌 這一點跟 `docs/README.md` §2 的「收成不會自動入庫，東西要用人搬」**不一致**，
-   > 那份文件是從遊戲畫面推的。以原始碼為準。
+   `docs/README.md` 已依原始碼修正這一點。
 4. **種下當天沒澆水 → 隔天變雜草**（行 209 + 770，實測確認）。
 5. **ongoing 作物澆水不加產量**，只防枯萎（行 425）。
 6. **`BUILD_COOP` / `BUILD_PASTURE` 免費**（行 480-490，沒有任何扣錢邏輯），只花一個回合。

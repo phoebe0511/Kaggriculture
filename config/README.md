@@ -62,6 +62,8 @@ python -m eval.runner --a gen0 --b starter                  # config/opponents/s
 python -m eval.runner --a gen0 --b config/opponents/x.json  # 直接給路徑
 python -m eval.runner --a gen0 --ladder                     # 打整個 config/ladder.json
 python -m eval.runner --a gen0 --ladder config/sweep-hire.json   # 換一個池
+python -m eval.runner --a gen1-three-land --b ref-v2             # 目前三地主版核心
+python -m eval.runner --a gen1-four-land --b starter             # 條件式四地實驗
 ```
 
 `--a` / `--b` 的解析順序：檔案路徑 → `config/opponents/<name>.json` → 內建後備表

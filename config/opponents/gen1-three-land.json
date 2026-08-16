@@ -1,0 +1,10 @@
+{
+  "name": "gen1-three-land",
+  "entry": "agents.gen1:act",
+  "note": "Gen1 三地候選：依實際 unit 產能限制 active tiles，並只在需要時澆水。",
+  "params": {
+    "max_quadrants": 3,
+    "tiles_per_unit": 3,
+    "water_on_demand": true
+  }
+}

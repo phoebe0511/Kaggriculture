@@ -1,0 +1,25 @@
+[project]
+name = "kaggriculture-agent"
+version = "0.1.0"
+description = "Kaggriculture competition agent and local evaluation harness"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "kaggle-environments==1.32.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "kaggle==2.2.4",
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agents*", "eval*", "serving*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

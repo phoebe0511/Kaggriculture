@@ -1,0 +1,14 @@
+{
+  "name": "gen1-four-land",
+  "entry": "agents.gen1:act",
+  "note": "Gen1 四地實驗：三地最佳核心，加上達到利用率與 backlog 條件後才購買 SE。",
+  "params": {
+    "max_quadrants": 4,
+    "tiles_per_unit": 3,
+    "water_on_demand": true,
+    "adaptive_fourth_land": true,
+    "fourth_min_utilization": 0.9,
+    "fourth_max_plant_backlog": 0,
+    "fourth_min_day": 14
+  }
+}

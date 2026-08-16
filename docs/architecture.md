@@ -251,7 +251,7 @@ assert legal_mask(obs)[0][action_type], f"turn {t}: {action_type} 非法"
 
 | 限制 | 對策 |
 |---|---|
-| 只有 CPU，單一檔案 | 模型存 `.npz`，用 numpy 做前向 |
+| 只有 CPU，submission ≤ 100 MiB | `main.py` 或以 `main.py` 為根的 tar.gz；模型存 `.npz`，用 numpy 做前向 |
 | **不准 import torch** | 載入要好幾秒，會吃掉第一回合的時間額度 |
 | 每回合有時限 | 搜尋必須是 anytime：先產保底解，有時間才多想 |
 | 引擎靜默拒絕非法動作 | 送出前必過 `legal_mask` |

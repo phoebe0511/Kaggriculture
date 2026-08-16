@@ -231,6 +231,8 @@ def _play(job):
     statuses = [s.status for s in env.state]
     b_slot = 1 - a_slot
     land = _land_history(env)
+    farms = _farm_history(env)
+    actions = _action_history(env)
     return {
         "seed": seed,
         "a_slot": a_slot,
@@ -240,6 +242,10 @@ def _play(job):
         "status_b": statuses[b_slot],
         "land_a": land[a_slot],
         "land_b": land[b_slot],
+        "farm_a": farms[a_slot],
+        "farm_b": farms[b_slot],
+        "actions_a": actions[a_slot],
+        "actions_b": actions[b_slot],
         "steps": len(env.steps),
         "elapsed": elapsed,
         "error": err,
@@ -272,6 +278,161 @@ def _land_history(env):
                         out[pid].append(
                             {"quadrant": q, "day": day,
                              "cash": round(farm.get("money", 0))})
+    return out
+
+
+def _quadrant(x, y, board):
+    """把 board 座標轉成 NW / NE / SW / SE。"""
+    half = board // 2
+    return ("N" if y < half else "S") + ("W" if x < half else "E")
+
+
+def _farm_history(env):
+    """統計各方土地在整局中的實際使用率與期末分布。
+
+    分母是「已解鎖 tile-turns」，因此晚買的土地只從解鎖後開始計入，不會因為
+    前半局仍是 LOCKED 而把使用率稀釋。`managed` 包含作物與動物建物；WEED
+    另外計算，因為有東西佔格不代表那格正在生產。
+    """
+    totals = [
+        {
+            "snapshots": 0,
+            "open_tile_turns": 0,
+            "crop_tile_turns": 0,
+            "structure_tile_turns": 0,
+            "weed_tile_turns": 0,
+            "empty_tile_turns": 0,
+            "quadrants": {},
+        }
+        for _ in range(2)
+    ]
+    final_farms = [None, None]
+
+    for step in env.steps:
+        try:
+            farms = step[0]["observation"]["farms"]
+        except (KeyError, TypeError, IndexError):
+            continue
+        if not farms:
+            continue
+        for pid, farm in enumerate(farms[:2]):
+            tiles = farm.get("tiles") or []
+            if not tiles:
+                continue
+            board = len(tiles)
+            rec = totals[pid]
+            rec["snapshots"] += 1
+            final_farms[pid] = farm
+            for y, row in enumerate(tiles):
+                for x, tile in enumerate(row):
+                    if tile == "LOCKED":
+                        continue
+                    q = _quadrant(x, y, board)
+                    qr = rec["quadrants"].setdefault(
+                        q,
+                        {"open": 0, "crop": 0, "structure": 0,
+                         "weed": 0, "empty": 0},
+                    )
+                    rec["open_tile_turns"] += 1
+                    qr["open"] += 1
+                    if tile is None:
+                        rec["empty_tile_turns"] += 1
+                        qr["empty"] += 1
+                    elif isinstance(tile, dict) and tile.get("kind") == "PLANT":
+                        rec["crop_tile_turns"] += 1
+                        qr["crop"] += 1
+                    elif isinstance(tile, dict) and tile.get("kind") in ("COOP", "PASTURE"):
+                        rec["structure_tile_turns"] += 1
+                        qr["structure"] += 1
+                    elif isinstance(tile, dict) and tile.get("kind") == "WEED":
+                        rec["weed_tile_turns"] += 1
+                        qr["weed"] += 1
+
+    out = []
+    for pid, rec in enumerate(totals):
+        denom = rec["open_tile_turns"] or 1
+        rec["crop_occupancy"] = rec["crop_tile_turns"] / denom
+        rec["managed_occupancy"] = (
+            rec["crop_tile_turns"] + rec["structure_tile_turns"]
+        ) / denom
+        rec["weed_rate"] = rec["weed_tile_turns"] / denom
+        for qr in rec["quadrants"].values():
+            qdenom = qr["open"] or 1
+            qr["crop_occupancy"] = qr["crop"] / qdenom
+            qr["managed_occupancy"] = (qr["crop"] + qr["structure"]) / qdenom
+            qr["weed_rate"] = qr["weed"] / qdenom
+
+        final = {"open": 0, "crop": 0, "structure": 0, "weed": 0, "empty": 0,
+                 "quadrants": {}}
+        farm = final_farms[pid]
+        if farm:
+            tiles = farm["tiles"]
+            board = len(tiles)
+            for y, row in enumerate(tiles):
+                for x, tile in enumerate(row):
+                    if tile == "LOCKED":
+                        continue
+                    q = _quadrant(x, y, board)
+                    qr = final["quadrants"].setdefault(
+                        q, {"open": 0, "crop": 0, "structure": 0,
+                            "weed": 0, "empty": 0, "crops": {}},
+                    )
+                    final["open"] += 1
+                    qr["open"] += 1
+                    if tile is None:
+                        final["empty"] += 1
+                        qr["empty"] += 1
+                    elif isinstance(tile, dict) and tile.get("kind") == "PLANT":
+                        crop = tile["crop"]
+                        final["crop"] += 1
+                        qr["crop"] += 1
+                        qr["crops"][crop] = qr["crops"].get(crop, 0) + 1
+                    elif isinstance(tile, dict) and tile.get("kind") in ("COOP", "PASTURE"):
+                        final["structure"] += 1
+                        qr["structure"] += 1
+                    elif isinstance(tile, dict) and tile.get("kind") == "WEED":
+                        final["weed"] += 1
+                        qr["weed"] += 1
+        rec["final"] = final
+        out.append(rec)
+    return out
+
+
+def _action_history(env):
+    """統計 unit actions；市場訂單不列入，避免跟人力效率混在一起。"""
+    moves = {"NORTH", "SOUTH", "EAST", "WEST"}
+    productive = {
+        "PLANT", "WATER", "HARVEST", "DIG", "FERTILIZE", "FEED", "CARE",
+        "COLLECT_FERTILIZER", "BUILD_COOP", "BUILD_PASTURE", "PLACE", "PICKUP",
+    }
+    out = []
+    for pid in range(2):
+        ops = {}
+        for step in env.steps:
+            try:
+                action = step[pid].get("action")
+            except (TypeError, IndexError):
+                continue
+            if not isinstance(action, dict):
+                continue
+            unit_actions = [action.get("farmer"), *(action.get("hands") or [])]
+            for unit_action in unit_actions:
+                if not isinstance(unit_action, list) or not unit_action:
+                    continue
+                op = unit_action[0]
+                ops[op] = ops.get(op, 0) + 1
+        total = sum(ops.values())
+        move_count = sum(ops.get(op, 0) for op in moves)
+        productive_count = sum(ops.get(op, 0) for op in productive)
+        out.append({
+            "total": total,
+            "move": move_count,
+            "productive": productive_count,
+            "pass": ops.get("PASS", 0),
+            "move_rate": move_count / total if total else 0.0,
+            "productive_rate": productive_count / total if total else 0.0,
+            "ops": ops,
+        })
     return out
 
 
@@ -346,11 +507,20 @@ def summarise(results, name_a, name_b):
     failures = []
     cash_a, cash_b, diffs, times = [], [], [], []
     land_a, land_b = [], []
+    farm_a, farm_b, actions_a, actions_b = [], [], [], []
 
     for r in results:
         times.append(r["elapsed"])
         land_a.append(r.get("land_a") or [])
         land_b.append(r.get("land_b") or [])
+        if r.get("farm_a"):
+            farm_a.append(r["farm_a"])
+        if r.get("farm_b"):
+            farm_b.append(r["farm_b"])
+        if r.get("actions_a"):
+            actions_a.append(r["actions_a"])
+        if r.get("actions_b"):
+            actions_b.append(r["actions_b"])
         bad = (
             r["error"]
             or r["cash_a"] is None
@@ -380,6 +550,26 @@ def summarise(results, name_a, name_b):
     def mean(xs):
         return (sum(xs) / len(xs)) if xs else float("nan")
 
+    def farm_mean(rows):
+        return {
+            "crop_occupancy": mean([r["crop_occupancy"] for r in rows]),
+            "managed_occupancy": mean([r["managed_occupancy"] for r in rows]),
+            "weed_rate": mean([r["weed_rate"] for r in rows]),
+            "final_open": mean([r["final"]["open"] for r in rows]),
+            "final_crop": mean([r["final"]["crop"] for r in rows]),
+            "final_structure": mean([r["final"]["structure"] for r in rows]),
+            "final_weed": mean([r["final"]["weed"] for r in rows]),
+        }
+
+    def action_mean(rows):
+        return {
+            "move_rate": mean([r["move_rate"] for r in rows]),
+            "productive_rate": mean([r["productive_rate"] for r in rows]),
+            "pass_rate": mean([
+                r["pass"] / r["total"] if r["total"] else 0.0 for r in rows
+            ]),
+        }
+
     return {
         "a": name_a,
         "b": name_b,
@@ -395,6 +585,10 @@ def summarise(results, name_a, name_b):
         "mean_secs_per_game": mean(times),
         "land_a": _land_stats(land_a),
         "land_b": _land_stats(land_b),
+        "farm_a": farm_mean(farm_a),
+        "farm_b": farm_mean(farm_b),
+        "actions_a": action_mean(actions_a),
+        "actions_b": action_mean(actions_b),
         "failures": len(failures),
         "failure_detail": failures[:5],
     }
@@ -457,6 +651,22 @@ def _fmt_land(ls):
     return (f"平均 {ls['mean_plots']:.2f} 塊   {per_plot}")
 
 
+def _fmt_farm(fs):
+    return (
+        f"全季作物 {fs['crop_occupancy']:.1%}／管理中 {fs['managed_occupancy']:.1%}"
+        f"   期末作物 {fs['final_crop']:.1f}/{fs['final_open']:.1f}"
+        f"   雜草率 {fs['weed_rate']:.1%}"
+    )
+
+
+def _fmt_actions(stats):
+    return (
+        f"MOVE {stats['move_rate']:.1%}"
+        f"   生產 {stats['productive_rate']:.1%}"
+        f"   PASS {stats['pass_rate']:.1%}"
+    )
+
+
 def format_summary(s):
     lo, hi = s["ci95"]
     lines = [
@@ -470,6 +680,8 @@ def format_summary(s):
         f"   （差 {s['mean_diff']:+,.0f}）",
         f"  買地 {s['a']:<10} {_fmt_land(s['land_a'])}",
         f"  買地 {s['b']:<10} {_fmt_land(s['land_b'])}",
+        f"  田況 {s['a']:<10} {_fmt_farm(s['farm_a'])}",
+        f"  動作 {s['a']:<10} {_fmt_actions(s['actions_a'])}",
         f"  吞吐      {s['games_per_hour']:,.0f} 局/小時"
         f"   （{s['workers']} workers，單局 {s['mean_secs_per_game']:.2f} 秒）",
         f"  判定      {verdict(s)}",

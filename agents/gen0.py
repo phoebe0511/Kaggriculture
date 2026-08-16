@@ -192,6 +192,52 @@ def crop_for(x, y, basket):
     return basket[(y * 7 + x) % len(basket)]
 
 
+def quadrant_for(x, y, board):
+    """回傳座標所屬象限；跟引擎的 `_quadrant_of` 保持同一個切法。"""
+    half = board // 2
+    return ("N" if y < half else "S") + ("W" if x < half else "E")
+
+
+def active_crop_tiles(tiles, board, struct_order, unlocked_quadrants, max_tiles=None):
+    """挑出這一版策略實際打算維護的作物格。
+
+    土地解鎖不等於人力足以管理。設定 `max_tiles` 時，從各已解鎖象限的內側
+    （離 shed 最近處）輪流取格，避免新增象限永遠被 y/x 掃描順序餓死。
+    已經種下但後來不在 active set 的作物仍會照顧到收成；只是收完不再補種。
+    """
+    struct_set = set(struct_order)
+    groups = {q: [] for q in unlocked_quadrants}
+    half = board // 2
+    for y in range(board):
+        for x in range(board):
+            if tiles[y][x] == "LOCKED" or (x, y) in struct_set:
+                continue
+            q = quadrant_for(x, y, board)
+            groups.setdefault(q, []).append((x, y))
+
+    # 各象限都以靠近中央 shed 的格子優先；同距離固定 y/x，保證可重現。
+    for q, coords in groups.items():
+        inner_x = half - 1 if q.endswith("W") else half
+        inner_y = half - 1 if q.startswith("N") else half
+        coords.sort(key=lambda p: (abs(p[0] - inner_x) + abs(p[1] - inner_y), p[1], p[0]))
+
+    total = sum(len(coords) for coords in groups.values())
+    limit = total if max_tiles is None else max(0, min(total, int(max_tiles)))
+    selected = set()
+    # round-robin，而不是先塞滿 NW 再輪到 NE/SW/SE。
+    queues = {q: list(coords) for q, coords in groups.items()}
+    while len(selected) < limit:
+        progressed = False
+        for q in unlocked_quadrants:
+            queue = queues.get(q) or []
+            if queue and len(selected) < limit:
+                selected.add(queue.pop(0))
+                progressed = True
+        if not progressed:
+            break
+    return selected
+
+
 # --------------------------------------------------------------------------
 # 依當局 shop 決定種什麼
 # --------------------------------------------------------------------------
@@ -527,7 +573,54 @@ def _fertilize_worth_it(tile, cd, day):
     return window_start - 1 <= age <= cd["max_yield_day"]
 
 
-def _tasks(tiles, day, board, params, struct_order, animal_plan, unit_inv, private):
+def _ongoing_produces_tonight(tile, cd, day):
+    """ongoing 作物是否會在今天 EOD 結算下一次產出。"""
+    next_age = day + 1 - tile["planted_day"]
+    if next_age < cd["first_yield_day"]:
+        return False
+    offset = next_age - cd["first_yield_day"]
+    if offset % cd["interval"] != 0:
+        return False
+    return offset // cd["interval"] + 1 <= cd["max_yield"]
+
+
+def _needs_water(tile, cd, day, on_demand=False):
+    """今天是否必須澆水。
+
+    legacy 模式維持 Gen0 原行為。on-demand 模式只在以下情況澆：新種當天／
+    再不澆今晚會成 WEED／one-time 增產窗口尚未滿產／ongoing 今晚有施肥產出。
+    引擎的新苗 `consecutive_unwatered=1`，所以種下當天自然會命中第二條。
+    """
+    if tile["watered_today"]:
+        return False
+    age = day - tile["planted_day"]
+    if not on_demand:
+        return cd["ongoing"] or age <= cd["max_yield_day"]
+    if tile.get("consecutive_unwatered", 1) >= 1:
+        return True
+    if not cd["ongoing"]:
+        window_start = (cd["max_yield_day"] + 1) // 2
+        return (
+            window_start <= age <= cd["max_yield_day"]
+            and tile.get("yield_units", 0) < cd["max_yield"]
+        )
+    return (
+        tile.get("fertilized_until_day", -1) >= day
+        and _ongoing_produces_tonight(tile, cd, day)
+    )
+
+
+def _tasks(
+    tiles,
+    day,
+    board,
+    params,
+    struct_order,
+    animal_plan,
+    unit_inv,
+    private,
+    active_tiles=None,
+):
     """掃出全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
 
     `arg`：FETCH_* 是 `(item, 數量)`，BUILD_* / PLACE 是要養的species，其餘 None。
@@ -552,7 +645,7 @@ def _tasks(tiles, day, board, params, struct_order, animal_plan, unit_inv, priva
                                     if ANIMALS[species]["structure"] == "COOP"
                                     else "BUILD_PASTURE")
                         out.append((_PRI["BUILD"], build_op, x, y, species))
-                else:
+                elif active_tiles is None or (x, y) in active_tiles:
                     out.append((_PRI["PLANT"], "PLANT", x, y, None))
                 continue
 
@@ -561,12 +654,15 @@ def _tasks(tiles, day, board, params, struct_order, animal_plan, unit_inv, priva
             kind = tile.get("kind")
 
             if kind == "WEED":
-                out.append((_PRI["DIG"], "DIG", x, y, None))
+                if active_tiles is None or (x, y) in active_tiles:
+                    out.append((_PRI["DIG"], "DIG", x, y, None))
 
             elif kind == "PLANT":
                 cd = CROPS[tile["crop"]]
                 age = day - tile["planted_day"]
-                if not tile["watered_today"] and (cd["ongoing"] or age <= cd["max_yield_day"]):
+                if _needs_water(
+                    tile, cd, day, on_demand=params.get("water_on_demand", False)
+                ):
                     out.append((_PRI["WATER"], "WATER", x, y, None))
                 elif tile["yield_units"] > 0 and age >= cd["first_yield_day"]:
                     out.append((_PRI["HARVEST"], "HARVEST", x, y, None))
@@ -640,7 +736,15 @@ def _requirement(op, arg):
     return _NEEDS_ITEM.get(op)
 
 
-def _assign(unit_pos, unit_inv, tasks, seeds, params):
+def _assign(
+    unit_pos,
+    unit_inv,
+    tasks,
+    seeds,
+    params,
+    board=None,
+    unlocked_quadrants=None,
+):
     """任務 → unit。
 
     先按優先序分層，**每一層裡面先做離 unit 最近的**。第一版是按 (y, x) 掃描順序，
@@ -650,16 +754,39 @@ def _assign(unit_pos, unit_inv, tasks, seeds, params):
     free = set(range(len(unit_pos)))
     planted = {}
     basket = params["basket"]
+    zoning = bool(params.get("quadrant_zoning", False) and board and unlocked_quadrants)
+    quadrants = list(unlocked_quadrants or ())
+    zone_penalty = int(params.get("zone_penalty", board or 0))
+
+    # unit 0（farmer）固定從 NW 開始，其餘依 index 輪流分區。hands 每天也是
+    # NW/NE/SW/SE 內角輪流出生，index 分區不需要跨回合狀態，且完全可重現。
+    home = {
+        u: quadrants[u % len(quadrants)]
+        for u in range(len(unit_pos))
+    } if zoning else {}
 
     def dist(u, tx, ty):
         return abs(unit_pos[u][0] - tx) + abs(unit_pos[u][1] - ty)
+
+    def assignment_cost(u, task):
+        _pri, _op, tx, ty, _arg = task
+        cost = dist(u, tx, ty)
+        zone_this_op = (
+            not params.get("zone_planting_only", False)
+            or _op in ("PLANT", "DIG")
+        )
+        if zoning and zone_this_op and home[u] != quadrant_for(tx, ty, board):
+            cost += zone_penalty
+        return cost
 
     tier = []
     current_pri = None
 
     def flush():
         """把同一優先序的任務按「離最近的閒置 unit 多遠」排序後再指派。"""
-        tier.sort(key=lambda t: (min((dist(u, t[2], t[3]) for u in free), default=0), t[3], t[2]))
+        tier.sort(key=lambda t: (
+            min((assignment_cost(u, t) for u in free), default=0), t[3], t[2]
+        ))
         for _pri, op, tx, ty, arg in tier:
             if not free:
                 return
@@ -674,7 +801,7 @@ def _assign(unit_pos, unit_inv, tasks, seeds, params):
             cands = [u for u in free if need is None or unit_inv[u].get(need, 0) > 0]
             if not cands:
                 continue
-            best = min(cands, key=lambda u: (dist(u, tx, ty), u))
+            best = min(cands, key=lambda u: (assignment_cost(u, (_pri, op, tx, ty, arg)), u))
             free.discard(best)
             assigned[best] = (op, tx, ty, arg)
         tier.clear()
@@ -772,9 +899,23 @@ def _seed_burn_per_day(basket, n_crop_tiles):
     return total
 
 
-def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
+def _market(
+    obs,
+    config,
+    farm,
+    private,
+    params,
+    shed_capacity,
+    tasks,
+    board,
+    active_crop_count=None,
+):
     orders = []
     shed = private["shed"]
+    # 市場在 unit 動作之後執行；這裡用回合開始時的容量做保守上限。
+    # PICKUP 可能在同回合多騰出一些空間，但絕不能反過來送出裝不下的訂單，
+    # 否則引擎只成交前幾個、剩下的靜默中止。
+    shed_room = max(0, shed_capacity - sum(shed.values()))
     prices = obs["market"]["prices"]
     money = farm["money"]
 
@@ -791,8 +932,12 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     cap = min(params["max_hands"],
               params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
     n_animals = sum(1 for t in tasks if t[1] in ("FEED", "CARE"))
-    n_crop_tiles = max(0, sum(1 for row in farm["tiles"] for t in row
-                              if t != "LOCKED") - params["n_structures"])
+    n_crop_tiles = (
+        max(0, int(active_crop_count))
+        if active_crop_count is not None
+        else max(0, sum(1 for row in farm["tiles"] for t in row
+                        if t != "LOCKED") - params["n_structures"])
+    )
     seed_rate = _seed_burn_per_day(params["basket"], n_crop_tiles)
 
     daily_ops = (
@@ -803,11 +948,7 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     floor = daily_ops * params["cash_reserve_days"]
     spendable = max(0.0, money - floor)
 
-    # 1) 買地。價格 1000/2000/4000，順序 hardcoded 在引擎的 `LAND_ORDER`。
-    #
-    #    ⚠️ 本機引擎的 `LAND_ORDER` 被改成 `["NE"]`（原本是 NE/SW/SE），
-    #    所以實際上只買得到一塊。這裡照 `len(LAND_ORDER)` 走，引擎改回去就會
-    #    自動支援多塊，不用改這裡。
+    # 1) 買地。價格 1000/2000/4000，順序由引擎的 `LAND_ORDER` 決定。
     #
     #    **排在所有採購最前面**，連雇工都在它後面。它是唯一「錯過就沒了」的
     #    支出 —— 種子和動物下個回合再買價格一樣，但土地買得越晚，多出來的
@@ -815,10 +956,28 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     #    四個條件：夠晚（有收入了）、夠早（新地來得及生產）、沒買滿、付得起。
     n_owned = len(farm["unlocked_quadrants"])
     n_extra = n_owned - 1
+    next_is_fourth = n_owned == 3
+    crop_count = sum(
+        1 for row in farm["tiles"] for tile in row
+        if isinstance(tile, dict) and tile.get("kind") == "PLANT"
+    )
+    plant_backlog = sum(1 for task in tasks if task[1] == "PLANT")
+    active_utilization = min(
+        1.0,
+        crop_count / max(1, n_crop_tiles),
+    )
+    fourth_ready = True
+    if next_is_fourth and params.get("adaptive_fourth_land", False):
+        fourth_ready = (
+            obs["day"] >= params.get("fourth_min_day", params["land_first_min_day"])
+            and active_utilization >= params.get("fourth_min_utilization", 0.8)
+            and plant_backlog <= params.get("fourth_max_plant_backlog", 5)
+        )
     if (
         params["buy_land"]
         and n_extra < len(LAND_ORDER)
         and n_owned < params["max_quadrants"]
+        and fourth_ready
         and obs["day"] >= params["land_first_min_day"]
         and _days_left(obs, config) >= params["land_min_days_left"]
         and spendable >= LAND_PRICES[n_extra]
@@ -860,10 +1019,11 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     reserve = n_animals * params["wheat_reserve_days"]
     if reserve and shed.get("WHEAT", 0) < reserve // 2:
         need = reserve - shed.get("WHEAT", 0)
-        n = min(need, int(spendable // max(1, prices["WHEAT"])))
+        n = min(need, shed_room, int(spendable // max(1, prices["WHEAT"])))
         if n > 0:
             orders.append(["BUY_PRODUCT", "WHEAT", n])
             spendable -= n * prices["WHEAT"]
+            shed_room -= n
 
     # 5) 買動物。最後才買 —— 一隻 $300~$500，是最容易把現金一次抽乾的支出。
     want = {}
@@ -873,10 +1033,15 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
     budget = max(0.0, spendable - params["animal_reserve"])
     for species in sorted(want):
         cost = ANIMALS[species]["cost"]
-        n_buy = min(want[species] - shed.get(species, 0), int(budget // cost))
+        n_buy = min(
+            want[species] - shed.get(species, 0),
+            shed_room,
+            int(budget // cost),
+        )
         if n_buy > 0:
             orders.append(["BUY_ANIMAL", species, n_buy])
             budget -= n_buy * cost
+            shed_room -= n_buy
 
     # 6) 賣貨。**賣到價格掉到門檻為止**，不是固定賣 40 個。
     #
@@ -922,6 +1087,11 @@ def _market(obs, config, farm, private, params, shed_capacity, tasks, board):
         "daily_ops": round(daily_ops),
         "seed_rate": round(seed_rate),
         "hire_cap": cap,
+        "shed_room": shed_room,
+        "active_crop_count": n_crop_tiles,
+        "active_utilization": round(active_utilization, 3),
+        "plant_backlog": plant_backlog,
+        "fourth_ready": fourth_ready,
     }
     return orders[:MAX_MARKET_ORDERS]
 
@@ -947,15 +1117,33 @@ def act(obs, config=None, params=None):
 
     struct_order = structure_tiles(board, p["n_structures"])
 
+    tiles_per_unit = p.get("tiles_per_unit")
+    active_tiles = None
+    if tiles_per_unit is not None:
+        planned_hands = min(
+            p["max_hands"],
+            p["hands_per_quadrant"] * len(farm["unlocked_quadrants"]),
+        )
+        active_tiles = active_crop_tiles(
+            tiles,
+            board,
+            struct_order,
+            farm["unlocked_quadrants"],
+            max_tiles=(1 + planned_hands) * float(tiles_per_unit),
+        )
+    active_crop_count = (
+        len(active_tiles)
+        if active_tiles is not None
+        else sum(
+            1 for y in range(board) for x in range(board)
+            if tiles[y][x] != "LOCKED" and (x, y) not in set(struct_order)
+        )
+    )
+
     # basket 和動物配置每回合重算：shop 每 3 天才開一間，需求結構是會變的。
     # 已經種下 / 蓋好的格子不受影響，只有下一次 PLANT / BUILD 才會用到新的分配。
     if p["dynamic_basket"]:
-        struct_set = set(struct_order)
-        n_crop_tiles = sum(
-            1 for y in range(board) for x in range(board)
-            if tiles[y][x] != "LOCKED" and (x, y) not in struct_set
-        )
-        p["basket"] = dynamic_basket(obs, config, p, n_crop_tiles)
+        p["basket"] = dynamic_basket(obs, config, p, active_crop_count)
 
     if p["dynamic_animals"]:
         animal_plan = dynamic_animals(obs, config, p, len(struct_order))
@@ -967,9 +1155,19 @@ def act(obs, config=None, params=None):
     unit_inv = [dict(inventories[i]) if i < len(inventories) else {}
                 for i in range(len(unit_pos))]
 
-    tasks = _tasks(tiles, day, board, p, struct_order, animal_plan,
-                   unit_inv, private)
-    assigned, _idle = _assign(unit_pos, unit_inv, tasks, private["seeds"], p)
+    tasks = _tasks(
+        tiles, day, board, p, struct_order, animal_plan,
+        unit_inv, private, active_tiles=active_tiles,
+    )
+    assigned, _idle = _assign(
+        unit_pos,
+        unit_inv,
+        tasks,
+        private["seeds"],
+        p,
+        board=board,
+        unlocked_quadrants=farm["unlocked_quadrants"],
+    )
 
     unit_actions = []
     for i, pos in enumerate(unit_pos):
@@ -982,7 +1180,17 @@ def act(obs, config=None, params=None):
     action = {
         "farmer": unit_actions[0],
         "hands": unit_actions[1:],
-        "market": _market(obs, config, farm, private, p, shed_capacity, tasks, board),
+        "market": _market(
+            obs,
+            config,
+            farm,
+            private,
+            p,
+            shed_capacity,
+            tasks,
+            board,
+            active_crop_count=active_crop_count,
+        ),
     }
 
     if LOG_LEVEL >= 2:

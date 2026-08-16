@@ -1,0 +1,46 @@
+{
+  "name": "ref-v2",
+  "entry": "agents.gen0:act",
+  "engine_version": "1.32.7",
+  "source_base_commit": "3a2bf23",
+  "post_base_fixes": [
+    "cap BUY_PRODUCT and BUY_ANIMAL orders by shed capacity"
+  ],
+  "frozen": "2026-08-16",
+  "note": "凍結的 Gen0 參考對手。參數完整展開，不會跟著 DEFAULT_PARAMS 漂移；禁止修改，下一版請新增 ref-v3。",
+  "params": {
+    "basket": [
+      "MELON",
+      "CARROT",
+      "CARROT",
+      "WHEAT",
+      "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "max_crop_share": 0.4,
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 6,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12
+  }
+}

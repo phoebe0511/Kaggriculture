@@ -2,11 +2,12 @@
 
 > 規則見 `rules.md` §5。**UNKNOWN 不准填猜測值繼續往下做。**
 
-**目前狀態：全部未解，因為還沒讀遊戲引擎原始碼。**
+**目前狀態：#1～#7、#9 已由 `games/engine-notes.md` 的原始碼閱讀與實測解決；
+#8 已由 Kaggle 官方 Evaluation 解決。這份檔案保留作為歷史問題索引。**
 
 ---
 
-## 🔴 擋住工作中
+## 歷史問題索引（目前均已解）
 
 ### #1 — 買地、雇工、賣東西走哪條路徑
 
@@ -77,15 +78,13 @@
 
 ---
 
-### #8 — rating 怎麼算
+### #8 — rating 怎麼算（已確認）
 
 只看勝負，還是贏多少也會影響？
 
-- **猜測**：只看勝負（TrueSkill 的標準做法）
-- **怎麼查**：兩種方式擇一
-  1. 比賽頁面 Overview → Evaluation 章節
-  2. 用公開的 episodes 資料集畫圖：`rating 變化` 對 `錢的差距` 做散佈圖 — **如果只看勝負，圖會是階梯狀而不是斜線**
-- **擋住**：T62（落後時該賭多大）
+- **VERIFIED**：只看勝／負／和；現金差額不影響 rating 變化。
+- **來源**：Kaggle 比賽頁面的 Evaluation → Ranking System。
+- 最終以累積 episodes 跑 Bradley–Terry tournament。
 - **owner**: B
 
 ---
@@ -117,4 +116,4 @@ kaggle_environments/envs/kaggriculture/
 
 **幾小時的閱讀量，可以一次清掉九成的問號。**
 
-#8 要另外查比賽頁面，或用公開資料集畫個圖。
+#8 已由 Kaggle 官方 Evaluation 確認。
