@@ -169,9 +169,11 @@ Leaderboard = skill rating（多局累積）
   （`tiles_per_unit=4`，上限 52 格 / 可種 69 格）。
 - 平行 eval runner 會輸出土地利用率與 MOVE／生產／PASS 比例；`ref-v2`、`ref-v3`、
   `ref-v4` 與 L0 baseline 已凍結。
-- 30-seed 對 starter 平均現金 `$86,306`；80 局 paired 對 ref-v3 勝率 76.3%。
-- 已知失敗模式：格數變多會讓 MELON 配額變多而自己砸盤，對弱對手最明顯
-  （見 `README.md`）。`max_crop_share` 待重掃。
+- 30-seed 對 starter 平均現金 `$86,273`；80 局 paired 對 ref-v3 勝率 76.3%。
+- 已知失敗模式：格數變多會讓作物／動物配額**過度集中**，放掉當局稀缺的高價品項
+  （見 `README.md` 的逐項收入歸因）。`max_crop_share` / `max_animal_share` 待重掃。
+- `species_for_structure` 的 fallback 已改成照 plan 配額挑，不再是字母序
+  （90 局配對 `+$1,108`，符號檢定 p=0.0075）。
 - 條件式四地版已實作，但 30-seed 平均 `$78,831`，暫不取代三地主版。
 - T00 仍待第二人獨立閱讀後交叉確認。
 - 下一個工程重點是路徑規劃與對戰產線吞吐。

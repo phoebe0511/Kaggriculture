@@ -504,18 +504,27 @@ def animal_for(x, y, struct_order, plan):
     return plan[idx] if idx < len(plan) else None
 
 
-def species_for_structure(kind, plan_species):
+def species_for_structure(kind, plan_species, plan=()):
     """空建物該放哪一種。
 
     plan 會隨 shop 變動，但建物蓋下去就固定了 —— COOP 放不了 COW。
-    所以先看計畫的species合不合，不合就退回任何結構相符的。
+    所以先看計畫的species合不合，不合才退回結構相符的。
+
+    ⚠️ 退回時**照 plan 裡的配額挑，不是照字母序**。舊版是
+    `for s in sorted(ANIMALS)`，而 `sorted(ANIMALS)` = COW < GOOSE < SHEEP，
+    所以 PASTURE 的 fallback 永遠是 COW —— 即使規劃器當下給 COW 的配額是 0、
+    給 SHEEP 的是 3。實測 seed 41003 的 t4：plan 在 GOOSE/COW/SHEEP 之間震盪，
+    `(PASTURE, GOOSE) → COW` 觸發 79 次，六個建物全變成牛，MILK 賣 156 個
+    收入反而比賣 108 個少 $14,921，同時 WOOL 收入整個消失（-$12,394）。
     """
     if plan_species and ANIMALS[plan_species]["structure"] == kind:
         return plan_species
-    for s in sorted(ANIMALS):
-        if ANIMALS[s]["structure"] == kind:
-            return s
-    return None
+    fits = [s for s in sorted(ANIMALS) if ANIMALS[s]["structure"] == kind]
+    if not fits:
+        return None
+    # 配額高的優先。`fits` 已按字母序，而 max 取第一個最大值 ——
+    # 同配額（含 plan 裡都沒有的情況）就是字母序第一個，保證可重現。
+    return max(fits, key=lambda s: plan.count(s))
 
 
 def _days_left(obs, config):
@@ -685,7 +694,10 @@ def _tasks(
                 # 空建物：等一隻動物。tile 有 "animal" key 才代表住了東西。
                 # 建物蓋下去就固定了，COOP 放不了 COW —— 所以要挑結構相符的。
                 species = species_for_structure(
-                    kind, animal_for(x, y, struct_order, animal_plan))
+                    kind,
+                    animal_for(x, y, struct_order, animal_plan),
+                    animal_plan,
+                )
                 if species:
                     out.append((_PRI["PLACE"], "PLACE", x, y, species))
                     place_want[species] = place_want.get(species, 0) + 1
