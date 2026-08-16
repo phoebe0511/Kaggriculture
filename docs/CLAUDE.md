@@ -102,9 +102,9 @@ Expert Iteration：規則式 AI 暖身 → 訓練網路 → 網路 + beam search
 ## 檔案所有權
 
 ```
-engine/  encoding/  harness/  serving/  submission.py   → A
-agents/  model/  eval/                                  → B
-contracts.py                                            → 凍結
+encoding/  harness/  serving/  main.py   → A
+agents/  model/  eval/                   → B
+contracts.py                             → 凍結
 ```
 
 改別人的檔案前先問。
@@ -125,6 +125,32 @@ contracts.py                                            → 凍結
 
 ## 現在的狀態
 
-🔴 Phase 0。**還沒讀遊戲引擎原始碼。`docs/unknowns.md` 全紅。**
+🟡 **Phase 1 進行中**（最後更新 2026-08-16）。
 
-**拿到原始碼之前，不要寫任何含猜測常數的程式碼。**
+### 已經有的
+
+- 引擎規則讀完了，寫在 `docs/games/engine-notes.md`（含行號）與 `docs/games/op-flows.md`。
+  `unknowns.md` #1~#9 全部結案。**⚠️ T00 仍待第二人獨立讀完再對答案。**
+- 引擎固定 `kaggle-environments==1.32.7`。升級引擎要重核 `engine-notes.md` 並重跑 L0。
+- `main.py` = Gen1 三地版（`agents/gen1.py` 疊在 `agents/gen0.py` 核心上）
+  + `serving/action_validation.py` 每個動作嚴格驗證。
+- 凍結量尺：`ref-v2`（Gen0）、`ref-v3`（Gen1 三地）。**params 完整展開，不指向
+  `DEFAULT_PARAMS`** —— 對手池指向預設值的話，每次調預設就等於換了量尺。
+- L0 = `pytest`（8 項，約 10 秒）；baseline 在 `tests/baselines.json`。
+- 成績：30 seeds 對 starter 平均 `$83,667`；60 局 paired 對 ref-v2 `55/0/5`。
+
+### 還沒有的
+
+**Phase 2 那條線一行都還沒寫**：`encoding/`、`model/`、`harness/`、`contracts.py`
+都不存在。`architecture.md` 的模組清單是**計畫，不是現況**——別照著它找檔案。
+
+### 現在的工程重點
+
+路徑規劃（MOVE 仍佔 52%、土地利用率只有 61%）與對戰產線吞吐。
+
+### 兩條還在生效的警告
+
+- **規則常數一律 `import` 引擎，不做鏡像。** 抄一份會有「抄錯」和「上游改版沒跟上」
+  兩個風險，兩者都不會報錯。
+- **本機引擎原始碼被人手改過。**（`LAND_ORDER` 曾被改成 `["NE"]`，害查了四輪。）
+  引擎常數不能當永久事實，依賴它的邏輯要動態走，例如照 `len(LAND_ORDER)`。

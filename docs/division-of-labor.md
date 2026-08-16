@@ -159,7 +159,7 @@ T00 ──→ T01 ──→ T11 ──→ T14 ──→ T20 ──→ T41 ──
 encoding/        A     ⚠️ 兩邊共用，最危險
 harness/         A
 serving/         A
-submission.py    A
+main.py          A
 agents/          B
 model/           B
 eval/            B
@@ -176,7 +176,7 @@ B 訓好的模型綁死在順序上，A 一改全部作廢。只能往後加，�
 **🔴 `contracts.py`**
 要改必須兩人同時在場，並評估對現有所有模型的影響。
 
-**🔴 `submission.py`**
+**🔴 `main.py`**
 只有 A 能改。B 交付的是模型檔 + 一份前向計算的參考實作，由 A 整合。
 
 ---
