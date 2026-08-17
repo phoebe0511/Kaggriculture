@@ -50,6 +50,20 @@ FALLBACK_REGISTRY = {
 # 對手載入
 # --------------------------------------------------------------------------
 
+def _module_has(module_path, attr):
+    """不 import 就檢查有沒有某個 top-level 函式。
+
+    import agent 模組會連帶把 `kaggle_environments` 拉進主行程（open_spiel
+    會噴幾百行），所以用原始碼掃就好。
+    """
+    path = REPO_ROOT / (module_path.replace(".", "/") + ".py")
+    try:
+        src = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"\ndef {attr}(" in src
+
+
 def load_spec(name):
     """把 `--a` / `--b` 的值變成 spec dict。
 
@@ -68,6 +82,20 @@ def load_spec(name):
             spec["_source"] = str(path)
             return spec
 
+    # `.py` 路徑：`agents/gen1.py`、`gen1.py`，或直接 `gen1`。
+    # 進入點優先取 `act`（吃得下 params），沒有才用 `agent`。
+    for path in (Path(name), REPO_ROOT / name,
+                 REPO_ROOT / "agents" / f"{name}.py", REPO_ROOT / "agents" / name):
+        if path.suffix == ".py" and path.is_file():
+            try:
+                rel = path.resolve().relative_to(REPO_ROOT)
+            except ValueError:
+                raise SystemExit(f"{path} 不在 repo 底下，改用 module:attr")
+            module = ".".join(rel.with_suffix("").parts)
+            attr = "act" if _module_has(module, "act") else "agent"
+            return {"name": path.stem, "entry": f"{module}:{attr}",
+                    "_source": str(path)}
+
     if name in FALLBACK_REGISTRY:
         spec = dict(FALLBACK_REGISTRY[name])
         spec.setdefault("name", name)
@@ -77,11 +105,13 @@ def load_spec(name):
     if ":" in name:
         return {"name": name, "entry": name, "_source": "inline"}
 
+    agents_dir = REPO_ROOT / "agents"
     raise SystemExit(
-        f"找不到對手 {name!r}。\n"
-        f"  可用的 config：{', '.join(sorted(p.stem for p in OPPONENT_DIR.glob('*.json'))) or '（config/opponents/ 是空的）'}\n"
-        f"  內建名字：{', '.join(sorted(FALLBACK_REGISTRY))}\n"
-        f"  或給一個 JSON 路徑，或 module:attr"
+        f"找不到對手 {name!r}。可以給：\n"
+        f"  config 檔名   {', '.join(sorted(p.stem for p in OPPONENT_DIR.glob('*.json'))) or '（config/opponents/ 是空的）'}\n"
+        f"  agent 檔      {', '.join(sorted(p.stem for p in agents_dir.glob('*.py') if not p.stem.startswith('__'))) or '（agents/ 是空的）'}\n"
+        f"  內建名字      {', '.join(sorted(FALLBACK_REGISTRY))}\n"
+        f"  或 JSON 路徑、.py 路徑、module:attr"
     )
 
 
@@ -187,34 +217,20 @@ def _quiet_make():
     return make
 
 
-#: 這個 worker 行程在 pool 裡的序號。由 `_init_worker` 在行程啟動時發一次。
-_WORKER_IDX = 0
-
-
-def _init_worker(counter):
-    """Pool 的 initializer：發一個序號給這個行程，之後 log 檔名用得到。"""
-    global _WORKER_IDX
-    with counter.get_lock():
-        _WORKER_IDX = counter.value
-        counter.value += 1
-
-
 def _play(job):
     """跑一局。這個函式必須是 top-level，Windows 的 spawn 才 pickle 得動。"""
     spec0, spec1, seed, a_slot, log_dir = job
     make = _quiet_make()
     env = make("kaggriculture", configuration={"seed": seed}, debug=True)
 
-    # 一個 worker 一個 log 檔：`worker-<對手>-<序號>.jsonl`。
-    # 不讓多個行程共寫一個檔，因為同時 append 會交錯、把行切斷。
-    # 一個檔裡混著這個 worker 跑過的所有局，靠每筆記錄的 `tag` 分辨是哪一局哪一邊。
+    # **一局一個檔**，檔名就是 tag：`seed0003_gen0_vs_ref-v1.jsonl`。
+    # 一局完整跑在同一個 worker 裡，不會有多行程同時寫同一個檔的問題。
+    # 檔名 = tag 的話，`--tag` 直接對得到檔案，不用掃整個目錄找。
     # agent 讀 KAGGRI_LOG_FILE 決定寫哪，沒設的話寫 stderr（會被引擎攔截丟掉）。
     if log_dir:
-        opponent = (spec1 if a_slot == 0 else spec0)["name"]
-        os.environ["KAGGRI_LOG_TAG"] = (
-            f"seed{seed:04d}_{spec0['name']}_vs_{spec1['name']}")
-        os.environ["KAGGRI_LOG_FILE"] = str(
-            Path(log_dir) / f"worker-{opponent}-{_WORKER_IDX:02d}.jsonl")
+        tag = f"seed{seed:04d}_{spec0['name']}_vs_{spec1['name']}"
+        os.environ["KAGGRI_LOG_TAG"] = tag
+        os.environ["KAGGRI_LOG_FILE"] = str(Path(log_dir) / f"{tag}.jsonl")
     else:
         os.environ.pop("KAGGRI_LOG_FILE", None)
         os.environ.pop("KAGGRI_LOG_TAG", None)
@@ -608,9 +624,7 @@ def run(spec_a, spec_b, games, workers, seed0=0, swap=True, progress=None, log_d
             if progress:
                 print(f"\r  {i}/{len(jobs)}", end="", file=sys.stderr, flush=True)
     else:
-        counter = mp.Value("i", 0)
-        with mp.Pool(processes=workers, initializer=_init_worker,
-                     initargs=(counter,)) as pool:
+        with mp.Pool(processes=workers) as pool:
             for i, res in enumerate(pool.imap_unordered(_play, jobs), 1):
                 results.append(res)
                 if progress:

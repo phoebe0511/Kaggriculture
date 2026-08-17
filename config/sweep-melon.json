@@ -1,0 +1,11 @@
+{
+  "name": "melon",
+  "note": "西瓜的配額倍數。全域 oversupply_factor 是 1.5，這裡只覆寫 MELON。MELON 日需求固定 1.0（沒有任何 shop 要它），但 base $250 全場最高。A = ref-v1 固定。",
+  "opponents": [
+    {"name": "melon-1.5", "entry": "agents.gen0:act", "params": {"crop_oversupply": {}}},
+    {"name": "melon-3", "entry": "agents.gen0:act", "params": {"crop_oversupply": {"MELON": 3.0}}},
+    {"name": "melon-4", "entry": "agents.gen0:act", "params": {"crop_oversupply": {"MELON": 4.0}}},
+    {"name": "melon-6", "entry": "agents.gen0:act", "params": {"crop_oversupply": {"MELON": 6.0}}},
+    {"name": "melon-10", "entry": "agents.gen0:act", "params": {"crop_oversupply": {"MELON": 10.0}}}
+  ]
+}

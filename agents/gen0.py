@@ -78,7 +78,32 @@ DEFAULT_PARAMS = {
     "fallback_crop": "WHEAT",
     # 單一作物最多佔多少格。防止貪婪配置全押同一種 —— 全 MELON 的話
     # 前 10 天零收入（first_yield_day=10），工資先把現金燒光。
+    #
+    # 可以用 `crop_share`（sweep 專用，**故意不放進 DEFAULT_PARAMS**）逐作物覆寫
+    # 這個比例，例如 `{"STRAWBERRY": 0.6}`。不放進預設是因為它實測沒有效益，
+    # 而放進去就得依 `tests/test_frozen_reference.py` 的規則切一版新的 ref。
+    #
+    # STRAWBERRY 的實測（2026-08-17，seed 0，ref-v4 對打自己）：一格每天只產
+    # 0.24 個，城鎮日需求從 day 3 的 7.0 漲到 day 21 的 37.0，demand_cap 算出來
+    # 是 57~279 格完全擋不到 —— 真正卡住它的一直是這條 40%。整季種下 34 次、
+    # 賣出 138 個，期末市價 $247 = 2.06× base，市場確實還在缺貨。
+    # 但拉高佔比並沒有變好（各 30 seed paired 對 ref-v4，A = ref-v4 視角）：
+    #   0.4（對照）50.0%  +$0        ← 確認旋鈕接線正確
+    #   0.5        46.7%  -$1,061  ⚪
+    #   0.6        68.3%  -$1,692  ❌ 確實較弱
+    #   0.7        56.7%  -$74     ⚪
+    # 走勢不單調，只有 0.6 過顯著且是變差。假設（未驗證）：搶走的格子是
+    # WHEAT 的 0.83 ypd，而 WHEAT 的 above_func = log 超產幾乎不掉價。
+    "crop_share": {"STRAWBERRY": 0.4},
     "max_crop_share": 0.4,
+    # 一個作物的配額最多是「填滿城鎮日需求所需格數」的幾倍。
+    # 城鎮吸收不了的部分價格會一路往下，超產太多就是白種。
+    # MELON 的日需求固定 1.0（沒有任何 shop 要它），這條直接把它壓到 3~4 格。
+    "oversupply_factor": 1.5,
+    # 個別作物的覆寫。MELON 的日需求固定 1.0，用全域 1.5 只配到 3~4 格，
+    # 但實測期末 $232（0.93× base）根本沒砸盤 —— 代表還有空間。
+    # 它 base $250 是全場最高，多一格的邊際收入遠高於 WHEAT。
+    "crop_oversupply": {"MELON": 4.0},
     # 同上，單一動物species最多佔多少個建物。
     "max_animal_share": 0.5,
     # 估作物/動物價值時，從「當下的市場庫存」起算還是從中性的 MARKET_I0 起算。
@@ -89,7 +114,7 @@ DEFAULT_PARAMS = {
     "supply_lookahead_days": 6,
     # 留幾格蓋動物建物。挑離 shed 最近的格子 —— 動物每天要餵、要收、要收肥，
     # 是全場最耗回合的東西，走路成本要壓到最低。
-    "n_structures": 6,
+    "n_structures": 9,
     # 養什麼。GOOSE：interval=1 每天產、EGG 的 glut 曲線是 log（`above_target=0.20`），
     # 賣 400 個單價還有 $40，是唯一能長期大量出貨的動物產品。
     "animal": "GOOSE",
@@ -121,6 +146,12 @@ DEFAULT_PARAMS = {
     # 剩幾天就無視價格清倉。期末只算現金，留在 shed 的東西一毛都不算。
     "liquidate_days_left": 2,
     "animal_reserve": 800,       # 買動物後要留多少現金
+    # 一天最多把現金的多少比例拿去買動物。
+    #
+    # 動物回本很慢（COW `first_yield_day: 8`、SHEEP 6、GOOSE 4），開局全押
+    # 在最慢的那種上，現金流最緊的前 8 天完全沒有回收。實測 day 0 買 4 隻牛
+    # 花掉 $1,600（起始現金的 57%），day 1 現金只剩 $270。
+    "animal_spend_frac": 0.20,
 
     # --- 擴張 ---
     # 土地本身不產出，是 farmer / hand 站上去做事才產出 —— 產能上限是 unit-turns 不是格數。
@@ -146,13 +177,19 @@ DEFAULT_PARAMS = {
 _PRI = {
     "FETCH_WHEAT": 0,           # 沒飼料就餵不了
     "FEED": 0,                  # 連續 2 天沒餵，動物跑掉，$300~$500 蒸發
-    "WATER": 1,                 # 連續 2 天沒澆，作物變雜草
-    "HARVEST": 2,               # max_held / max_yield 滿了就停產
-    "COLLECT_FERTILIZER": 3,    # 免費資源，錯過就是當天沒了
-    "CARE": 4,                  # 產出加成
-    "FETCH_ANIMAL": 5,          # 躺在 shed 裡的動物是 $300~$500 的死資本
-    "PLACE": 5,                 # 把動物放進空建物
-    "BUILD": 6,                 # 蓋建物（免費，只花一回合）
+    # 買了還沒安置的動物排在澆水前面。一隻 $300~$500 躺在倉庫，每多躺一天就
+    # 少一天的產出（COW 還要 8 天才第一次產奶）；一棵剛種下的胡蘿蔔晚一回合
+    # 澆水通常還死不了（連續 2 天沒澆才變雜草）。
+    #
+    # 實測：原本排在 WATER 之後，day 0 種下滿田作物、澆水任務吃光所有 unit，
+    # 兩隻牛在倉庫躺了 10 個回合沒人去放。
+    "FETCH_ANIMAL": 1,          # 去倉庫把動物拿起來
+    "PLACE": 1,                 # 放進空建物
+    "BUILD": 2,                 # 蓋建物（免費，只花一回合）。只在動物已到手時才發
+    "WATER": 3,                 # 連續 2 天沒澆，作物變雜草
+    "HARVEST": 4,               # max_held / max_yield 滿了就停產
+    "COLLECT_FERTILIZER": 5,    # 免費資源，錯過就是當天沒了
+    "CARE": 6,                  # 產出加成
     "FETCH_FERTILIZER": 7,
     "FERTILIZE": 7,
     "DIG": 8,                   # 清雜草
@@ -263,25 +300,45 @@ def crop_cycle(crop):
     return harvest_age + 1, units
 
 
+def partial_units(crop, days):
+    """只剩 `days` 天就種下去，這一格收得到幾個。
+
+    ⚠️ **不是「跑不完整輪就 0」。** 前一版是那樣寫的，結果 STRAWBERRY
+    （一輪 17 天）在 day 14 的產量估計從 0.235 一天之內掉到 0，之後再也
+    分配不到格子 —— 但草莓 day 14 種下去，day 24 / 26 / 28 還是收得到三次。
+    而草莓的城鎮需求正好在 day 15 之後才漲到 25/天（shop 陸續開出來），
+    等於需求最高的時候我們自己停產，期末價格衝到 1.79× base 卻沒貨可賣。
+    """
+    cd = CROPS[crop]
+    if days <= 0:
+        return 0
+    if cd["ongoing"]:
+        # 產出在 first_yield_day、+interval、…，最多 max_yield 次
+        n = 0
+        for k in range(cd["max_yield"]):
+            if cd["first_yield_day"] + k * cd["interval"] <= days:
+                n += 1
+            else:
+                break
+        return n
+    # one-time：能提早收，產量是那時累積到的量（過了 first_yield_day 才准收）
+    if days < cd["first_yield_day"]:
+        return 0
+    ws = (cd["max_yield_day"] + 1) // 2
+    age = min(days, crop_cycle(crop)[0] - 1)
+    return min(cd["max_yield"], 1 + max(0, age - ws + 1))
+
+
 def yield_per_tile_day(crop, days_left):
     """一格這種作物，從現在到賽季結束平均每天產幾個。
 
-    ⚠️ 不能用穩態速率。賽季只有 30 天，跑不完一輪就是 **0 產出** ——
-    STRAWBERRY 一輪要 17 天，day 13 之後種下去完全沒收成。
-    第一版用穩態算，STRAWBERRY 看起來 $28.2/格/天（排第二），
-    結果從 day 3 起吃掉 19 格裡的 17 格，比固定的 basket 差 $15,188。
-
-    照剩餘天數算完整輪數之後：
-
-        MELON $100 > CARROT $24.5 > WHEAT $20 > STRAWBERRY $16 = TOMATO $16
-
-    而且到賽季末，長週期作物會自動歸零、不再被分配到格子。
+    完整輪數 + 最後剩下的零頭。零頭不能算 0 —— 見 `partial_units`。
     """
     if days_left <= 0:
         return 0.0
-    days, units = crop_cycle(crop)
-    cycles = days_left // days
-    return (cycles * units) / days_left if cycles else 0.0
+    cycle_days, cycle_units = crop_cycle(crop)
+    full, rem = divmod(days_left, cycle_days)
+    return (full * cycle_units + partial_units(crop, rem)) / days_left
 
 
 def town_demand(obs, config):
@@ -310,6 +367,36 @@ def town_demand(obs, config):
     return demand
 
 
+def projected_demand(obs, config, item):
+    """這個產品**季末**的預期日需求，不是今天的。
+
+    ⚠️ 動物是一次性的長期投資，不能用當下需求決定要養幾隻。
+    COW 要 8 天才第一次產出 —— day 12 買的牛只剩 10 天生產期，
+    day 0 買有 22 天。但開局三種產物的需求都只有 1.0/天（shop 還沒開），
+    照當下需求算上限就是每種只准 1 隻，等需求漲上來才補，已經太晚。
+
+    shop 每 3 天開一間、抽取有放回、上限 8 個 instance，所以季末需求是
+    **算得出來的期望值**，跟這局抽到什麼無關：
+
+        EGG 13.0/天（2 間店）  MILK 19.0/天（3 間店）  WOOL 13.0/天（1 間店，單一產品 ×2）
+
+    取「已經看到的實際需求」和「期望值」的大的那個 —— 已經抽到很多間
+    YARN_STORE 的話實際值會超過期望值。
+    """
+    cfg = config or {}
+    turns_per_day = int(cfg.get("turnsPerDay", 24))
+    shop_ticks = turns_per_day / max(1, int(cfg.get("townShopSellInterval", 4)))
+    center = turns_per_day / max(1, int(cfg.get("townCenterSellInterval", 24)))
+    max_shops = 8
+
+    expect = center if item != "FERTILIZER" else 0.0
+    for shop, products in SHOPS.items():
+        if item in products:
+            mult = 2 if len(products) == 1 else 1
+            expect += max_shops * (1.0 / len(SHOPS)) * shop_ticks * mult
+    return max(expect, town_demand(obs, config)[item])
+
+
 @functools.lru_cache(maxsize=16384)
 def _avg_sell_price(crop, inv0, excess):
     """從**當下庫存** `inv0` 起，再倒 `excess` 個進市場的平均成交價。
@@ -324,7 +411,7 @@ def _avg_sell_price(crop, inv0, excess):
                for k in range(1, 9)) / 8.0
 
 
-def incoming_supply(obs, days):
+def incoming_supply(obs, days, only_player=None):
     """未來 `days` 天內，**雙方**的田和動物會產出多少（每個產品幾個）。
 
     市場是共用的，價格由兩邊產量相加決定。`obs["farms"]` 是 `shared: true`，
@@ -336,7 +423,10 @@ def incoming_supply(obs, days):
     """
     day = obs["day"]
     out = {item: 0.0 for item in PRODUCTS}
-    for farm in obs["farms"]:
+    farms = obs["farms"]
+    if only_player is not None:
+        farms = [farms[only_player]] if only_player < len(farms) else []
+    for farm in farms:
         for row in farm["tiles"]:
             for t in row:
                 if not isinstance(t, dict):
@@ -381,7 +471,8 @@ def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0):
 
 
 @functools.lru_cache(maxsize=8192)
-def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_share):
+def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_share,
+                 params_oversupply=1.5, per_crop=(), per_share=()):
     """逐格分配：每次把下一格給「邊際價值最高」的作物。
 
     `demand_key` 是 (作物, 該作物的日消耗量) 的 tuple，來自這一局實際開出來的
@@ -407,13 +498,33 @@ def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_sha
     # 單一作物的佔比上限。沒有這條的話貪婪配置會把所有格子押在同一種上：
     # 全 STRAWBERRY（效率低、要很多格才填滿需求）或全 MELON（單價高，
     # 但 first_yield_day = 10，前 10 天零收入，工資先把現金燒光，期末只剩 $3,400）。
-    cap = max(1, int(n_crop_tiles * max_share))
+    # `per_share` 可以逐作物覆寫這個比例 —— 見 `crop_share` 的說明。
+    share = dict(per_share)
+    cap = {c: max(1, int(n_crop_tiles * share.get(c, max_share))) for c in CROPS}
+
+    # 每個作物**另外**有一條「不要超過城鎮吸收量太多」的上限。
+    #
+    # 沒有這條的話，MELON 會一路配到 max_crop_share 的 40%（19 格配 7、
+    # 69 格配 27），因為它 base $250 全場最高、`sq` 曲線又要 excess 超過 200
+    # 才崩到底，邊際價值一直壓過別人。但 MELON **沒有任何 shop 要它**，
+    # 城鎮日需求整季固定 1.0，整季吸收量只有約 30 個 —— 實測種出 162 個、
+    # 期末價格 $16（base 250）。
+    #
+    # 真正的產能上限是城鎮吸收速率，不是「40% 的格子」這個跟商品無關的比例。
+    over_by_crop = dict(per_crop)
+    demand_cap = {}
+    for c in CROPS:
+        if ypd[c] <= 0:
+            demand_cap[c] = 0
+            continue
+        over = over_by_crop.get(c, params_oversupply)
+        demand_cap[c] = max(1, int(demand.get(c, 0.0) / ypd[c] * over + 0.5))
 
     def marginal(crop):
         """再給這個作物一格，那一格每天值多少錢。"""
-        if ypd[crop] <= 0:          # 剩下的天數跑不完一輪，種了也是白種
+        if ypd[crop] <= 0:          # 剩下的天數連一次收成都排不進去
             return 0.0
-        if alloc[crop] >= cap:
+        if alloc[crop] >= min(cap[crop], demand_cap[crop]):
             return 0.0
         produced = (alloc[crop] + 1) * ypd[crop] * days_left
         absorbed = demand.get(crop, 0.0) * days_left
@@ -457,7 +568,8 @@ def animal_rate(species, days_left):
 
 
 @functools.lru_cache(maxsize=4096)
-def _plan_animals(days_left, demand_key, inv_key, n_structures, max_share):
+def _plan_animals(days_left, demand_key, inv_key, n_structures, max_share,
+                  oversupply=1.5):
     """哪一格養哪一種。跟作物同一套：逐格給邊際價值最高的species。
 
     動物的需求結構跟作物一樣受 shop 抽籤影響，而且更極端 ——
@@ -470,8 +582,25 @@ def _plan_animals(days_left, demand_key, inv_key, n_structures, max_share):
     alloc = {s: 0 for s in ANIMALS}
     cap = max(1, int(n_structures * max_share))
 
+    # 跟作物同一條：一種動物的隻數不超過「填滿城鎮日需求所需隻數」的倍數。
+    #
+    # 沒有這條的話排序只看 `速率 × base`，SHEEP（WOOL $200 × 1.2 = $240/天）
+    # 永遠第一、COW 第二，兩種都用 PASTURE，於是 **6 個建物全蓋 PASTURE、
+    # 一個 COOP 都沒有**，GOOSE 一隻都輪不到。
+    #
+    # 但那個 $240 只有前幾天成立：WOOL 的 glut 曲線是 `sq`、`above_target=3.20`，
+    # 賣 65 個就到 $1。EGG 是 `log`、`above_target=0.20`，賣 400 個單價還有 $40 ——
+    # 帳面低但撐得住量。用 base 排序等於假設價格永遠不變。
+    demand_cap = {}
+    for s in ANIMALS:
+        if rate[s] <= 0:
+            demand_cap[s] = 0
+            continue
+        d = demand.get(ANIMALS[s]["product"], 0.0)
+        demand_cap[s] = max(1, int(d / rate[s] * oversupply + 0.5))
+
     def marginal(species):
-        if rate[species] <= 0 or alloc[species] >= cap:
+        if rate[species] <= 0 or alloc[species] >= min(cap, demand_cap[species]):
             return 0.0
         product = ANIMALS[species]["product"]
         produced = (alloc[species] + 1) * rate[species] * days_left
@@ -493,15 +622,48 @@ def _plan_animals(days_left, demand_key, inv_key, n_structures, max_share):
     return tuple(plan)
 
 
-def animal_for(x, y, struct_order, plan):
-    """這一格養哪一種。`struct_order` 是 `structure_tiles` 的固定順序。"""
-    if not plan:
-        return None
-    try:
-        idx = struct_order.index((x, y))
-    except ValueError:
-        return None
-    return plan[idx] if idx < len(plan) else None
+def structure_assignment(tiles, struct_order, plan):
+    """每個建物格該養哪一種，**扣掉已經蓋好 / 已經住了的**。
+
+    ⚠️ 不能單純用 `plan[索引]`。plan 每回合重排（按數量由多到少），同一格
+    今天是 COW 明天可能變 SHEEP —— 但**建物蓋下去就綁死**（COOP 放不了 COW，
+    `DIG` 也移不掉有動物的建物），所以 plan 一變，索引對應就全錯。
+
+    實測的後果：day 0 三種需求都只有 1/天，配了 1 牛 1 羊 1 鵝並照著蓋；
+    後來 MILK 需求漲到 19/天，plan 改成 COW 3，但**沒有空的 PASTURE 了**，
+    整季只有 1 隻牛，MILK 期末 1.72× base。
+
+    做法：先把已蓋好的格子按它的建物種類認領掉，剩下的缺口才分給空格。
+    這樣 plan 變動只影響「還沒蓋的格子」，已經蓋好的不會被錯配。
+    """
+    need = {}
+    for s in plan:
+        need[s] = need.get(s, 0) + 1
+
+    out, empty = {}, []
+    for (x, y) in struct_order:
+        tile = tiles[y][x]
+        if isinstance(tile, dict) and tile.get("kind") in ("COOP", "PASTURE"):
+            kind = tile["kind"]
+            # 已經住了的：就是牠自己。空建物：挑一個結構相符、還有缺口的。
+            if "animal" in tile:
+                got = tile["animal"]
+            else:
+                got = next(
+                    (s for s in sorted(need, key=lambda s: -need[s])
+                     if need[s] > 0 and ANIMALS[s]["structure"] == kind),
+                    species_for_structure(kind, None))
+            out[(x, y)] = got
+            if got in need:
+                need[got] -= 1
+        else:
+            empty.append((x, y))
+
+    # 剩下的缺口分給還沒蓋的格子
+    remaining = [s for s, n in sorted(need.items()) for _ in range(max(0, n))]
+    for pos, species in zip(empty, remaining):
+        out[pos] = species
+    return out
 
 
 def species_for_structure(kind, plan_species, plan=()):
@@ -527,6 +689,57 @@ def species_for_structure(kind, plan_species, plan=()):
     return max(fits, key=lambda s: plan.count(s))
 
 
+def _house_animals(tiles, board, struct_plan, held):
+    """把手上的動物配進空建物，回傳 `({(x,y): species}, {species: 沒配到的隻數})`。
+
+    ⚠️ PLACE / FETCH / BUILD 三個決定**必須用同一份配置**，否則會卡死。
+
+    舊版兩邊各算各的：
+      - `homeless`（決定要不要 BUILD）按**建物種類**算 —— COW 塞得進 PASTURE，
+        所以「有一個空 PASTURE」就當作那隻牛有家了，不蓋新的。
+      - `place_want`（決定要不要 FETCH）按 `struct_plan` 的**規劃species**算 ——
+        那個 PASTURE 規劃是 SHEEP，倉庫裡沒有 SHEEP，所以不派人去撿。
+
+    結果：倉庫躺著一隻牛、旁邊就是空的 PASTURE，兩邊都不動。實測 seed 0
+    對 ref-v4，day 0 買的第二隻 COW 在倉庫躺到 day 11 才被放出去（11 天），
+    day 1~11 全場只有 1 隻動物在產出。
+
+    做法：規劃species有貨的先配，剩下的空建物改配「結構相符且手上還有貨」的
+    —— **手上真的有什麼，優先於 plan 想要什麼**。plan 是「接下來該買哪一種」
+    的偏好，不該讓已經花錢買回來的動物繼續躺著。
+    """
+    empties = []
+    for y in range(board):
+        for x in range(board):
+            tile = tiles[y][x]
+            if (isinstance(tile, dict) and "animal" not in tile
+                    and tile.get("kind") in ("COOP", "PASTURE")):
+                empties.append((x, y, tile["kind"]))
+
+    avail = dict(held)
+    out = {}
+    # 第一輪：規劃species剛好有貨的先配，避免「牛先佔掉羊的欄」。
+    for (x, y, kind) in empties:
+        want = species_for_structure(kind, struct_plan.get((x, y)))
+        if want and avail.get(want, 0) > 0:
+            avail[want] -= 1
+            out[(x, y)] = want
+    # 第二輪：剩下的空建物改配手上還有貨、結構又相符的。
+    # 都沒貨就維持規劃species，讓 PLACE 掛著等買。
+    for (x, y, kind) in empties:
+        if (x, y) in out:
+            continue
+        got = next((s for s in sorted(ANIMALS)
+                    if ANIMALS[s]["structure"] == kind and avail.get(s, 0) > 0),
+                   None)
+        if got:
+            avail[got] -= 1
+            out[(x, y)] = got
+        else:
+            out[(x, y)] = species_for_structure(kind, struct_plan.get((x, y)))
+    return out, avail
+
+
 def _days_left(obs, config):
     cfg = config or {}
     turns_per_day = max(1, int(cfg.get("turnsPerDay", 24)))
@@ -547,19 +760,40 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
                         _inv_key(obs, sorted(CROPS), params["market_aware_pricing"],
                                  lookahead=params["supply_lookahead_days"]),
                         n_crop_tiles,
-                        params["fallback_crop"], params["max_crop_share"])
+                        params["fallback_crop"], params["max_crop_share"],
+                        params["oversupply_factor"],
+                        tuple(sorted(params["crop_oversupply"].items())),
+                        tuple(sorted(params.get("crop_share", {}).items())))
 
 
 def dynamic_animals(obs, config, params, n_structures):
-    """依這一局實際開出來的 shop 決定每格養什麼。"""
-    demand = town_demand(obs, config)
+    """依這一局實際開出來的 shop 決定每格養什麼。
+
+    ⚠️ 城鎮的吸收量是**整個市場**的，但我們只佔一半 —— 要先扣掉對手的產能。
+    不扣的話 `absorbed` 被高估一倍，12 隻以內完全不會出現超產，
+    `_avg_sell_price` 形同虛設，排序退化成純粹的 `速率 × base`：
+
+        SHEEP $215  >  COW $167  >  GOOSE $65
+
+    於是前兩名把建物吃光，**一隻鵝都不會養**。而 EGG 的 glut 曲線是 `log`
+    （賣 400 個單價還有 $40），WOOL 是 `sq`（賣 65 個到 $1）——
+    扣掉對手產能之後 WOOL 才會提早進入超產區、邊際值下滑。
+    """
     products = sorted({ANIMALS[s]["product"] for s in ANIMALS})
-    demand_key = tuple((p, round(demand[p], 3)) for p in products)
-    return _plan_animals(_days_left(obs, config), demand_key,
+    days_left = _days_left(obs, config)
+    opp = incoming_supply(obs, max(1, days_left), only_player=1 - obs["player"])
+    # 用季末的預期需求，不是今天的 —— 見 `projected_demand`
+    demand_key = tuple(
+        (p, round(max(0.0,
+                      projected_demand(obs, config, p)
+                      - opp.get(p, 0.0) / max(1, days_left)), 3))
+        for p in products)
+    return _plan_animals(days_left, demand_key,
                          _inv_key(obs, products, params["market_aware_pricing"],
                                   lookahead=params["supply_lookahead_days"]),
                          n_structures,
-                         params["max_animal_share"])
+                         params["max_animal_share"],
+                         params["oversupply_factor"])
 
 
 # --------------------------------------------------------------------------
@@ -625,7 +859,7 @@ def _tasks(
     board,
     params,
     struct_order,
-    animal_plan,
+    struct_plan,
     unit_inv,
     private,
     active_tiles=None,
@@ -637,6 +871,21 @@ def _tasks(
     """
     out = []
     struct_set = set(struct_order)
+
+    # **有動物在手上才蓋建物。**
+    #
+    # 建物種類蓋下去就綁死（COOP 放不了 COW，`DIG` 也移不掉有動物的建物），
+    # 所以蓋的那一刻就是決定的那一刻 —— 要把它推到資訊最多的時候。
+    # 之前是「計畫要幾隻就先蓋幾個」，用季末預期需求算的話 day 1 就把 12 個
+    # 全蓋成 PASTURE，整季一隻鵝都養不了（實測期末少 $8,786）。
+    #
+    # 改成：手上（shed + 各 unit 的 inventory）有動物、而且沒有結構相符的
+    # 空建物可以放，才蓋一個給牠。這樣不會蓋出填不滿的建物。
+    held = {}
+    for s in ANIMALS:
+        held[s] = private["shed"].get(s, 0) + sum(
+            inv.get(s, 0) for inv in unit_inv)
+    place_target, homeless = _house_animals(tiles, board, struct_plan, held)
     n_feed = n_fert = 0
     place_want = {}          # species -> 有幾個空建物在等它
 
@@ -648,8 +897,9 @@ def _tasks(
 
             if tile is None:
                 if (x, y) in struct_set:
-                    species = animal_for(x, y, struct_order, animal_plan)
-                    if species:
+                    species = struct_plan.get((x, y))
+                    if species and homeless.get(species, 0) > 0:
+                        homeless[species] -= 1
                         build_op = ("BUILD_COOP"
                                     if ANIMALS[species]["structure"] == "COOP"
                                     else "BUILD_PASTURE")
@@ -692,12 +942,9 @@ def _tasks(
 
             elif kind in ("COOP", "PASTURE"):
                 # 空建物：等一隻動物。tile 有 "animal" key 才代表住了東西。
-                # 建物蓋下去就固定了，COOP 放不了 COW —— 所以要挑結構相符的。
-                species = species_for_structure(
-                    kind,
-                    animal_for(x, y, struct_order, animal_plan),
-                    animal_plan,
-                )
+                # 要放哪一種由 `_house_animals` 決定（手上有貨的優先），
+                # 這樣 PLACE / FETCH / BUILD 三者用的是同一份配置。
+                species = place_target.get((x, y))
                 if species:
                     out.append((_PRI["PLACE"], "PLACE", x, y, species))
                     place_want[species] = place_want.get(species, 0) + 1
@@ -921,6 +1168,7 @@ def _market(
     tasks,
     board,
     active_crop_count=None,
+    animal_plan=(),
 ):
     orders = []
     shed = private["shed"]
@@ -1038,15 +1286,29 @@ def _market(
             shed_room -= n
 
     # 5) 買動物。最後才買 —— 一隻 $300~$500，是最容易把現金一次抽乾的支出。
+    #
+    #    看的是**計畫的缺口**，不是「有幾個空建物」。建物改成「動物到手才蓋」
+    #    之後，一開始根本沒有空建物，照舊邏輯就永遠不會買。
+    #
+    #    ⚠️ 一隻動物可能在四個地方：**倉庫 → 某個 unit 手上 → 建物裡（活著）**。
+    #    四個都要扣。只扣倉庫的話，正被搬運中的那幾隻是隱形的 ——
+    #    實測 day 11 hr 1 買 3 隻羊，hr 20 那 3 隻正拿在手上、倉庫顯示 0、
+    #    空羊圈還是 3 個 → 又買 3 隻。6 隻羊只放得下 3 隻，另外 3 隻
+    #    （$1,500）整季躺在倉庫，最後清倉時倒出去把 WOOL 砸到 $11。
     want = {}
-    for t in tasks:
-        if t[1] == "PLACE":
-            want[t[4]] = want.get(t[4], 0) + 1
-    budget = max(0.0, spendable - params["animal_reserve"])
+    for s in animal_plan:
+        want[s] = want.get(s, 0) + 1
+    alive = _count_animals(farm["tiles"])
+    # 兩道限制取小的：留底線之後的可支配額，以及當天現金的固定比例。
+    budget = min(
+        max(0.0, spendable - params["animal_reserve"]),
+        money * params["animal_spend_frac"],
+    )
     for species in sorted(want):
         cost = ANIMALS[species]["cost"]
+        in_hand = sum(inv.get(species, 0) for inv in private["inventories"])
         n_buy = min(
-            want[species] - shed.get(species, 0),
+            want[species] - alive.get(species, 0) - shed.get(species, 0) - in_hand,
             shed_room,
             int(budget // cost),
         )
@@ -1167,8 +1429,10 @@ def act(obs, config=None, params=None):
     unit_inv = [dict(inventories[i]) if i < len(inventories) else {}
                 for i in range(len(unit_pos))]
 
+    # 建物格的分配要扣掉「已經蓋好 / 已經住了的」，plan 變動才不會錯配。
+    struct_plan = structure_assignment(tiles, struct_order, animal_plan)
     tasks = _tasks(
-        tiles, day, board, p, struct_order, animal_plan,
+        tiles, day, board, p, struct_order, struct_plan,
         unit_inv, private, active_tiles=active_tiles,
     )
     assigned, _idle = _assign(
@@ -1202,6 +1466,7 @@ def act(obs, config=None, params=None):
             tasks,
             board,
             active_crop_count=active_crop_count,
+            animal_plan=animal_plan,
         ),
     }
 
@@ -1234,6 +1499,27 @@ def _log_sink():
     return _LOG_FH
 
 
+def _count_animals(tiles):
+    """活著的動物，按species數。"""
+    out = {}
+    for row in tiles:
+        for tile in row:
+            if isinstance(tile, dict) and "animal" in tile:
+                out[tile["animal"]] = out.get(tile["animal"], 0) + 1
+    return out
+
+
+def _count_empty_structs(tiles):
+    """蓋好但還沒放動物的建物，按 COOP / PASTURE 數。"""
+    out = {}
+    for row in tiles:
+        for tile in row:
+            if (isinstance(tile, dict) and "animal" not in tile
+                    and tile.get("kind") in ("COOP", "PASTURE")):
+                out[tile["kind"]] = out.get(tile["kind"], 0) + 1
+    return out
+
+
 def _log(obs, farm, private, tasks, assigned, action):
     import json
 
@@ -1255,6 +1541,10 @@ def _log(obs, farm, private, tasks, assigned, action):
         # 錢不夠的話引擎會靜默 return，成功和失敗看起來一樣。
         "quadrants": list(farm["unlocked_quadrants"]),
         "tiles_open": sum(1 for row in farm["tiles"] for t in row if t != "LOCKED"),
+        # 活著的動物、以及空著的建物。動物會餓死、建物種類蓋下去綁死，
+        # 光看買入訂單看不出實際養了什麼。
+        "animals": _count_animals(farm["tiles"]),
+        "empty_structs": _count_empty_structs(farm["tiles"]),
         "prices": dict(obs["market"]["prices"]),
         "seeds": {k: v for k, v in private["seeds"].items() if v},
         "shed": {k: v for k, v in private["shed"].items() if v},

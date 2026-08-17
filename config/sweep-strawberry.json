@@ -1,0 +1,182 @@
+{
+ "name": "strawberry-sweep",
+ "note": "草莓佔比掃描（crop_share.STRAWBERRY）。基底 = ref-v4 params。用法：python -m eval.runner --a ref-v4 --ladder config/sweep-strawberry.json",
+ "opponents": [
+  {
+   "name": "sb-40",
+   "entry": "agents.gen1:act",
+   "params": {
+    "basket": [
+     "MELON",
+     "CARROT",
+     "CARROT",
+     "WHEAT",
+     "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "max_crop_share": 0.4,
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 6,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12,
+    "tiles_per_unit": 4,
+    "water_on_demand": true,
+    "crop_share": {
+     "STRAWBERRY": 0.4
+    }
+   }
+  },
+  {
+   "name": "sb-50",
+   "entry": "agents.gen1:act",
+   "params": {
+    "basket": [
+     "MELON",
+     "CARROT",
+     "CARROT",
+     "WHEAT",
+     "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "max_crop_share": 0.4,
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 6,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12,
+    "tiles_per_unit": 4,
+    "water_on_demand": true,
+    "crop_share": {
+     "STRAWBERRY": 0.5
+    }
+   }
+  },
+  {
+   "name": "sb-60",
+   "entry": "agents.gen1:act",
+   "params": {
+    "basket": [
+     "MELON",
+     "CARROT",
+     "CARROT",
+     "WHEAT",
+     "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "max_crop_share": 0.4,
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 6,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12,
+    "tiles_per_unit": 4,
+    "water_on_demand": true,
+    "crop_share": {
+     "STRAWBERRY": 0.6
+    }
+   }
+  },
+  {
+   "name": "sb-70",
+   "entry": "agents.gen1:act",
+   "params": {
+    "basket": [
+     "MELON",
+     "CARROT",
+     "CARROT",
+     "WHEAT",
+     "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "max_crop_share": 0.4,
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 6,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12,
+    "tiles_per_unit": 4,
+    "water_on_demand": true,
+    "crop_share": {
+     "STRAWBERRY": 0.7
+    }
+   }
+  }
+ ]
+}
