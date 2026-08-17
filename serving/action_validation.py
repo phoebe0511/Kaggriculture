@@ -9,6 +9,9 @@ farmer / hands；市場訂單則依同一套 pricing 和 commit 函式逐筆模�
 from __future__ import annotations
 
 import copy
+import inspect
+import os
+import sys
 
 from kaggle_environments.envs.kaggriculture.kaggriculture import (
     ANIMALS,
@@ -26,6 +29,49 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 
 class IllegalAction(AssertionError):
     """Agent 產生引擎會靜默忽略的動作。"""
+
+
+# --- 引擎版本差異的適配 ------------------------------------------------------
+# 這個模組呼叫的是引擎的**私有函式**，簽名會隨版本改。實測：
+#
+#   1.29.3   _commit_unit(op, item, price, farm, private, market)
+#   1.32.7   _commit_unit(op, item, price, farm, private, market, shed_capacity=100)
+#
+# 2026-08-17 在 Kaggle notebook（1.29.3）實測，多傳一個參數的後果是
+# **每一回合都拋 TypeError**：
+#   TypeError: _commit_unit() takes 6 positional arguments but 7 were given
+#
+# 而 ladder 用哪個版本我們看不到。驗證器是除錯工具，它自己跟引擎對不上時
+# 賠掉整局是最差的結果 —— 所以按實際簽名決定要不要傳。
+_COMMIT_TAKES_CAPACITY = (
+    "shed_capacity" in inspect.signature(_commit_unit).parameters)
+_APPLY_TAKES_CAPACITY = (
+    "shed_capacity" in inspect.signature(_apply_unit_action).parameters)
+
+
+def _commit(op, item, price, farm, private, market, shed_capacity):
+    if _COMMIT_TAKES_CAPACITY:
+        return _commit_unit(op, item, price, farm, private, market, shed_capacity)
+    return _commit_unit(op, item, price, farm, private, market)
+
+
+def _apply(farm, private, idx, action, board_size, day, turns_per_day,
+           shed_capacity):
+    if _APPLY_TAKES_CAPACITY:
+        return _apply_unit_action(farm, private, idx, action, board_size, day,
+                                  turns_per_day, shed_capacity)
+    return _apply_unit_action(farm, private, idx, action, board_size, day,
+                              turns_per_day)
+
+
+_warned = set()
+
+
+def _warn_once(key, message):
+    if key in _warned:
+        return
+    _warned.add(key)
+    print(f"[action_validation] {message}", file=sys.stderr)
 
 
 def _cfg(config, key, default):
@@ -105,7 +151,7 @@ def _validate_units(obs, config, action, farm, private):
         before_farm = copy.deepcopy(farm)
         before_private = copy.deepcopy(private)
         try:
-            _apply_unit_action(
+            _apply(
                 farm,
                 private,
                 idx,
@@ -188,7 +234,7 @@ def _validate_market(obs, config, action, farm, private):
             price = _unit_price(op, item, market)
             if price is None:
                 raise IllegalAction(f"market[{order_idx}] 不支援的商品: {order!r}")
-            if not _commit_unit(
+            if not _commit(
                 op,
                 item,
                 price,

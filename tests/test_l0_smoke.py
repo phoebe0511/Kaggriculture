@@ -8,7 +8,10 @@ from pathlib import Path
 from kaggle_environments import make
 
 from main import agent as submission_agent
-from serving.action_validation import assert_observation_invariants
+from serving.action_validation import (
+    assert_legal_action,
+    assert_observation_invariants,
+)
 
 
 BASELINES = json.loads(
@@ -17,15 +20,25 @@ BASELINES = json.loads(
 
 
 class TimedAgent:
+    """計時 + 每回合驗證動作合法性。
+
+    ⚠️ 驗證**必須放在這裡，不能放在 `main.py`**。submission 帶著它有三個
+    問題（成本、比賽當下抓到也沒用、綁死引擎私有 API），理由寫在 `main.py`
+    底部。所以 L0 自己補上這一層 —— 開發時每回合都驗，送出去的不驗。
+
+    `durations` 只記 agent 本身的耗時，不含驗證 —— 那個數字要拿來跟
+    `actTimeout` 比，混進驗證時間就沒有意義了。
+    """
+
     def __init__(self):
         self.durations = []
 
     def __call__(self, obs, config):
         started = time.perf_counter()
-        try:
-            return submission_agent(obs, config)
-        finally:
-            self.durations.append(time.perf_counter() - started)
+        action = submission_agent(obs, config)
+        self.durations.append(time.perf_counter() - started)
+        assert_legal_action(obs, config, action)
+        return action
 
 
 def test_l0_fixed_seed_baselines_finish_under_one_minute():

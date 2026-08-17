@@ -57,9 +57,37 @@ LOG_LEVEL = int(os.environ.get("KAGGRI_LOG_LEVEL", "3"))
 LOG_FILE = os.environ.get("KAGGRI_LOG_FILE")
 
 #: 引擎一回合最多處理這麼多筆市場訂單，多的靜默丟棄（kaggriculture.json）。
+#: 這是 `maxMarketOrdersPerTurn` 的預設值，實際值以 configuration 為準。
 MAX_MARKET_ORDERS = 10
 
 DEFAULT_SHED_CAPACITY = 100
+
+
+def _fib(n):
+    """跟引擎同一個索引：_fib(0)=1, _fib(1)=1, _fib(2)=2, _fib(3)=3, _fib(4)=5…"""
+    a, b = 1, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+
+def hire_cost_for(n, config=None):
+    """這一局第 n+1 次雇工的實際價格。
+
+    引擎的 `_hire_cost(n)` 用的是**模組預設**倍率 `FARM_HAND_COST_MULT`，但
+    實際收費看的是 configuration 的 `farmHandCostMult`（`kaggriculture.py`
+    的 `hire_mult = get(env.configuration, "farmHandCostMult", ...)`）。
+    兩者不保證相同 —— 2026-08-17 實測本機模組是 1、Kaggle notebook 是 10。
+
+    config 有給就自己算 `mult × fib(n)`，跟引擎 `_hire_cost` 同一條公式
+    （倍率乘上 fib，序列由 `kaggriculture.json` 的欄位說明保證）。沒給才退回
+    引擎的函式 —— 不多傳第二個參數給私有函式，簽章改了才不會每回合 TypeError。
+    """
+    if config is not None:
+        mult = config.get("farmHandCostMult")
+        if mult is not None:
+            return float(mult) * _fib(n)
+    return float(hire_cost(n))
 
 DEFAULT_PARAMS = {
     # --- 土地用途 ---
@@ -79,9 +107,10 @@ DEFAULT_PARAMS = {
     # 單一作物最多佔多少格。防止貪婪配置全押同一種 —— 全 MELON 的話
     # 前 10 天零收入（first_yield_day=10），工資先把現金燒光。
     #
-    # 可以用 `crop_share`（sweep 專用，**故意不放進 DEFAULT_PARAMS**）逐作物覆寫
-    # 這個比例，例如 `{"STRAWBERRY": 0.6}`。不放進預設是因為它實測沒有效益，
-    # 而放進去就得依 `tests/test_frozen_reference.py` 的規則切一版新的 ref。
+    # `crop_share` 逐作物覆寫這個比例，沒列到的作物走 `max_crop_share`。
+    # ⚠️ 現值 `{"STRAWBERRY": 0.4}` 跟 `max_crop_share` 相同，**行為上等於沒設**。
+    # 它在 `DEFAULT_PARAMS` 裡就會讓 `test_frozen_reference.py` 紅 ——
+    # ref-v2 / ref-v4 沒有這個 key。要嘛切一版 ref-v5，要嘛移出預設只給 sweep 用。
     #
     # STRAWBERRY 的實測（2026-08-17，seed 0，ref-v4 對打自己）：一格每天只產
     # 0.24 個，城鎮日需求從 day 3 的 7.0 漲到 day 21 的 37.0，demand_cap 算出來
@@ -120,12 +149,21 @@ DEFAULT_PARAMS = {
     "animal": "GOOSE",
 
     # --- 人力 ---
-    # 整局的人數上限。
+    # ⚠️ 下面兩個是**上限**，不是目標。實際人數由 `planned_crew()` 用
+    # 「第 n+1 個人的價格 vs 他一天的淨產值」決定。
+    #
+    # 這兩個數字原本就是實際目標（`cap = min(max_hands, hands_per_quadrant ×
+    # 象限數)`，不看價格）。那在 `farmHandCostMult = 1` 時沒問題 —— 10 個人
+    # 一天 $143。但那是 configuration 欄位，比賽可以設別的值：2026-08-17 的
+    # Kaggle notebook 是 10，同樣 10 個人變成一天 $1,430，而 `startingMoney`
+    # 只有 $3,000。實測結果是現金被工資壓在底線下方、種子一顆都買不起，
+    # 27/30 天沒有種子可種，期末現金 $96（seed 41001，見 docs 的失敗記錄）。
     "max_hands": 12,
-    # 但一個象限（25 格）最多只補到 6 個。人力跟土地綁在一起 —— 買了第二塊地
-    # 才補更多，不然多出來的 hand 沒事做，工資還照付（fib 成本，第 13 個 $233）。
-    # 實際上限 = min(max_hands, hands_per_quadrant × 已解鎖象限數)
+    # 人力也跟土地綁：一個象限 25 格，人多了沒地方去。
     "hands_per_quadrant": 5,
+    # 邊際門檻的鬆緊。1.0 = 淨產值剛好打平就雇。估的產值只算作物、不含
+    # 動物和肥料，而且忽略走路時間，兩邊誤差方向相反，所以先用 1.0。
+    "hire_margin": 1.0,
     "hire_per_turn": 4,          # 每回合最多幾筆 HIRE，要留 order 額度給買賣
 
     # --- 物流 ---
@@ -1158,6 +1196,53 @@ def _seed_burn_per_day(basket, n_crop_tiles):
     return total
 
 
+def _hand_value_per_day(params, prices, days_left, tiles_per_hand):
+    """一個 hand 顧 `tiles_per_hand` 格作物，一天大約帶來多少淨收入。
+
+    毛收入 = Σ（作物佔比 × 每格每天產量 × 現在的市價），扣掉那幾格的種子日耗。
+
+    只算作物。動物由 `n_structures` 決定，不隨人數增減，所以不該計入
+    「多雇一個人多賺多少」。也沒扣走路時間 —— 實測 17.6% 的 unit 動作是移動，
+    所以這是**上界**，`hire_margin` 留著調。
+    """
+    basket = params.get("basket") or ()
+    if not basket or tiles_per_hand <= 0 or days_left <= 0:
+        return 0.0
+    gross = 0.0
+    for crop in set(basket):
+        share = basket.count(crop) / len(basket)
+        gross += share * yield_per_tile_day(crop, days_left) * prices.get(crop, 0)
+    return max(0.0, gross * tiles_per_hand
+               - _seed_burn_per_day(basket, tiles_per_hand))
+
+
+def planned_crew(farm, params, config, prices, days_left):
+    """這一局值得雇幾個 hand。
+
+    `max_hands` 和土地仍然是上限（人多了沒地方去），但真正的門檻是**邊際成本**：
+    第 n+1 個人要價 `hire_cost_for(n)`，低於他一天的淨產值才雇。
+    `hire_cost_for` 讀 configuration 的 `farmHandCostMult`，所以價格一改，
+    人數自己跟著動，不必重調常數。
+
+    `hire_cost` 隨 n 遞增（fib），所以第一個不划算的人之後都不划算，
+    往上數到停為止就是答案。
+    """
+    land_cap = min(params["max_hands"],
+                   params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
+    tiles_per_hand = params.get("tiles_per_unit")
+    if not tiles_per_hand:
+        # 沒設每人格數上限時，就用「實際開著的作物格平均分給上限人數」。
+        open_tiles = sum(1 for row in farm["tiles"] for t in row if t != "LOCKED")
+        tiles_per_hand = (max(0, open_tiles - params["n_structures"])
+                          / max(1, land_cap))
+    value = _hand_value_per_day(params, prices, days_left, float(tiles_per_hand))
+    threshold = value * params.get("hire_margin", 1.0)
+    n = 0
+    while n < land_cap and hire_cost_for(n, config) < threshold:
+        n += 1
+    return n
+
+
 def _market(
     obs,
     config,
@@ -1169,6 +1254,7 @@ def _market(
     board,
     active_crop_count=None,
     animal_plan=(),
+    crew_cap=None,
 ):
     orders = []
     shed = private["shed"]
@@ -1189,8 +1275,10 @@ def _market(
     #
     # 漏掉的是**種子的續買**：`seed_buffer: 6` 對五種作物各補到 6 顆，
     # 光 STRAWBERRY（$100）和 MELON（$80）開局就是 $1,080，而且收成後還會一直補。
-    cap = min(params["max_hands"],
-              params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
+    # `act()` 已經用同一個函式算過一次（要拿它決定種幾格），傳下來保證兩邊一致：
+    # 種的格數跟顧得動的人數必須是同一個假設，不然會種下去卻沒人澆。
+    cap = (crew_cap if crew_cap is not None
+           else planned_crew(farm, params, config, prices, _days_left(obs, config)))
     n_animals = sum(1 for t in tasks if t[1] in ("FEED", "CARE"))
     n_crop_tiles = (
         max(0, int(active_crop_count))
@@ -1200,11 +1288,12 @@ def _market(
     )
     seed_rate = _seed_burn_per_day(params["basket"], n_crop_tiles)
 
-    daily_ops = (
-        sum(hire_cost(i) for i in range(cap))          # 每天重雇一次
-        + n_animals * prices["WHEAT"]                  # 每隻動物每天 1 個 WHEAT
+    wage_ops = sum(hire_cost_for(i, config) for i in range(cap))   # 每天重雇一次
+    other_ops = (
+        n_animals * prices["WHEAT"]                    # 每隻動物每天 1 個 WHEAT
         + seed_rate                                    # 維持所有格子有東西種
     )
+    daily_ops = wage_ops + other_ops
     floor = daily_ops * params["cash_reserve_days"]
     spendable = max(0.0, money - floor)
 
@@ -1246,14 +1335,32 @@ def _market(
         spendable -= LAND_PRICES[n_extra]
 
     # 2) 雇工。hands 每天結束會全部消失，所以每天重新雇。
-    #    成本是 fib(當天已雇人數)：1, 1, 2, 3, 5, 8, 13, 21...
+    #    成本是 `farmHandCostMult × fib(當天已雇人數)`。倍率是 configuration
+    #    欄位，所以價格用 `hire_cost_for` 算，不要寫死。
+    #
+    #    人數上限 `cap` 已經過了「邊際成本 vs 邊際產值」的檢查（`planned_crew`），
+    #    這裡只再擋「現在付不付得出來」。
+    #
+    #    引擎的 `_do_hire` 開頭就是 `if farm["money"] < cost: return`，所以付不起
+    #    本來就雇不到、不會透支 —— 這道檢查省的是**訂單額度**：一回合只處理
+    #    `maxMarketOrdersPerTurn` 筆，送出注定不成交的 HIRE 等於排擠掉買種子和賣貨。
+    #
+    #    試過再往上加「先留 N 天飼料+種子錢」，N = 0 和 N = 1 在 12 seed ×
+    #    兩種工資下每一局分數完全相同 —— 那道閘從來沒咬到過，所以不留。
+    #
+    #    價格從 `hires_today` 起算，不是每回合從 0 重來：fib 的索引是
+    #    「當天已經雇了幾個」，跨回合累加（引擎的 `_do_hire`）。
     #
     #    分批雇：一回合最多送 hire_per_turn 筆，不夠就下個回合繼續。
-    #    `hire_per_turn` 存在是因為市場訂單一回合上限 10 筆，
-    #    全部拿去雇工就沒額度買種子、買動物、賣貨了。
+    hires_today = int(farm.get("hires_today", 0))
+    hire_budget = money
     want = cap - len(farm["hands"])
-    for _ in range(max(0, min(want, params["hire_per_turn"]))):
+    for k in range(max(0, min(want, params["hire_per_turn"]))):
+        cost = hire_cost_for(hires_today + k, config)
+        if cost > hire_budget:
+            break
         orders.append(["HIRE"])
+        hire_budget -= cost
 
     # 3) 補種子。種子不佔 shed，PLANT 直接從 private["seeds"] 扣。
     #    只買買得起的數量 —— 引擎對付不起的訂單是靜默失敗，全額送出的話
@@ -1359,15 +1466,21 @@ def _market(
         "floor": round(floor),
         "spendable": round(spendable),
         "daily_ops": round(daily_ops),
+        "wage_ops": round(wage_ops),
         "seed_rate": round(seed_rate),
         "hire_cap": cap,
+        "hire_mult": (config or {}).get("farmHandCostMult"),
         "shed_room": shed_room,
         "active_crop_count": n_crop_tiles,
         "active_utilization": round(active_utilization, 3),
         "plant_backlog": plant_backlog,
         "fourth_ready": fourth_ready,
     }
-    return orders[:MAX_MARKET_ORDERS]
+    # 一回合處理幾筆訂單也是 configuration 欄位，多的靜默丟棄。
+    max_orders = MAX_MARKET_ORDERS
+    if config is not None:
+        max_orders = int(config.get("maxMarketOrdersPerTurn", MAX_MARKET_ORDERS))
+    return orders[:max(1, max_orders)]
 
 
 # --------------------------------------------------------------------------
@@ -1391,13 +1504,19 @@ def act(obs, config=None, params=None):
 
     struct_order = structure_tiles(board, p["n_structures"])
 
+    # 雇幾個人由價格決定，種幾格用同一個數字 —— 種下去沒人澆水就是白種。
+    #
+    # 拆開試過（田用土地上限、只有雇人看價格），兩種工資下都比較差
+    # （12 seed 平均，mult=1：83,376 對 84,281；mult=10：57,674 對 61,403）。
+    #
+    # ⚠️ 這裡的 `p["basket"]` 還是靜態預設值：`dynamic_basket` 要先知道有幾格
+    # 可種，而那又要先知道雇幾個人。用預設 basket 估產值當作打破循環的起點。
+    planned_hands = planned_crew(
+        farm, p, config, obs["market"]["prices"], _days_left(obs, config))
+
     tiles_per_unit = p.get("tiles_per_unit")
     active_tiles = None
     if tiles_per_unit is not None:
-        planned_hands = min(
-            p["max_hands"],
-            p["hands_per_quadrant"] * len(farm["unlocked_quadrants"]),
-        )
         active_tiles = active_crop_tiles(
             tiles,
             board,
@@ -1467,6 +1586,7 @@ def act(obs, config=None, params=None):
             board,
             active_crop_count=active_crop_count,
             animal_plan=animal_plan,
+            crew_cap=planned_hands,
         ),
     }
 
