@@ -7,9 +7,11 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import CROPS
 from agents.gen0 import (
     DEFAULT_PARAMS,
     _animal_housing_room,
+    _crop_can_harvest,
     _inventory_qty,
     _needs_water,
     _pickup_quantities,
+    _tasks,
     _wheat_reserve,
     active_crop_tiles,
     planned_crew,
@@ -17,6 +19,7 @@ from agents.gen0 import (
     species_for_structure,
     structure_tiles,
 )
+from agents.gen1 import DEFAULT_PARAMS as GEN1_PARAMS
 
 
 def _plant(crop, planted_day, *, consecutive=0, yield_units=1, fertilized=-1):
@@ -153,3 +156,39 @@ def test_animal_purchase_respects_committed_housing_capacity():
     shed = {"GOOSE": 1}
     inventories = [{"SHEEP": 2}, {}]
     assert _animal_housing_room(DEFAULT_PARAMS, alive, shed, inventories) == 4
+
+
+def test_crop_must_have_time_to_reach_first_harvest():
+    assert _crop_can_harvest("CARROT", days_left=3)
+    assert not _crop_can_harvest("CARROT", days_left=2)
+    assert not _crop_can_harvest("WHEAT", days_left=2)
+    assert not _crop_can_harvest("TOMATO", days_left=8)
+    assert not _crop_can_harvest("STRAWBERRY", days_left=10)
+
+
+def test_gen1_reserves_twelve_animal_structures():
+    assert GEN1_PARAMS["n_structures"] == 12
+
+
+def test_reserved_structure_weed_is_dug_for_waiting_animal():
+    board = 10
+    tiles = [[None] * board for _ in range(board)]
+    target = structure_tiles(board, 1)[0]
+    tiles[target[1]][target[0]] = {"kind": "WEED"}
+    params = dict(DEFAULT_PARAMS)
+    params["basket"] = ("CARROT",)
+
+    tasks = _tasks(
+        tiles,
+        day=5,
+        board=board,
+        params=params,
+        struct_order=(target,),
+        struct_plan={target: "SHEEP"},
+        unit_inv=[{}],
+        private={"shed": {"SHEEP": 1}},
+        active_tiles=set(),
+        days_left=10,
+    )
+
+    assert any(task[1:4] == ("DIG", target[0], target[1]) for task in tasks)

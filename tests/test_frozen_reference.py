@@ -62,9 +62,17 @@ def test_ref_v4_stays_frozen_at_its_original_params():
     assert "hire_margin" not in spec["params"]
 
 
-def test_ref_v5_expands_every_gen1_default():
+def test_ref_v5_stays_frozen_at_its_original_params():
+    path = REPO_ROOT / "config/opponents/ref-v5.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "40173b7129f738d8f4c7fa1c4bdd7dc82cc956e3a2ef7fa7b6118ff49854b4eb"
+    assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["n_structures"] == 9
+
+
+def test_ref_v6_expands_every_gen1_default():
     spec = json.loads(
-        (REPO_ROOT / "config/opponents/ref-v5.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "config/opponents/ref-v6.json").read_text(encoding="utf-8")
     )
     assert spec["engine_version"] == "1.32.7"
     expected = dict(GEN0_PARAMS)

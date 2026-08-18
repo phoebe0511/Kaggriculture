@@ -6,16 +6,16 @@
   "created": "2026-08-18",
   "seeds": {
     "41001": {
-      "cash_agent": 105886.0,
-      "cash_opponent": 3372.0
+      "cash_agent": 118800.0,
+      "cash_opponent": 3550.0
     },
     "41002": {
-      "cash_agent": 101796.0,
-      "cash_opponent": 3520.0
+      "cash_agent": 113906.0,
+      "cash_opponent": 3509.0
     },
     "41003": {
-      "cash_agent": 80608.0,
-      "cash_opponent": 3730.0
+      "cash_agent": 85753.0,
+      "cash_opponent": 3686.0
     }
   }
 }

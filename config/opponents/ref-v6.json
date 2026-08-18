@@ -1,0 +1,59 @@
+{
+  "name": "ref-v6",
+  "entry": "agents.gen1:act",
+  "engine_version": "1.32.7",
+  "source_base_commit": "a3e87c1",
+  "post_base_fixes": [
+    "reserve twelve animal structures",
+    "dig weeds that block a waiting animal's reserved structure",
+    "stop planting and buying seeds that cannot reach their first harvest"
+  ],
+  "frozen": "2026-08-18",
+  "note": "凍結的 Gen1 十二格畜舍參考對手；完整展開 Gen0 與 Gen1 參數，後續版本禁止修改，請新增下一版。",
+  "params": {
+    "basket": [
+      "MELON",
+      "CARROT",
+      "CARROT",
+      "WHEAT",
+      "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "crop_share": {
+      "STRAWBERRY": 0.4
+    },
+    "max_crop_share": 0.4,
+    "oversupply_factor": 1.5,
+    "crop_oversupply": {
+      "MELON": 4.0
+    },
+    "max_animal_share": 0.5,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 6,
+    "n_structures": 12,
+    "animal": "GOOSE",
+    "max_hands": 12,
+    "hands_per_quadrant": 5,
+    "hire_margin": 1.0,
+    "hire_per_turn": 4,
+    "wheat_carry": 4,
+    "wheat_reserve_days": 4,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 3,
+    "sell_chunk": 40,
+    "sell_price_frac": 0.55,
+    "shed_force_sell": 0.75,
+    "liquidate_days_left": 2,
+    "animal_reserve": 800,
+    "animal_spend_frac": 0.2,
+    "buy_land": true,
+    "land_first_min_day": 3,
+    "max_quadrants": 3,
+    "land_min_days_left": 12,
+    "tiles_per_unit": 4,
+    "water_on_demand": true
+  }
+}

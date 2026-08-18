@@ -379,6 +379,11 @@ def yield_per_tile_day(crop, days_left):
     return (full * cycle_units + partial_units(crop, rem)) / days_left
 
 
+def _crop_can_harvest(crop, days_left):
+    """現在種下後，是否至少還留有一個回合可收成並賣出。"""
+    return days_left > CROPS[crop]["first_yield_day"]
+
+
 def town_demand(obs, config):
     """城鎮每天吃掉每項產品幾個。
 
@@ -917,6 +922,7 @@ def _tasks(
     unit_inv,
     private,
     active_tiles=None,
+    days_left=None,
 ):
     """掃出全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
 
@@ -959,7 +965,9 @@ def _tasks(
                                     else "BUILD_PASTURE")
                         out.append((_PRI["BUILD"], build_op, x, y, species))
                 elif active_tiles is None or (x, y) in active_tiles:
-                    out.append((_PRI["PLANT"], "PLANT", x, y, None))
+                    crop = crop_for(x, y, params["basket"])
+                    if days_left is None or _crop_can_harvest(crop, days_left):
+                        out.append((_PRI["PLANT"], "PLANT", x, y, None))
                 continue
 
             if not isinstance(tile, dict):
@@ -967,7 +975,11 @@ def _tasks(
             kind = tile.get("kind")
 
             if kind == "WEED":
-                if active_tiles is None or (x, y) in active_tiles:
+                structure_blocked = (
+                    (x, y) in struct_set
+                    and any(n > 0 for n in homeless.values())
+                )
+                if structure_blocked or active_tiles is None or (x, y) in active_tiles:
                     out.append((_PRI["DIG"], "DIG", x, y, None))
 
             elif kind == "PLANT":
@@ -1414,6 +1426,8 @@ def _market(
     basket = params["basket"]
     if not liquidating:
         for crop in sorted(set(basket)):
+            if not _crop_can_harvest(crop, days_left):
+                continue
             share = basket.count(crop) / len(basket)
             per_day = n_crop_tiles * share / crop_cycle(crop)[0]
             target = max(1, int(per_day * params["seed_buffer_days"] + 0.5))
@@ -1610,7 +1624,7 @@ def act(obs, config=None, params=None):
     struct_plan = structure_assignment(tiles, struct_order, animal_plan)
     tasks = _tasks(
         tiles, day, board, p, struct_order, struct_plan,
-        unit_inv, private, active_tiles=active_tiles,
+        unit_inv, private, active_tiles=active_tiles, days_left=days_left,
     )
 
     # 最後一天的 EOD 產出沒有下一個市場回合可賣。此時 WATER / CARE /

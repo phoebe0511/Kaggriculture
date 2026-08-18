@@ -11,6 +11,11 @@ from agents.gen0 import act as gen0_act
 
 DEFAULT_PARAMS = {
     "max_quadrants": 3,
+    # 94144753 的敗局中，第 10 隻動物買回後沒有可用建物，整季躺在 shed。
+    # 12 格對舊 9 格直接互打 30 個 paired seeds（60 局）為 52 勝 8 負，
+    # 平均現金 +$7,001；對 starter 的平均現金也從 $96,500 升到 $103,561。
+    # 多出的格子仍由 dynamic_animals 按商店需求分配，不固定押單一物種。
+    "n_structures": 12,
     # active tiles 上限 = (1 + planned_hands) × 這個值。12 個 hand + farmer
     # → 4 給出 52 格（三地可種 69 格）。
     #
