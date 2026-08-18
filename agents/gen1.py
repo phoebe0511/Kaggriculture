@@ -15,6 +15,8 @@ DEFAULT_PARAMS = {
     # 12 格對舊 9 格直接互打 30 個 paired seeds（60 局）為 52 勝 8 負，
     # 平均現金 +$7,001；對 starter 的平均現金也從 $96,500 升到 $103,561。
     # 多出的格子仍由 dynamic_animals 按商店需求分配，不固定押單一物種。
+    # 第二輪在新分派器上重掃 13/14/15 格，各 24 局都由 12 格明顯勝出
+    # （平均 +$6,264 / +$11,997 / +$12,771），所以仍維持 12。
     "n_structures": 12,
     # 不能因為對手先養了某物種就把整個市場讓出去。只折算一半對手產能，
     # 並確保自己至少規劃城鎮需求的 40%。
@@ -33,6 +35,17 @@ DEFAULT_PARAMS = {
     # 保留可切換的「先賣再消費」流程，但 30-seed 消融平均少 $1,064，且土地
     # 仍是 day 9 才買，正式版維持原訂單順序。提早擴張要另做精準條件，不全域搬單。
     "sell_before_spending": False,
+    # 肥料本身可以賣錢：只在 ongoing 作物未來三天的額外產品價值至少等於
+    # 肥料售價時才施用；one-time 通常只提早滿產、不增加整輪總量，預設不施。
+    # 對 ref-v7 的 60 局為 46 勝 14 負，平均現金 +$3,311。
+    "fertilizer_roi_margin": 1.0,
+    "fertilize_one_time": False,
+    # 最後兩天不再維持完整 12 人：剩 2 天上限 10，最後一天上限 8。
+    # 從剩 6 天就降到 11 的版本反而少賺；保守版與 ROI 合併後再多約 $150。
+    "late_crew_caps": ((2, 10), (1, 8)),
+    # 同一優先序的任務做全域最短配對，不用固定象限。直接對打舊的逐筆貪婪
+    # 分派器 60 局為 58 勝 2 負，平均現金 +$8,686，買地時點完全相同。
+    "optimal_assignment": True,
     # active tiles 上限 = (1 + planned_hands) × 這個值。12 個 hand + farmer
     # → 4 給出 52 格（三地可種 69 格）。
     #
@@ -46,10 +59,16 @@ DEFAULT_PARAMS = {
 }
 
 
+def _resolve_params(params=None):
+    overrides = dict(params or {})
+    replace = bool(overrides.get("_replace_defaults", False))
+    resolved = {} if replace else dict(DEFAULT_PARAMS)
+    resolved.update(overrides)
+    return resolved
+
+
 def act(obs, config=None, params=None):
-    resolved = dict(DEFAULT_PARAMS)
-    if params:
-        resolved.update(params)
+    resolved = _resolve_params(params)
     return gen0_act(obs, config, resolved)
 
 

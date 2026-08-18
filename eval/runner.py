@@ -131,9 +131,14 @@ def build_agent(spec):
     module = __import__(module_path, fromlist=[attr])
     fn = getattr(module, attr)
 
-    params = spec.get("params") or {}
+    params = dict(spec.get("params") or {})
     if not params:
         return fn
+
+    # 凍結對手的 params 是完整快照，不能再和「今天的」Gen1 defaults 合併。
+    # 否則新增一個預設開關後，ref-v7 會在沒有修改 JSON 的情況下偷偷變成新版本。
+    if spec.get("frozen"):
+        params["_replace_defaults"] = True
 
     def agent(obs, config):
         return fn(obs, config, params)

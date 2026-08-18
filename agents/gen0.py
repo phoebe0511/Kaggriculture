@@ -915,7 +915,15 @@ def dynamic_animals(obs, config, params, n_structures):
 # 任務掃描
 # --------------------------------------------------------------------------
 
-def _fertilize_worth_it(tile, cd, day):
+def _fertilize_worth_it(
+    tile,
+    cd,
+    day,
+    *,
+    prices=None,
+    days_left=None,
+    params=None,
+):
     """施肥只在「加成真的會生效的窗口」內才划算。
 
     肥效涵蓋 day / day+1 / day+2 三天（`fertilized_until_day = day + 2`）。
@@ -925,6 +933,41 @@ def _fertilize_worth_it(tile, cd, day):
     if tile.get("fertilized_until_day", -1) >= day:
         return False
     age = day - tile["planted_day"]
+
+    # 沒開 ROI 模式時維持凍結參考策略的原行為。這讓新規則可以直接與
+    # ref-v7 配對消融，不會偷偷改變基準線。
+    roi_margin = (params or {}).get("fertilizer_roi_margin")
+    if roi_margin is not None:
+        if not cd["ongoing"] and not (params or {}).get(
+            "fertilize_one_time", False
+        ):
+            return False
+
+        # 肥效包含今天起三次 EOD。ongoing 每命中一次產出事件，就比單純澆水
+        # 多一個產品；最後一天的 EOD 已經沒有下一輪市場可賣，因此不計價。
+        useful_days = max(0, min(3, int(days_left or 0) - 1))
+        bonus_units = 0
+        if cd["ongoing"]:
+            bonus_units = sum(
+                _ongoing_produces_tonight(tile, cd, day + offset)
+                for offset in range(useful_days)
+            )
+        elif useful_days > 0:
+            # one-time 的施肥主要是提早達到 max_yield，不保證增加整輪總產量；
+            # 預設關閉。實驗若開啟，只保守估一個可多出的產品。
+            window_start = (cd["max_yield_day"] + 1) // 2
+            if window_start - 1 <= age <= cd["max_yield_day"]:
+                bonus_units = min(
+                    1, max(0, cd["max_yield"] - tile.get("yield_units", 0))
+                )
+        if bonus_units <= 0 or not prices:
+            return False
+
+        crop = tile.get("crop")
+        crop_value = float(prices.get(crop, 0))
+        fertilizer_value = float(prices.get("FERTILIZER", 0))
+        return bonus_units * crop_value >= fertilizer_value * float(roi_margin)
+
     if cd["ongoing"]:
         return age >= cd["first_yield_day"] - 1
     window_start = (cd["max_yield_day"] + 1) // 2
@@ -942,7 +985,13 @@ def _ongoing_produces_tonight(tile, cd, day):
     return offset // cd["interval"] + 1 <= cd["max_yield"]
 
 
-def _needs_water(tile, cd, day, on_demand=False):
+def _needs_water(
+    tile,
+    cd,
+    day,
+    on_demand=False,
+    produce_without_fertilizer=False,
+):
     """今天是否必須澆水。
 
     legacy 模式維持 Gen0 原行為。on-demand 模式只在以下情況澆：新種當天／
@@ -963,8 +1012,11 @@ def _needs_water(tile, cd, day, on_demand=False):
             and tile.get("yield_units", 0) < cd["max_yield"]
         )
     return (
-        tile.get("fertilized_until_day", -1) >= day
-        and _ongoing_produces_tonight(tile, cd, day)
+        _ongoing_produces_tonight(tile, cd, day)
+        and (
+            produce_without_fertilizer
+            or tile.get("fertilized_until_day", -1) >= day
+        )
     )
 
 
@@ -995,6 +1047,7 @@ def _tasks(
     private,
     active_tiles=None,
     days_left=None,
+    prices=None,
 ):
     """掃出全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
 
@@ -1058,12 +1111,25 @@ def _tasks(
                 cd = CROPS[tile["crop"]]
                 age = day - tile["planted_day"]
                 if _needs_water(
-                    tile, cd, day, on_demand=params.get("water_on_demand", False)
+                    tile,
+                    cd,
+                    day,
+                    on_demand=params.get("water_on_demand", False),
+                    produce_without_fertilizer=(
+                        params.get("fertilizer_roi_margin") is not None
+                    ),
                 ):
                     out.append((_PRI["WATER"], "WATER", x, y, None))
                 elif tile["yield_units"] > 0 and age >= cd["first_yield_day"]:
                     out.append((_PRI["HARVEST"], "HARVEST", x, y, None))
-                if params["use_fertilizer"] and _fertilize_worth_it(tile, cd, day):
+                if params["use_fertilizer"] and _fertilize_worth_it(
+                    tile,
+                    cd,
+                    day,
+                    prices=prices,
+                    days_left=days_left,
+                    params=params,
+                ):
                     out.append((_PRI["FERTILIZE"], "FERTILIZE", x, y, None))
                     n_fert += 1
 
@@ -1132,6 +1198,68 @@ def _requirement(op, arg):
     return _NEEDS_ITEM.get(op)
 
 
+def _minimum_cost_assignment(costs):
+    """矩形成本矩陣的最小成本一對一配對（rows <= columns）。
+
+    使用 Hungarian algorithm 的 shortest augmenting path 版本；只處理小矩陣
+    （最多 13 個 unit），避免 submission 依賴 scipy。回傳 ``row -> column``。
+    """
+    n = len(costs)
+    if n == 0:
+        return []
+    m = len(costs[0])
+    if m < n or any(len(row) != m for row in costs):
+        raise ValueError("assignment matrix must be rectangular with rows <= columns")
+
+    u = [0] * (n + 1)
+    v = [0] * (m + 1)
+    p = [0] * (m + 1)
+    way = [0] * (m + 1)
+    inf = 10 ** 12
+
+    for i in range(1, n + 1):
+        p[0] = i
+        minv = [inf] * (m + 1)
+        used = [False] * (m + 1)
+        j0 = 0
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            delta = inf
+            j1 = 0
+            for j in range(1, m + 1):
+                if used[j]:
+                    continue
+                cur = costs[i0 - 1][j - 1] - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur
+                    way[j] = j0
+                if minv[j] < delta:
+                    delta = minv[j]
+                    j1 = j
+            for j in range(m + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+            if j0 == 0:
+                break
+
+    result = [-1] * n
+    for j in range(1, m + 1):
+        if p[j] != 0:
+            result[p[j] - 1] = j - 1
+    return result
+
+
 def _assign(
     unit_pos,
     unit_inv,
@@ -1180,6 +1308,47 @@ def _assign(
 
     def flush():
         """把同一優先序的任務按「離最近的閒置 unit 多遠」排序後再指派。"""
+        # PLANT 還有「同一作物的請求數不能超過種子數」這個跨任務限制，維持
+        # 原本逐筆計數。其他任務可一次做全域最短配對，避免近任務先搶走某個
+        # unit，迫使下一個任務跨半張圖找人。
+        if (
+            params.get("optimal_assignment", False)
+            and tier
+            and all(task[1] != "PLANT" for task in tier)
+            and free
+        ):
+            units = sorted(free)
+            real_tasks = list(tier)
+            idle_cost = 10_000
+            impossible_cost = 1_000_000
+            matrix = []
+            for unit in units:
+                row = []
+                for task in real_tasks:
+                    _pri, op, _tx, _ty, arg = task
+                    need = _requirement(op, arg)
+                    row.append(
+                        assignment_cost(unit, task)
+                        if need is None or unit_inv[unit].get(need, 0) > 0
+                        else impossible_cost
+                    )
+                row.extend([idle_cost] * len(units))
+                matrix.append(row)
+
+            for row_index, col_index in enumerate(
+                _minimum_cost_assignment(matrix)
+            ):
+                if col_index < 0 or col_index >= len(real_tasks):
+                    continue
+                if matrix[row_index][col_index] >= idle_cost:
+                    continue
+                _pri, op, tx, ty, arg = real_tasks[col_index]
+                unit = units[row_index]
+                free.discard(unit)
+                assigned[unit] = (op, tx, ty, arg)
+            tier.clear()
+            return
+
         tier.sort(key=lambda t: (
             min((assignment_cost(u, t) for u in free), default=0), t[3], t[2]
         ))
@@ -1363,6 +1532,19 @@ def _hand_value_per_day(params, prices, days_left, tiles_per_hand):
                - _seed_burn_per_day(basket, tiles_per_hand))
 
 
+def _late_crew_limit(land_cap, days_left, params):
+    """依剩餘天數套用可選的季末人力上限。
+
+    格式是 ``((最多剩餘天數, 人數上限), ...)``；同時命中多條時取最小值，
+    因此設定順序不影響結果，也能直接寫進 JSON 設定檔。
+    """
+    cap = int(land_cap)
+    for threshold, wanted in (params.get("late_crew_caps") or ()):
+        if days_left <= int(threshold):
+            cap = min(cap, max(0, int(wanted)))
+    return cap
+
+
 def planned_crew(farm, params, config, prices, days_left):
     """這一局值得雇幾個 hand。
 
@@ -1380,6 +1562,7 @@ def planned_crew(farm, params, config, prices, days_left):
     """
     land_cap = min(params["max_hands"],
                    params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
+    land_cap = _late_crew_limit(land_cap, days_left, params)
     hire_mult = float((config or {}).get("farmHandCostMult", 1))
     if hire_mult <= 1:
         return land_cap
@@ -1677,9 +1860,10 @@ def _market(
 # --------------------------------------------------------------------------
 
 def act(obs, config=None, params=None):
-    p = dict(DEFAULT_PARAMS)
-    if params:
-        p.update(params)
+    overrides = dict(params or {})
+    replace_defaults = bool(overrides.pop("_replace_defaults", False))
+    p = {} if replace_defaults else dict(DEFAULT_PARAMS)
+    p.update(overrides)
     shed_capacity = DEFAULT_SHED_CAPACITY
     if config is not None:
         shed_capacity = int(config.get("shedCapacity", DEFAULT_SHED_CAPACITY))
@@ -1744,6 +1928,7 @@ def act(obs, config=None, params=None):
     tasks = _tasks(
         tiles, day, board, p, struct_order, struct_plan,
         unit_inv, private, active_tiles=active_tiles, days_left=days_left,
+        prices=obs["market"]["prices"],
     )
 
     # 最後一天的 EOD 產出沒有下一個市場回合可賣。此時 WATER / CARE /

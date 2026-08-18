@@ -37,14 +37,15 @@ kaggle competitions submit kaggriculture \
 
 ## 目前基準（engine 1.32.7）
 
-`main.py` = Gen1 三地版，`tiles_per_unit=4`（active tiles 上限 52 格 / 可種 69 格）。
+`main.py` = Gen1 第二輪三地版：`tiles_per_unit=4`、12 格動物建物，加入肥料
+貨幣 ROI、季末 10→8 人縮編，以及同優先序任務的全域最短配對。
 
-- 30 個固定 seeds 對 starter：平均現金 `$86,273`
-  （t3 版 `$83,667`、Gen0/ref-v2 `$77,336`）。
-- 80 局 paired 對 ref-v3（t3 凍結量尺），兩組獨立種子：
-  `32/8` + `29/11` = 勝率 `76.3%`，CI 都不跨 50%。
-- 動作分布：MOVE `61.2%`／生產 `28.4%`／PASS `10.4%`；全季作物覆蓋 `56.7%`。
-- 條件式四地版保留在 `config/opponents/gen1-four-land.json`，尚未升主版。
+- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$111,348`。
+- 對第一輪凍結版 ref-v7：60 局全勝，平均 `$88,616 vs $77,217`，差 `+$11,398`。
+- 凍結 ladder：10 個對手 × 5 paired seeds，共 100 局全勝。
+- 動作分布：MOVE `56.6%`／生產 `27.0%`／PASS `16.2%`；全季管理中土地 `60.3%`。
+- 條件式四地版仍保留在 `config/opponents/gen1-four-land.json`；13～15 格動物建物
+  重掃也全數輸給 12 格，因此都沒有升主版。
 
 ⚠️ **已知的失敗模式：品項過度集中。** 格數變多會讓 `_plan_basket` /
 `_plan_animals` 把配額集中到少數品項，同時放掉當局稀缺、單價高的品項。

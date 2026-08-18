@@ -79,9 +79,17 @@ def test_ref_v6_stays_frozen_at_its_original_params():
     assert spec["params"]["strawberry_high_demand"] is None
 
 
-def test_ref_v7_expands_every_gen1_default():
+def test_ref_v7_stays_frozen_at_its_original_params():
+    path = REPO_ROOT / "config/opponents/ref-v7.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "25e83d0142559a87faf368faaa0eb51872418ffd0de4f878cf29afb1d6075aba"
+    assert spec["engine_version"] == "1.32.7"
+    assert "optimal_assignment" not in spec["params"]
+
+
+def test_ref_v8_expands_every_gen1_default():
     spec = json.loads(
-        (REPO_ROOT / "config/opponents/ref-v7.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "config/opponents/ref-v8.json").read_text(encoding="utf-8")
     )
     assert spec["engine_version"] == "1.32.7"
     expected = dict(GEN0_PARAMS)
