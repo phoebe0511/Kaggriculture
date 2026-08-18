@@ -16,6 +16,23 @@ DEFAULT_PARAMS = {
     # 平均現金 +$7,001；對 starter 的平均現金也從 $96,500 升到 $103,561。
     # 多出的格子仍由 dynamic_animals 按商店需求分配，不固定押單一物種。
     "n_structures": 12,
+    # 不能因為對手先養了某物種就把整個市場讓出去。只折算一半對手產能，
+    # 並確保自己至少規劃城鎮需求的 40%。
+    "opponent_supply_weight": 0.5,
+    "animal_demand_share_floor": 0.4,
+    # 作物規劃除了城鎮需求，也先替預計動物數的一半準備 WHEAT；動物進場後
+    # 按實際數量提高，避免一面低價賣作物、一面高價買回大量飼料。
+    "feed_crop_bootstrap_share": 0.5,
+    "feed_crop_demand_weight": 1.0,
+    # 兩間以上會消耗草莓的商店出現時，才把草莓上限由 40% 放到 70%。
+    "strawberry_high_demand": 13,
+    "strawberry_high_share": 0.7,
+    # 前半季商店資訊不足，最多先鎖兩格 COOP；其餘位置等更多商店公開。
+    "early_coop_limit": 2,
+    "early_coop_until_day": 15,
+    # 保留可切換的「先賣再消費」流程，但 30-seed 消融平均少 $1,064，且土地
+    # 仍是 day 9 才買，正式版維持原訂單順序。提早擴張要另做精準條件，不全域搬單。
+    "sell_before_spending": False,
     # active tiles 上限 = (1 + planned_hands) × 這個值。12 個 hand + farmer
     # → 4 給出 52 格（三地可種 69 格）。
     #

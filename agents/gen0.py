@@ -798,6 +798,13 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
     都沒抽到）。固定的 basket 在那種局裡就是拿胡蘿蔔砸自己的盤。
     """
     demand = town_demand(obs, config)
+    farm = obs["farms"][obs["player"]]
+    committed = sum(_count_animals(farm["tiles"]).values())
+    for species in ANIMALS:
+        committed += obs["private"]["shed"].get(species, 0)
+        committed += _inventory_qty(obs["private"]["inventories"], species)
+    demand = _add_internal_feed_demand(demand, committed, params)
+    crop_shares = _adaptive_crop_shares(demand, params)
     demand_key = tuple(sorted((c, round(demand[c], 3)) for c in CROPS))
     return _plan_basket(_days_left(obs, config), demand_key,
                         _inv_key(obs, sorted(CROPS), params["market_aware_pricing"],
@@ -806,7 +813,65 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
                         params["fallback_crop"], params["max_crop_share"],
                         params["oversupply_factor"],
                         tuple(sorted(params["crop_oversupply"].items())),
-                        tuple(sorted(params.get("crop_share", {}).items())))
+                        tuple(sorted(crop_shares.items())))
+
+
+def _add_internal_feed_demand(demand, committed_animals, params):
+    """把自家動物的飼料需求加進 WHEAT 作物配置。
+
+    開局還沒有動物在盤面上，但慢週期動物很快就會買進；用預定建物的一部分
+    當 bootstrap，避免等動物全到齊才開始種飼料。舊凍結版本沒有新參數時權重
+    為 0，行為維持不變。
+    """
+    out = dict(demand)
+    weight = float(params.get("feed_crop_demand_weight", 0.0))
+    bootstrap = (
+        float(params.get("n_structures", 0))
+        * float(params.get("feed_crop_bootstrap_share", 0.0))
+    )
+    target_animals = max(float(committed_animals), bootstrap)
+    out["WHEAT"] = out.get("WHEAT", 0.0) + target_animals * weight
+    return out
+
+
+def _adaptive_crop_shares(demand, params):
+    """只在已觀察到高草莓需求時放寬單一作物上限。"""
+    shares = dict(params.get("crop_share", {}))
+    threshold = params.get("strawberry_high_demand")
+    if threshold is not None and demand.get("STRAWBERRY", 0.0) >= threshold:
+        shares["STRAWBERRY"] = max(
+            shares.get("STRAWBERRY", params.get("max_crop_share", 1.0)),
+            float(params.get("strawberry_high_share", 0.7)),
+        )
+    return shares
+
+
+def _effective_competitive_demand(projected, opponent_rate, params):
+    """扣掉對手產能後仍保留最低市場占有率，不把整個品項直接讓掉。"""
+    weight = float(params.get("opponent_supply_weight", 1.0))
+    floor_share = float(params.get("animal_demand_share_floor", 0.0))
+    return max(
+        0.0,
+        projected * floor_share,
+        projected - opponent_rate * weight,
+    )
+
+
+def _limit_early_coops(plan, day, params):
+    """商店尚未充分公開前，限制不可逆的 COOP 數並保留空槽。"""
+    limit = params.get("early_coop_limit")
+    until = params.get("early_coop_until_day")
+    if limit is None or until is None or day >= int(until):
+        return tuple(plan)
+    left = max(0, int(limit))
+    out = []
+    for species in plan:
+        if ANIMALS[species]["structure"] == "COOP":
+            if left <= 0:
+                continue
+            left -= 1
+        out.append(species)
+    return tuple(out)
 
 
 def dynamic_animals(obs, config, params, n_structures):
@@ -827,16 +892,23 @@ def dynamic_animals(obs, config, params, n_structures):
     opp = incoming_supply(obs, max(1, days_left), only_player=1 - obs["player"])
     # 用季末的預期需求，不是今天的 —— 見 `projected_demand`
     demand_key = tuple(
-        (p, round(max(0.0,
-                      projected_demand(obs, config, p)
-                      - opp.get(p, 0.0) / max(1, days_left)), 3))
-        for p in products)
-    return _plan_animals(days_left, demand_key,
-                         _inv_key(obs, products, params["market_aware_pricing"],
-                                  lookahead=params["supply_lookahead_days"]),
-                         n_structures,
-                         params["max_animal_share"],
-                         params["oversupply_factor"])
+        (p, round(_effective_competitive_demand(
+            projected_demand(obs, config, p),
+            opp.get(p, 0.0) / max(1, days_left),
+            params,
+        ), 3))
+        for p in products
+    )
+    plan = _plan_animals(
+        days_left,
+        demand_key,
+        _inv_key(obs, products, params["market_aware_pricing"],
+                 lookahead=params["supply_lookahead_days"]),
+        n_structures,
+        params["max_animal_share"],
+        params["oversupply_factor"],
+    )
+    return _limit_early_coops(plan, obs["day"], params)
 
 
 # --------------------------------------------------------------------------
@@ -1206,6 +1278,54 @@ def _sell_qty(item, inv, avail, floor_price):
     return lo
 
 
+def _planned_sale_orders(
+    obs,
+    private,
+    params,
+    shed_capacity,
+    picked_from_shed,
+    wheat_reserve,
+    liquidating,
+):
+    """規劃本回合可成交的賣單，並估算可供後續訂單使用的現金。
+
+    市場訂單依陣列順序成交；SELL 放在 BUY_LAND 前面時，賣貨所得可立即支付
+    土地。估價按引擎逐單位更新庫存的方式計算。對手可能在同回合改變共享市場，
+    所以這只是保守決策用的預估，實際成交仍交由引擎檢查。
+    """
+    shed = private["shed"]
+    inv = obs["market"]["inventory"]
+    carried = sum(sum(items.values()) for items in private["inventories"])
+    tonight = sum(shed.values()) + carried
+    forced = (
+        tonight > shed_capacity
+        or sum(shed.values()) >= params["shed_force_sell"] * shed_capacity
+        or liquidating
+    )
+
+    orders = []
+    projected_revenue = 0.0
+    sold = 0
+    for item in PRODUCTS:
+        n = max(0, shed.get(item, 0) - picked_from_shed.get(item, 0))
+        if item == "WHEAT":
+            n -= wheat_reserve
+        n = min(n, params["sell_chunk"])
+        if n <= 0:
+            continue
+        if not forced:
+            floor_price = params["sell_price_frac"] * MARKET_PARAMS[item]["base"]
+            n = _sell_qty(item, inv[item], n, floor_price)
+        if n <= 0:
+            continue
+        orders.append(["SELL", item, n])
+        projected_revenue += sum(
+            market_price(item, inv[item] + i) for i in range(n)
+        )
+        sold += n
+    return orders, projected_revenue, sold
+
+
 def _seed_burn_per_day(basket, n_crop_tiles):
     """維持所有格子都有東西種，每天要花多少錢買種子。
 
@@ -1353,6 +1473,26 @@ def _market(
     floor = daily_ops * params["cash_reserve_days"]
     spendable = max(0.0, money - floor)
 
+    # SELL 排在消費前面時，同一回合的收入可以支付土地與生產資源。舊凍結版本
+    # 沒有開這個參數，仍維持原本「先消費、最後賣貨」的訂單順序。
+    reserve = _wheat_reserve(n_animals, days_left, params)
+    sale_orders, projected_sale_revenue, projected_sold = _planned_sale_orders(
+        obs,
+        private,
+        params,
+        shed_capacity,
+        picked_from_shed,
+        reserve,
+        liquidating,
+    )
+    sell_first = bool(params.get("sell_before_spending", False))
+    projected_money = money
+    if sell_first:
+        orders.extend(sale_orders)
+        projected_money += projected_sale_revenue
+        spendable += projected_sale_revenue
+        shed_room = min(shed_capacity, shed_room + projected_sold)
+
     # 1) 買地。價格 1000/2000/4000，順序由引擎的 `LAND_ORDER` 決定。
     #
     #    **排在所有採購最前面**，連雇工都在它後面。它是唯一「錯過就沒了」的
@@ -1409,7 +1549,7 @@ def _market(
     #
     #    分批雇：一回合最多送 hire_per_turn 筆，不夠就下個回合繼續。
     hires_today = int(farm.get("hires_today", 0))
-    hire_budget = money
+    hire_budget = projected_money
     want = cap - len(farm["hands"])
     for k in range(max(0, min(want, params["hire_per_turn"]))):
         cost = hire_cost_for(hires_today + k, config)
@@ -1442,7 +1582,6 @@ def _market(
 
     # 4) 補飼料。斷糧 = 動物 2 天後跑掉，$300~$500 蒸發，所以排在買動物前面。
     #    WHEAT 的 glut 曲線最平（賣 400 個單價還有 $20），買回來也不會太貴。
-    reserve = _wheat_reserve(n_animals, days_left, params)
     total_wheat = shed.get("WHEAT", 0) + _inventory_qty(
         private["inventories"], "WHEAT"
     )
@@ -1474,7 +1613,7 @@ def _market(
     # 兩道限制取小的：留底線之後的可支配額，以及當天現金的固定比例。
     budget = min(
         max(0.0, spendable - params["animal_reserve"]),
-        money * params["animal_spend_frac"],
+        projected_money * params["animal_spend_frac"],
     )
     if not liquidating:
         for species in sorted(want):
@@ -1507,28 +1646,8 @@ def _market(
     #       不是 shed 現在幾成滿。
     #    b) **賽季最後幾天**。`reward = farm["money"]`，留在 shed 裡的東西
     #       一毛都不算，價格再爛也比作廢好。
-    inv = obs["market"]["inventory"]
-    carried = sum(sum(i.values()) for i in private["inventories"])
-    tonight = sum(shed.values()) + carried
-    forced = (tonight > shed_capacity
-              or sum(shed.values()) >= params["shed_force_sell"] * shed_capacity
-              or liquidating)
-    for item in PRODUCTS:
-        # unit 動作先執行；同回合 PICKUP 的數量不能再送 SELL，否則市場會在
-        # 前幾個成交後因庫存不足而中止後續訂單。
-        n = max(0, shed.get(item, 0) - picked_from_shed.get(item, 0))
-        if item == "WHEAT":
-            n -= reserve          # 飼料不賣
-        n = min(n, params["sell_chunk"])
-        if n <= 0:
-            continue
-        if forced:
-            orders.append(["SELL", item, n])
-            continue
-        floor_price = params["sell_price_frac"] * MARKET_PARAMS[item]["base"]
-        qty = _sell_qty(item, inv[item], n, floor_price)
-        if qty > 0:
-            orders.append(["SELL", item, qty])
+    if not sell_first:
+        orders.extend(sale_orders)
 
     # 給 log 用：買地買不成的時候要分得出是「錢不夠」還是「條件沒過」。
     _market.last_budget = {

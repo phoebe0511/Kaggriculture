@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from collections import Counter
 
-from kaggle_environments.envs.kaggriculture.kaggriculture import CROPS
+from kaggle_environments.envs.kaggriculture.kaggriculture import (
+    CROPS,
+    MARKET_PARAMS,
+)
 
 from agents.gen0 import (
     DEFAULT_PARAMS,
+    _add_internal_feed_demand,
     _animal_housing_room,
+    _adaptive_crop_shares,
     _crop_can_harvest,
+    _effective_competitive_demand,
     _inventory_qty,
+    _limit_early_coops,
     _needs_water,
     _pickup_quantities,
+    _planned_sale_orders,
     _tasks,
     _wheat_reserve,
     active_crop_tiles,
@@ -168,6 +176,79 @@ def test_crop_must_have_time_to_reach_first_harvest():
 
 def test_gen1_reserves_twelve_animal_structures():
     assert GEN1_PARAMS["n_structures"] == 12
+
+
+def test_opponent_supply_keeps_a_minimum_competitive_market_share():
+    params = {
+        "opponent_supply_weight": 0.5,
+        "animal_demand_share_floor": 0.4,
+    }
+
+    assert _effective_competitive_demand(25, 15, params) == 17.5
+    assert _effective_competitive_demand(10, 30, params) == 4
+    assert _effective_competitive_demand(10, 30, {}) == 0
+
+
+def test_internal_feed_demand_bootstraps_wheat_before_animals_arrive():
+    params = {
+        "n_structures": 12,
+        "feed_crop_bootstrap_share": 0.5,
+        "feed_crop_demand_weight": 1.0,
+    }
+
+    assert _add_internal_feed_demand({"WHEAT": 7}, 2, params)["WHEAT"] == 13
+    assert _add_internal_feed_demand({"WHEAT": 7}, 10, params)["WHEAT"] == 17
+    assert _add_internal_feed_demand({"WHEAT": 7}, 10, {})["WHEAT"] == 7
+
+
+def test_strawberry_share_only_expands_when_observed_demand_is_high():
+    params = {
+        "crop_share": {"STRAWBERRY": 0.4},
+        "strawberry_high_demand": 13,
+        "strawberry_high_share": 0.7,
+    }
+
+    assert _adaptive_crop_shares({"STRAWBERRY": 12}, params)["STRAWBERRY"] == 0.4
+    assert _adaptive_crop_shares({"STRAWBERRY": 13}, params)["STRAWBERRY"] == 0.7
+
+
+def test_early_coop_limit_leaves_irreversible_slots_uncommitted():
+    plan = ("GOOSE",) * 6 + ("COW",) * 3 + ("SHEEP",) * 3
+    params = {"early_coop_limit": 2, "early_coop_until_day": 15}
+
+    limited = _limit_early_coops(plan, day=12, params=params)
+    assert limited.count("GOOSE") == 2
+    assert len(limited) == 8
+    assert _limit_early_coops(plan, day=15, params=params) == plan
+
+
+def test_planned_sales_keep_wheat_reserve_and_expose_same_turn_cash():
+    inventory = {item: MARKET_PARAMS[item]["I0"] for item in MARKET_PARAMS}
+    obs = {"market": {"inventory": inventory}}
+    private = {
+        "shed": {"WHEAT": 10, "STRAWBERRY": 5},
+        "inventories": [{}],
+    }
+    params = {
+        "sell_chunk": 40,
+        "sell_price_frac": 0.55,
+        "shed_force_sell": 0.75,
+    }
+
+    orders, revenue, sold = _planned_sale_orders(
+        obs,
+        private,
+        params,
+        shed_capacity=100,
+        picked_from_shed={},
+        wheat_reserve=6,
+        liquidating=False,
+    )
+
+    assert ["SELL", "WHEAT", 4] in orders
+    assert ["SELL", "STRAWBERRY", 5] in orders
+    assert sold == 9
+    assert revenue > 0
 
 
 def test_reserved_structure_weed_is_dug_for_waiting_animal():

@@ -70,9 +70,18 @@ def test_ref_v5_stays_frozen_at_its_original_params():
     assert spec["params"]["n_structures"] == 9
 
 
-def test_ref_v6_expands_every_gen1_default():
+def test_ref_v6_stays_frozen_at_its_original_params():
+    path = REPO_ROOT / "config/opponents/ref-v6.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "4be39da54229ccb7c365bf814667ced2208e2413b61666242c192ebb09a7b721"
+    assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["n_structures"] == 12
+    assert spec["params"]["strawberry_high_demand"] is None
+
+
+def test_ref_v7_expands_every_gen1_default():
     spec = json.loads(
-        (REPO_ROOT / "config/opponents/ref-v6.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "config/opponents/ref-v7.json").read_text(encoding="utf-8")
     )
     assert spec["engine_version"] == "1.32.7"
     expected = dict(GEN0_PARAMS)
