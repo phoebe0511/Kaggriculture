@@ -3,19 +3,19 @@
   "engine": "kaggle-environments==1.32.7",
   "agent": "main:agent",
   "opponent": "starter",
-  "created": "2026-08-16",
+  "created": "2026-08-18",
   "seeds": {
     "41001": {
-      "cash_agent": 97478.0,
-      "cash_opponent": 4073.0
+      "cash_agent": 105886.0,
+      "cash_opponent": 3372.0
     },
     "41002": {
-      "cash_agent": 93645.0,
-      "cash_opponent": 3552.0
+      "cash_agent": 101796.0,
+      "cash_opponent": 3520.0
     },
     "41003": {
-      "cash_agent": 56535.0,
-      "cash_opponent": 3551.0
+      "cash_agent": 80608.0,
+      "cash_opponent": 3730.0
     }
   }
 }

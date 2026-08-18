@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import tarfile
 
-from serving.build_submission import FILES, SIZE_LIMIT, build
+from serving.build_submission import FILES, SIZE_LIMIT, build, copy_files
 
 
 def test_submission_archive_is_small_and_self_contained(tmp_path):
-    output = build(tmp_path / "submission.tar.gz")
+    dest = copy_files(tmp_path / "submission")
+    output = build(tmp_path / "submission.tar.gz", dest=dest)
     assert output.stat().st_size < SIZE_LIMIT
 
     with tarfile.open(output, "r:gz") as archive:

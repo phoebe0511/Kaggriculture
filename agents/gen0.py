@@ -891,6 +891,22 @@ def _needs_water(tile, cd, day, on_demand=False):
     )
 
 
+def _inventory_qty(inventories, item):
+    """所有 unit 身上 `item` 的實際總數量，不是攜帶者人數。"""
+    return sum(inv.get(item, 0) for inv in inventories)
+
+
+def _pickup_quantities(unit_actions):
+    """本回合 unit 動作會先於市場執行，統計即將從 shed 取走的數量。"""
+    picked = {}
+    for action in unit_actions:
+        if not action or action[0] != "PICKUP" or len(action) < 3:
+            continue
+        item, qty = action[1], int(action[2])
+        picked[item] = picked.get(item, 0) + qty
+    return picked
+
+
 def _tasks(
     tiles,
     day,
@@ -994,8 +1010,7 @@ def _tasks(
     shed = private["shed"]
 
     def _short(wanted, item):
-        carrying = sum(1 for inv in unit_inv if inv.get(item, 0) > 0)
-        return max(0, wanted - carrying)
+        return max(0, wanted - _inventory_qty(unit_inv, item))
 
     # 每種動物各自算：shed 裡有幾隻、有幾個相符的空建物在等。
     for species, wanted in sorted(place_want.items()):
@@ -1219,8 +1234,12 @@ def _hand_value_per_day(params, prices, days_left, tiles_per_hand):
 def planned_crew(farm, params, config, prices, days_left):
     """這一局值得雇幾個 hand。
 
-    `max_hands` 和土地仍然是上限（人多了沒地方去），但真正的門檻是**邊際成本**：
-    第 n+1 個人要價 `hire_cost_for(n)`，低於他一天的淨產值才雇。
+    `max_hands` 和土地仍然是上限（人多了沒地方去）。比賽的標準工資倍率為 1，
+    此時整隊工資相對產值很低，而且季末仍有收割、動物與清倉工作，所以直接維持
+    土地人力上限；不能只因為已經來不及種下一輪作物，就在最後一天降成 0 人。
+
+    工資倍率高於 1 時才用**邊際成本**：第 n+1 個人要價
+    `hire_cost_for(n)`，低於他一天的淨作物產值才雇，避免高工資設定抽乾現金。
     `hire_cost_for` 讀 configuration 的 `farmHandCostMult`，所以價格一改，
     人數自己跟著動，不必重調常數。
 
@@ -1229,6 +1248,10 @@ def planned_crew(farm, params, config, prices, days_left):
     """
     land_cap = min(params["max_hands"],
                    params["hands_per_quadrant"] * len(farm["unlocked_quadrants"]))
+    hire_mult = float((config or {}).get("farmHandCostMult", 1))
+    if hire_mult <= 1:
+        return land_cap
+
     tiles_per_hand = params.get("tiles_per_unit")
     if not tiles_per_hand:
         # 沒設每人格數上限時，就用「實際開著的作物格平均分給上限人數」。
@@ -1243,6 +1266,23 @@ def planned_crew(farm, params, config, prices, days_left):
     return n
 
 
+def _wheat_reserve(n_animals, days_left, params):
+    """還有實際用途的飼料量；進入清算期後不再為賽季外囤貨。"""
+    if days_left <= params["liquidate_days_left"]:
+        return 0
+    reserve_days = min(params["wheat_reserve_days"], max(0, days_left - 1))
+    return n_animals * reserve_days
+
+
+def _animal_housing_room(params, alive, shed, inventories):
+    """尚能安置幾隻動物，包含已買但仍在 shed / unit 手上的承諾。"""
+    committed = sum(alive.values())
+    for species in ANIMALS:
+        committed += shed.get(species, 0)
+        committed += _inventory_qty(inventories, species)
+    return max(0, params["n_structures"] - committed)
+
+
 def _market(
     obs,
     config,
@@ -1255,6 +1295,7 @@ def _market(
     active_crop_count=None,
     animal_plan=(),
     crew_cap=None,
+    unit_actions=(),
 ):
     orders = []
     shed = private["shed"]
@@ -1264,6 +1305,9 @@ def _market(
     shed_room = max(0, shed_capacity - sum(shed.values()))
     prices = obs["market"]["prices"]
     money = farm["money"]
+    days_left = _days_left(obs, config)
+    liquidating = days_left <= params["liquidate_days_left"]
+    picked_from_shed = _pickup_quantities(unit_actions)
 
     # --- 現金底線 -----------------------------------------------------------
     # 底線 = **維持現有規模的日常開銷 × cash_reserve_days**。
@@ -1278,8 +1322,8 @@ def _market(
     # `act()` 已經用同一個函式算過一次（要拿它決定種幾格），傳下來保證兩邊一致：
     # 種的格數跟顧得動的人數必須是同一個假設，不然會種下去卻沒人澆。
     cap = (crew_cap if crew_cap is not None
-           else planned_crew(farm, params, config, prices, _days_left(obs, config)))
-    n_animals = sum(1 for t in tasks if t[1] in ("FEED", "CARE"))
+           else planned_crew(farm, params, config, prices, days_left))
+    n_animals = sum(_count_animals(farm["tiles"]).values())
     n_crop_tiles = (
         max(0, int(active_crop_count))
         if active_crop_count is not None
@@ -1368,24 +1412,28 @@ def _market(
     #    存量目標照**種植速率**算，不是每種都固定 6 顆。長週期的作物種得慢，
     #    囤 6 顆 STRAWBERRY（$600）是把現金鎖死在倉庫裡好幾天。
     basket = params["basket"]
-    for crop in sorted(set(basket)):
-        share = basket.count(crop) / len(basket)
-        per_day = n_crop_tiles * share / crop_cycle(crop)[0]
-        target = max(1, int(per_day * params["seed_buffer_days"] + 0.5))
-        need = target - private["seeds"].get(crop, 0)
-        if need <= 0:
-            continue
-        price = CROPS[crop]["seed"]
-        n = min(need, int(spendable // price))
-        if n > 0:
-            orders.append(["BUY_SEED", crop, n])
-            spendable -= n * price
+    if not liquidating:
+        for crop in sorted(set(basket)):
+            share = basket.count(crop) / len(basket)
+            per_day = n_crop_tiles * share / crop_cycle(crop)[0]
+            target = max(1, int(per_day * params["seed_buffer_days"] + 0.5))
+            need = target - private["seeds"].get(crop, 0)
+            if need <= 0:
+                continue
+            price = CROPS[crop]["seed"]
+            n = min(need, int(spendable // price))
+            if n > 0:
+                orders.append(["BUY_SEED", crop, n])
+                spendable -= n * price
 
     # 4) 補飼料。斷糧 = 動物 2 天後跑掉，$300~$500 蒸發，所以排在買動物前面。
     #    WHEAT 的 glut 曲線最平（賣 400 個單價還有 $20），買回來也不會太貴。
-    reserve = n_animals * params["wheat_reserve_days"]
-    if reserve and shed.get("WHEAT", 0) < reserve // 2:
-        need = reserve - shed.get("WHEAT", 0)
+    reserve = _wheat_reserve(n_animals, days_left, params)
+    total_wheat = shed.get("WHEAT", 0) + _inventory_qty(
+        private["inventories"], "WHEAT"
+    )
+    if reserve and total_wheat < reserve // 2:
+        need = reserve - total_wheat
         n = min(need, shed_room, int(spendable // max(1, prices["WHEAT"])))
         if n > 0:
             orders.append(["BUY_PRODUCT", "WHEAT", n])
@@ -1406,23 +1454,29 @@ def _market(
     for s in animal_plan:
         want[s] = want.get(s, 0) + 1
     alive = _count_animals(farm["tiles"])
+    housing_room = _animal_housing_room(
+        params, alive, shed, private["inventories"]
+    )
     # 兩道限制取小的：留底線之後的可支配額，以及當天現金的固定比例。
     budget = min(
         max(0.0, spendable - params["animal_reserve"]),
         money * params["animal_spend_frac"],
     )
-    for species in sorted(want):
-        cost = ANIMALS[species]["cost"]
-        in_hand = sum(inv.get(species, 0) for inv in private["inventories"])
-        n_buy = min(
-            want[species] - alive.get(species, 0) - shed.get(species, 0) - in_hand,
-            shed_room,
-            int(budget // cost),
-        )
-        if n_buy > 0:
-            orders.append(["BUY_ANIMAL", species, n_buy])
-            budget -= n_buy * cost
-            shed_room -= n_buy
+    if not liquidating:
+        for species in sorted(want):
+            cost = ANIMALS[species]["cost"]
+            in_hand = _inventory_qty(private["inventories"], species)
+            n_buy = min(
+                want[species] - alive.get(species, 0) - shed.get(species, 0) - in_hand,
+                housing_room,
+                shed_room,
+                int(budget // cost),
+            )
+            if n_buy > 0:
+                orders.append(["BUY_ANIMAL", species, n_buy])
+                budget -= n_buy * cost
+                housing_room -= n_buy
+                shed_room -= n_buy
 
     # 6) 賣貨。**賣到價格掉到門檻為止**，不是固定賣 40 個。
     #
@@ -1444,9 +1498,11 @@ def _market(
     tonight = sum(shed.values()) + carried
     forced = (tonight > shed_capacity
               or sum(shed.values()) >= params["shed_force_sell"] * shed_capacity
-              or _days_left(obs, config) <= params["liquidate_days_left"])
+              or liquidating)
     for item in PRODUCTS:
-        n = shed.get(item, 0)
+        # unit 動作先執行；同回合 PICKUP 的數量不能再送 SELL，否則市場會在
+        # 前幾個成交後因庫存不足而中止後續訂單。
+        n = max(0, shed.get(item, 0) - picked_from_shed.get(item, 0))
         if item == "WHEAT":
             n -= reserve          # 飼料不賣
         n = min(n, params["sell_chunk"])
@@ -1501,6 +1557,8 @@ def act(obs, config=None, params=None):
     tiles = farm["tiles"]
     board = len(tiles)
     day = obs["day"]
+    days_left = _days_left(obs, config)
+    final_day = days_left == 1
 
     struct_order = structure_tiles(board, p["n_structures"])
 
@@ -1512,7 +1570,7 @@ def act(obs, config=None, params=None):
     # ⚠️ 這裡的 `p["basket"]` 還是靜態預設值：`dynamic_basket` 要先知道有幾格
     # 可種，而那又要先知道雇幾個人。用預設 basket 估產值當作打破循環的起點。
     planned_hands = planned_crew(
-        farm, p, config, obs["market"]["prices"], _days_left(obs, config))
+        farm, p, config, obs["market"]["prices"], days_left)
 
     tiles_per_unit = p.get("tiles_per_unit")
     active_tiles = None
@@ -1554,7 +1612,14 @@ def act(obs, config=None, params=None):
         tiles, day, board, p, struct_order, struct_plan,
         unit_inv, private, active_tiles=active_tiles,
     )
-    assigned, _idle = _assign(
+
+    # 最後一天的 EOD 產出沒有下一個市場回合可賣。此時 WATER / CARE /
+    # FERTILIZE / DIG / PLANT 都不會增加最終現金，正確流程是把盤面上已成熟的
+    # 產品收完，再把 unit inventory 帶回 shed，讓下一個小時的市場訂單賣掉。
+    if final_day:
+        tasks = [task for task in tasks if task[1] == "HARVEST"]
+
+    assigned, idle = _assign(
         unit_pos,
         unit_inv,
         tasks,
@@ -1563,6 +1628,21 @@ def act(obs, config=None, params=None):
         board=board,
         unlocked_quadrants=farm["unlocked_quadrants"],
     )
+
+    if final_day:
+        spots = shed_tiles(board)
+        for i in sorted(idle):
+            if not unit_inv[i]:
+                continue
+            nearest = min(
+                spots,
+                key=lambda s: (
+                    abs(s[0] - unit_pos[i][0]) + abs(s[1] - unit_pos[i][1]),
+                    s[1],
+                    s[0],
+                ),
+            )
+            assigned[i] = ("DROP", nearest[0], nearest[1], None)
 
     unit_actions = []
     for i, pos in enumerate(unit_pos):
@@ -1587,6 +1667,7 @@ def act(obs, config=None, params=None):
             active_crop_count=active_crop_count,
             animal_plan=animal_plan,
             crew_cap=planned_hands,
+            unit_actions=unit_actions,
         ),
     }
 

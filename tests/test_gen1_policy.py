@@ -5,8 +5,14 @@ from collections import Counter
 from kaggle_environments.envs.kaggriculture.kaggriculture import CROPS
 
 from agents.gen0 import (
+    DEFAULT_PARAMS,
+    _animal_housing_room,
+    _inventory_qty,
     _needs_water,
+    _pickup_quantities,
+    _wheat_reserve,
     active_crop_tiles,
+    planned_crew,
     quadrant_for,
     species_for_structure,
     structure_tiles,
@@ -93,3 +99,57 @@ def test_structure_fallback_follows_plan_quota_not_alphabet():
     # plan 裡兩種都沒有（或沒給 plan）時退回字母序，保證可重現。
     assert species_for_structure("PASTURE", "GOOSE", ("GOOSE",)) == "COW"
     assert species_for_structure("PASTURE", None) == "COW"
+
+
+def test_inventory_quantity_counts_units_not_carriers():
+    inventories = [
+        {"WHEAT": 83},
+        {"WHEAT": 4, "GOOSE": 1},
+        {},
+    ]
+
+    assert _inventory_qty(inventories, "WHEAT") == 87
+    assert _inventory_qty(inventories, "GOOSE") == 1
+
+
+def test_market_stock_accounts_for_same_turn_pickups():
+    actions = [
+        ["PICKUP", "WHEAT", 4],
+        ["PICKUP", "FERTILIZER", 1],
+        ["NORTH"],
+        ["PASS"],
+    ]
+
+    assert _pickup_quantities(actions) == {"WHEAT": 4, "FERTILIZER": 1}
+
+
+def test_ladder_wages_keep_land_crew_cap_through_final_day():
+    farm = {
+        "unlocked_quadrants": ["NW", "NE", "SW"],
+        "tiles": [[None] * 10 for _ in range(10)],
+    }
+
+    assert planned_crew(
+        farm,
+        DEFAULT_PARAMS,
+        {"farmHandCostMult": 1},
+        {},
+        days_left=1,
+    ) == 12
+
+
+def test_wheat_reserve_disappears_during_liquidation():
+    assert _wheat_reserve(9, days_left=1, params=DEFAULT_PARAMS) == 0
+    assert _wheat_reserve(9, days_left=2, params=DEFAULT_PARAMS) == 0
+    assert _wheat_reserve(9, days_left=3, params=DEFAULT_PARAMS) == 18
+    assert _wheat_reserve(9, days_left=10, params=DEFAULT_PARAMS) == 36
+
+
+def test_animal_purchase_respects_committed_housing_capacity():
+    alive = {"COW": 4, "SHEEP": 4, "GOOSE": 1}
+    assert _animal_housing_room(DEFAULT_PARAMS, alive, {}, [{}]) == 0
+
+    alive = {"COW": 2}
+    shed = {"GOOSE": 1}
+    inventories = [{"SHEEP": 2}, {}]
+    assert _animal_housing_room(DEFAULT_PARAMS, alive, shed, inventories) == 4
