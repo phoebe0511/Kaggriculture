@@ -17,12 +17,11 @@ env/
 htmlcov/
 
 # --- 訓練產物（大檔，走 Git LFS 或外部儲存，見 docs/rules.md §6）---
-*.npz
-*.pt
-*.pth
+
 *.ckpt
 checkpoints/
 runs/
+data/
 
 # --- 棋譜與 log ---
 replays/

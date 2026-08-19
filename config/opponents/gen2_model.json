@@ -1,6 +1,6 @@
 {
-  "name": "gen2",
-  "entry": "agents.gen2:act",
+  "name": "gen2_model",
+  "entry": "agents.gen2_model:act",
   "params": {
     "n_structures": 14,
     "dynamic_animals": false,
