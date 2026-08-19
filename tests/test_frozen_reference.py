@@ -16,7 +16,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """凍結檔的內容指紋，**行尾正規化成 LF**。
+
+    ⚠️ 不要拿掉 `.replace(b"\\r\\n", b"\\n")`。`core.autocrlf=true` 的
+    Windows checkout 會把 repo 裡的 LF 換成 CRLF（實測 `ref-v7.json`
+    工作目錄 2100 bytes / 70 個 CRLF，git blob 2030 bytes / 0 個），
+    直接 hash 位元組的話同一份內容在不同機器上算出不同值，六個 ref
+    測試全紅 —— 而那跟「參數有沒有被改」完全無關。
+
+    下面那些期望值是 **LF 版**的 SHA-256，也就是 git 實際存的內容。
+    正規化之後仍然抓得到任何真正的內容變更（改參數、改縮排、改鍵順序）。
+    """
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _json_value(value):

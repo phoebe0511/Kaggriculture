@@ -1,0 +1,9 @@
+{
+  "name": "ladder-top-b",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "93916293",
+    "player": 1
+  },
+  "note": "同一局的 player 1（Thomas Tschinkel），期末現金 $117,668。兩人打法幾乎一模一樣，很可能是同一套公開策略 —— 所以 a 和 b 不是兩個獨立樣本，別當成兩種對手看。"
+}

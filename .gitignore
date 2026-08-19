@@ -46,5 +46,4 @@ desktop.ini
 # --- 不要忽略的（明確放行）---
 !tests/baselines.json
 
-# --- submission/ 是 build_submission 產生的，每次重建 ---
-submission/
+

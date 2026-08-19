@@ -1,0 +1,9 @@
+{
+  "name": "ladder-top-a",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "93916293",
+    "player": 0
+  },
+  "note": "真實 ladder 對局 93916293 的 player 0（カワシギ），期末現金 $117,554。這是本機第一個不是 gen0/gen1 血統的對手 —— 本機 ladder 對 Gen1 100 勝 0 負但線上排 3000/5000，那把尺已經量不出東西。⚠️ 開迴路重播：我們一下場市場價格就跟原局不同，它的 BUY_*/HIRE 可能失敗，農場會逐漸偏離原軌跡。詳見 agents/replay.py docstring。"
+}
