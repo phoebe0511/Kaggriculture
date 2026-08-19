@@ -1,0 +1,30 @@
+{
+  "name": "ladder-top",
+  "note": "8 支真實 ladder 頂端隊伍的 replay（rating 2979~3229）。用法：`python -m eval.runner --a main:agent --ladder config/ladder-top.json --games 10`，表格一行一隊、從我們的角度看。取樣規則：每隊挑它在已下載的 60 局裡期末現金最高的那一局 —— 那通常是市場競爭較弱的一局，所以這些 replay 的絕對現金偏高，但動作序列仍是該隊的真實打法。⚠️ 開迴路：replay 不會對我們的行為反應，市場被影響後它的 BUY_*/HIRE 可能失敗，農場會逐漸偏離原軌跡。細節見 agents/replay.py docstring。",
+  "opponents": [
+    {"name": "kawashigi", "entry": "agents.replay:act",
+     "params": {"episode": "94019142", "player": 0},
+     "note": "rating 3228.6，全場最高。這一局是對 Thomas Tschinkel，雙方都強、市場競爭充分。"},
+    {"name": "thomas", "entry": "agents.replay:act",
+     "params": {"episode": "94019142", "player": 1},
+     "note": "rating 3162.6。跟 kawashigi 同一局的另一邊。"},
+    {"name": "tetsuya", "entry": "agents.replay:act",
+     "params": {"episode": "94324506", "player": 1},
+     "note": "rating 3140.7。8 支裡唯一養鵝的（15 建物 / 6 牛 6 羊 1 鵝）。"},
+    {"name": "utkarsh", "entry": "agents.replay:act",
+     "params": {"episode": "93803702", "player": 0},
+     "note": "rating 3050.1。動物配置是 8 牛 6 羊，跟主流的 10 牛 4 羊略不同。"},
+    {"name": "peikopon", "entry": "agents.replay:act",
+     "params": {"episode": "94368397", "player": 0},
+     "note": "rating 2997.7。"},
+    {"name": "lucien", "entry": "agents.replay:act",
+     "params": {"episode": "93798410", "player": 1},
+     "note": "rating 2979.2。"},
+    {"name": "recursion", "entry": "agents.replay:act",
+     "params": {"episode": "93848465", "player": 1},
+     "note": "rating 3019.2。8 支裡唯一種瓜的（12 建物、6 格 MELON、14 個人）。"},
+    {"name": "kostiantyn", "entry": "agents.replay:act",
+     "params": {"episode": "93822918", "player": 0},
+     "note": "rating 2979.9。"}
+  ]
+}

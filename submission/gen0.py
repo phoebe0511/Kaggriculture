@@ -1048,6 +1048,8 @@ def _tasks(
     active_tiles=None,
     days_left=None,
     prices=None,
+    hour=None,
+    turns_per_day=24,
 ):
     """掃出全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
 
@@ -1056,6 +1058,14 @@ def _tasks(
     """
     out = []
     struct_set = set(struct_order)
+    # 新苗建立時 consecutive_unwatered=1；若在每天最後一小時才種，當回合
+    # 已沒有第二個 unit-turn 可以 WATER，EOD 會立刻加到 2 並變成 WEED。
+    # 由參數開關隔離，凍結的舊對手沒有此參數時仍保留原行為。
+    planting_allowed = (
+        not params.get("avoid_last_hour_planting", False)
+        or hour is None
+        or int(hour) < max(1, int(turns_per_day)) - 1
+    )
 
     # **有動物在手上才蓋建物。**
     #
@@ -1089,7 +1099,9 @@ def _tasks(
                                     if ANIMALS[species]["structure"] == "COOP"
                                     else "BUILD_PASTURE")
                         out.append((_PRI["BUILD"], build_op, x, y, species))
-                elif active_tiles is None or (x, y) in active_tiles:
+                elif planting_allowed and (
+                    active_tiles is None or (x, y) in active_tiles
+                ):
                     crop = crop_for(x, y, params["basket"])
                     if days_left is None or _crop_can_harvest(crop, days_left):
                         out.append((_PRI["PLANT"], "PLANT", x, y, None))
@@ -1420,9 +1432,80 @@ def _task_action(pos, target, op, arg, params, board):
         return _step_toward(pos, target)
     if op == "PLANT":
         return ["PLANT", crop_for(target[0], target[1], params["basket"])]
+    if op == "DROP_PRODUCT":
+        item, qty = arg
+        # PLACE 在建物上是安置動物，在 shed 相鄰格則是指定品項入庫；不像 DROP
+        # 會把 WHEAT / 動物也一起清掉，適合白天精準回倉。
+        return ["PLACE", item, qty]
     if op == "PLACE":
         return ["PLACE", arg]
     return [op]
+
+
+def _daytime_return_assignments(
+    assigned,
+    idle,
+    unit_pos,
+    unit_inv,
+    board,
+    prices,
+    shed,
+    shed_capacity,
+    hour,
+    turns_per_day,
+    params,
+):
+    """讓閒置 unit 把高價成品帶回 shed；直接原地更新 ``assigned``。
+
+    只搬 PRODUCTS 裡除 WHEAT 之外的品項，並以 PLACE 指定單一商品，避免把
+    飼料、肥料或尚未安置的動物一起卸掉。距離太遠、今天走不回來或 shed 放不下
+    時維持 PASS，避免為物流增加無效 MOVE。
+    """
+    threshold = float(params.get("daytime_return_min_value", 0.0))
+    if threshold <= 0:
+        return
+    max_distance = int(params.get("daytime_return_max_distance", board))
+    turns_left = max(0, int(turns_per_day) - int(hour))
+    room = max(0, int(shed_capacity) - sum(shed.values()))
+    if room <= 0 or turns_left <= 0:
+        return
+
+    spots = shed_tiles(board)
+    candidates = []
+    for i in idle:
+        choices = []
+        for item, qty in unit_inv[i].items():
+            if item == "WHEAT" or item not in PRODUCTS or qty <= 0:
+                continue
+            choices.append((float(prices.get(item, 0)) * qty, item, int(qty)))
+        if not choices:
+            continue
+        value, item, qty = max(choices, key=lambda t: (t[0], t[1]))
+        nearest = min(
+            spots,
+            key=lambda s: (
+                abs(s[0] - unit_pos[i][0]) + abs(s[1] - unit_pos[i][1]),
+                s[1],
+                s[0],
+            ),
+        )
+        distance = abs(nearest[0] - unit_pos[i][0]) + abs(nearest[1] - unit_pos[i][1])
+        if distance > max_distance or distance + 1 > turns_left:
+            continue
+        candidates.append((value / max(1, distance + 1), value, -distance, -i,
+                           i, nearest, item, qty))
+
+    # shed 空間不足時，先讓每回合運輸價值最高的 unit 使用。
+    for _rate, _value, _neg_dist, _neg_i, i, nearest, item, qty in sorted(
+        candidates, reverse=True
+    ):
+        qty = min(qty, room)
+        if qty <= 0 or float(prices.get(item, 0)) * qty < threshold:
+            continue
+        assigned[i] = ("DROP_PRODUCT", nearest[0], nearest[1], (item, qty))
+        room -= qty
+        if room <= 0:
+            break
 
 
 # --------------------------------------------------------------------------
@@ -1455,6 +1538,7 @@ def _planned_sale_orders(
     picked_from_shed,
     wheat_reserve,
     liquidating,
+    projected_shed=None,
 ):
     """規劃本回合可成交的賣單，並估算可供後續訂單使用的現金。
 
@@ -1463,6 +1547,7 @@ def _planned_sale_orders(
     所以這只是保守決策用的預估，實際成交仍交由引擎檢查。
     """
     shed = private["shed"]
+    sale_shed = projected_shed if projected_shed is not None else shed
     inv = obs["market"]["inventory"]
     carried = sum(sum(items.values()) for items in private["inventories"])
     tonight = sum(shed.values()) + carried
@@ -1476,10 +1561,18 @@ def _planned_sale_orders(
     projected_revenue = 0.0
     sold = 0
     for item in PRODUCTS:
-        n = max(0, shed.get(item, 0) - picked_from_shed.get(item, 0))
+        n = max(
+            0,
+            sale_shed.get(item, 0)
+            - (0 if projected_shed is not None else picked_from_shed.get(item, 0)),
+        )
         if item == "WHEAT":
             n -= wheat_reserve
-        n = min(n, params["sell_chunk"])
+        if not (
+            projected_shed is not None
+            and params.get("sell_same_turn_returns", False)
+        ):
+            n = min(n, params["sell_chunk"])
         if n <= 0:
             continue
         if not forced:
@@ -1493,6 +1586,59 @@ def _planned_sale_orders(
         )
         sold += n
     return orders, projected_revenue, sold
+
+
+def _project_shed_after_unit_actions(
+    farm,
+    private,
+    unit_actions,
+    board,
+    shed_capacity,
+):
+    """預演本回合 unit 動作後、market 執行前的 shed 數量。
+
+    引擎順序是 unit → market；若同回合 DROP / PLACE 回倉，SELL 可以立刻成交。
+    決策時的 observation 還看不到這批貨，因此要在送出市場訂單前自行預演。
+    只模擬會影響 shed 的三種動作，不修改 observation。
+    """
+    projected = dict(private["shed"])
+    positions = [tuple(farm["farmer"]), *(tuple(p) for p in farm["hands"])]
+    inventories = private["inventories"]
+    access = set(shed_tiles(board))
+
+    for i, action in enumerate(unit_actions):
+        if i >= len(positions) or i >= len(inventories):
+            break
+        if positions[i] not in access or not action:
+            continue
+        op = action[0]
+        inv = inventories[i]
+
+        if op == "PICKUP" and len(action) >= 2:
+            item = action[1]
+            qty = int(action[2]) if len(action) >= 3 else 1
+            qty = min(max(0, qty), projected.get(item, 0))
+            projected[item] = projected.get(item, 0) - qty
+            continue
+
+        if op == "PLACE" and len(action) >= 2 and action[1] in PRODUCTS:
+            item = action[1]
+            qty = int(action[2]) if len(action) >= 3 else 1
+            room = max(0, int(shed_capacity) - sum(projected.values()))
+            qty = min(max(0, qty), inv.get(item, 0), room)
+            projected[item] = projected.get(item, 0) + qty
+            continue
+
+        if op != "DROP":
+            continue
+        # 跟引擎相同：依 inventory 插入順序裝到滿，超出的貨會消失。
+        for item, qty in inv.items():
+            room = max(0, int(shed_capacity) - sum(projected.values()))
+            take = min(max(0, int(qty)), room)
+            if take > 0:
+                projected[item] = projected.get(item, 0) + take
+
+    return projected
 
 
 def _seed_burn_per_day(basket, n_crop_tiles):
@@ -1623,6 +1769,13 @@ def _market(
     days_left = _days_left(obs, config)
     liquidating = days_left <= params["liquidate_days_left"]
     picked_from_shed = _pickup_quantities(unit_actions)
+    projected_shed = None
+    turns_per_day = max(1, int((config or {}).get("turnsPerDay", 24)))
+    final_turn = days_left == 1 and int(obs.get("hour", 0)) == turns_per_day - 2
+    if final_turn and params.get("sell_same_turn_returns", False):
+        projected_shed = _project_shed_after_unit_actions(
+            farm, private, unit_actions, board, shed_capacity
+        )
 
     # --- 現金底線 -----------------------------------------------------------
     # 底線 = **維持現有規模的日常開銷 × cash_reserve_days**。
@@ -1667,6 +1820,7 @@ def _market(
         picked_from_shed,
         reserve,
         liquidating,
+        projected_shed=projected_shed,
     )
     sell_first = bool(params.get("sell_before_spending", False))
     projected_money = money
@@ -1874,6 +2028,7 @@ def act(obs, config=None, params=None):
     tiles = farm["tiles"]
     board = len(tiles)
     day = obs["day"]
+    turns_per_day = max(1, int((config or {}).get("turnsPerDay", 24)))
     days_left = _days_left(obs, config)
     final_day = days_left == 1
 
@@ -1928,7 +2083,8 @@ def act(obs, config=None, params=None):
     tasks = _tasks(
         tiles, day, board, p, struct_order, struct_plan,
         unit_inv, private, active_tiles=active_tiles, days_left=days_left,
-        prices=obs["market"]["prices"],
+        prices=obs["market"]["prices"], hour=obs.get("hour", 0),
+        turns_per_day=turns_per_day,
     )
 
     # 最後一天的 EOD 產出沒有下一個市場回合可賣。此時 WATER / CARE /
@@ -1961,6 +2117,20 @@ def act(obs, config=None, params=None):
                 ),
             )
             assigned[i] = ("DROP", nearest[0], nearest[1], None)
+    else:
+        _daytime_return_assignments(
+            assigned,
+            idle,
+            unit_pos,
+            unit_inv,
+            board,
+            obs["market"]["prices"],
+            private["shed"],
+            shed_capacity,
+            obs.get("hour", 0),
+            turns_per_day,
+            p,
+        )
 
     unit_actions = []
     for i, pos in enumerate(unit_pos):
