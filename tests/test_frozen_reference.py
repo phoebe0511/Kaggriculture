@@ -12,7 +12,6 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 from agents.gen0 import DEFAULT_PARAMS as GEN0_PARAMS
 from agents.gen1 import DEFAULT_PARAMS as GEN1_PARAMS
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -87,10 +86,28 @@ def test_ref_v7_stays_frozen_at_its_original_params():
     assert "optimal_assignment" not in spec["params"]
 
 
-def test_ref_v8_expands_every_gen1_default():
-    spec = json.loads(
-        (REPO_ROOT / "config/opponents/ref-v8.json").read_text(encoding="utf-8")
-    )
+def test_ref_v8_stays_frozen_at_its_original_params():
+    path = REPO_ROOT / "config/opponents/ref-v8.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "8d6c7855cac0aabc2c8c3ed42b3356a7c30062f83d40b1b0d8459a7fb0941c66"
+    assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["optimal_assignment"] is True
+    assert "daytime_return_min_value" not in spec["params"]
+
+
+def test_ref_v9_stays_frozen_at_its_original_params():
+    path = REPO_ROOT / "config/opponents/ref-v9.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "5cc909c4b31463cacfc65cf9af9c2996262b70c7bacbd78abd12db86c024413d"
+    assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["daytime_return_min_value"] == 300
+    assert "avoid_last_hour_planting" not in spec["params"]
+
+
+def test_ref_v10_expands_every_gen1_default():
+    path = REPO_ROOT / "config/opponents/ref-v10.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "73b6a0c5eb3fe6b21bc9b38a7a4f8b3cc8caddfcc807a3bafaa72580d9936046"
     assert spec["engine_version"] == "1.32.7"
     expected = dict(GEN0_PARAMS)
     expected.update(GEN1_PARAMS)

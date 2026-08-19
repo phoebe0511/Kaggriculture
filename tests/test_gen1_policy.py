@@ -13,6 +13,7 @@ from agents.gen0 import (
     _animal_housing_room,
     _adaptive_crop_shares,
     _crop_can_harvest,
+    _daytime_return_assignments,
     _effective_competitive_demand,
     _inventory_qty,
     _fertilize_worth_it,
@@ -102,6 +103,99 @@ def test_active_tiles_are_balanced_across_unlocked_quadrants():
         "SW": 13,
     }
     assert not set(structures) & active
+
+
+def test_last_hour_never_creates_doomed_plant_tasks():
+    tiles = [[None] * 4 for _ in range(4)]
+    params = {
+        "basket": ("WHEAT",),
+        "use_fertilizer": False,
+        "wheat_carry": 4,
+        "avoid_last_hour_planting": True,
+    }
+    common = dict(
+        tiles=tiles,
+        day=5,
+        board=4,
+        params=params,
+        struct_order=(),
+        struct_plan={},
+        unit_inv=[{}],
+        private={"shed": {}},
+        active_tiles={(0, 0)},
+        days_left=20,
+        turns_per_day=24,
+    )
+
+    before_last_hour = _tasks(**common, hour=22)
+    last_hour = _tasks(**common, hour=23)
+
+    assert [task[1] for task in before_last_hour] == ["PLANT"]
+    assert all(task[1] != "PLANT" for task in last_hour)
+
+
+def test_frozen_policies_keep_legacy_last_hour_planting_without_flag():
+    tasks = _tasks(
+        tiles=[[None]],
+        day=5,
+        board=1,
+        params={
+            "basket": ("WHEAT",),
+            "use_fertilizer": False,
+            "wheat_carry": 4,
+        },
+        struct_order=(),
+        struct_plan={},
+        unit_inv=[{}],
+        private={"shed": {}},
+        active_tiles={(0, 0)},
+        days_left=20,
+        hour=23,
+        turns_per_day=24,
+    )
+
+    assert [task[1] for task in tasks] == ["PLANT"]
+
+
+def test_daytime_return_moves_only_a_valuable_product_and_keeps_wheat():
+    assigned = {}
+    inventories = [{"WOOL": 4, "WHEAT": 9}]
+    _daytime_return_assignments(
+        assigned,
+        {0},
+        [(2, 4)],
+        inventories,
+        board=10,
+        prices={"WOOL": 200, "WHEAT": 40},
+        shed={},
+        shed_capacity=100,
+        hour=10,
+        turns_per_day=24,
+        params={"daytime_return_min_value": 600, "daytime_return_max_distance": 4},
+    )
+
+    assert assigned[0][0] == "DROP_PRODUCT"
+    assert assigned[0][3] == ("WOOL", 4)
+    assert inventories[0]["WHEAT"] == 9
+
+
+def test_daytime_return_skips_low_value_or_too_late_inventory():
+    for hour, value in ((10, 100), (23, 800)):
+        assigned = {}
+        _daytime_return_assignments(
+            assigned,
+            {0},
+            [(0, 0)],
+            [{"WOOL": 4}],
+            board=10,
+            prices={"WOOL": value / 4},
+            shed={},
+            shed_capacity=100,
+            hour=hour,
+            turns_per_day=24,
+            params={"daytime_return_min_value": 600, "daytime_return_max_distance": 10},
+        )
+        assert assigned == {}
 
 
 def test_structure_fallback_follows_plan_quota_not_alphabet():

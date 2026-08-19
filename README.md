@@ -26,24 +26,26 @@ KAGGRI_LOG_LEVEL=0 python -m eval.runner --a main:agent --b starter --games 20
 # 四地候選；不影響 main.py
 KAGGRI_LOG_LEVEL=0 python -m eval.runner --a gen1-four-land --b starter --games 20
 
-# 產生 dist/submission.tar.gz
-KAGGRI_LOG_LEVEL=0 python -m serving.build_submission
+# 產生 submission/submission.tar.gz
+KAGGRI_LOG_LEVEL=0 python -m serving.build_submission --tar
 
 # 完成 `kaggle auth login` 後提交
 kaggle competitions submit kaggriculture \
-  -f dist/submission.tar.gz \
+  -f submission/submission.tar.gz \
   -m "Gen1 active-tiles on-demand-water"
 ```
 
 ## 目前基準（engine 1.32.7）
 
 `main.py` = Gen1 第二輪三地版：`tiles_per_unit=4`、12 格動物建物，加入肥料
-貨幣 ROI、季末 10→8 人縮編，以及同優先序任務的全域最短配對。
+貨幣 ROI、季末 10→8 人縮編、同優先序任務的全域最短配對、白天精準回倉，
+並禁止在每天最後一小時播下必定立即變成雜草的新苗。
 
-- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$111,348`。
-- 對第一輪凍結版 ref-v7：60 局全勝，平均 `$88,616 vs $77,217`，差 `+$11,398`。
+- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$120,794`。
+- 對第一輪凍結版 ref-v7：60 局全勝，平均 `$94,551 vs $78,720`，差 `+$15,831`。
 - 凍結 ladder：10 個對手 × 5 paired seeds，共 100 局全勝。
-- 動作分布：MOVE `56.6%`／生產 `27.0%`／PASS `16.2%`；全季管理中土地 `60.3%`。
+- 對 starter 的動作分布：MOVE `56.4%`／生產 `26.5%`／PASS `17.0%`；
+  全季管理中土地 `63.0%`，雜草率 `2.2%`。
 - 條件式四地版仍保留在 `config/opponents/gen1-four-land.json`；13～15 格動物建物
   重掃也全數輸給 12 格，因此都沒有升主版。
 

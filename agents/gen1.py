@@ -46,6 +46,17 @@ DEFAULT_PARAMS = {
     # 同一優先序的任務做全域最短配對，不用固定象限。直接對打舊的逐筆貪婪
     # 分派器 60 局為 58 勝 2 負，平均現金 +$8,686，買地時點完全相同。
     "optimal_assignment": True,
+    # 閒置 unit 若攜帶至少 $300 的非 WHEAT 成品，且距 shed 不超過 4 步，
+    # 白天就以指定品項 PLACE 回倉，不必等日終自動卸貨。兩批獨立 paired seeds：
+    #   seeds 0-19：29 勝 11 負，平均現金 +$1,946
+    #   seeds 1000-1029：43 勝 17 負，平均現金 +$2,185
+    # 使用指定品項而非 DROP，避免把飼料、肥料或待安置動物一起清掉。
+    "daytime_return_min_value": 300,
+    "daytime_return_max_distance": 4,
+    # 引擎在新苗建立時就記 1 次未澆水；若於 hour 23 才播種，當晚結算會
+    # 直接累加至 2 並變成 WEED。對 ref-v9 的兩批獨立 paired seeds 合計
+    # 92 勝 8 負，平均現金約 +$4.2k；tetsuya 敗局的 seed 正反兩局也全勝。
+    "avoid_last_hour_planting": True,
     # active tiles 上限 = (1 + planned_hands) × 這個值。12 個 hand + farmer
     # → 4 給出 52 格（三地可種 69 格）。
     #
