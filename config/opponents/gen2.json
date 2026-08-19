@@ -1,0 +1,11 @@
+{
+  "name": "gen2",
+  "entry": "agents.gen2:act",
+  "params": {
+    "n_structures": 14,
+    "dynamic_animals": false,
+    "animal": ["COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW",
+               "SHEEP", "SHEEP", "SHEEP", "SHEEP"]
+  },
+  "note": "unit 排程走網路（模仿 ladder 頂端玩家），市場沿用 gen0._market。⚠️ 市場那邊的參數必須跟老師的策略對齊，否則兩邊互相破壞：第一版讓 dynamic_animals 依商店需求選，結果選了 GOOSE，而老師整季幾乎不養鵝（PLACE GOOSE 在 replay 裡只出現 17 次 = 0.00%），網路不知道拿鵝要幹嘛，6 隻鵝從 day 14 躺到季末，整季 0 隻動物在產出。細節見 docs/memory/journal/2026-08-19.md。"
+}

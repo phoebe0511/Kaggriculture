@@ -1,0 +1,18 @@
+{
+  "name": "clone-v1",
+  "entry": "agents.gen1:act",
+  "note": "把 ladder 頂端 8 支隊伍的共通配置整套搬過來，不是單參數。參數來自 docs/memory/journal/2026-08-19.md §3b 的中位數（60 局 replay，day 20 hour 12）。⚠️ 2026-08-19 的兩輪消融證明單獨改任一項都變差（struct-14 掉 $12,923），因為那套策略是耦合的 —— 14 格建物要配自種小麥當飼料。所以這裡整套一起改。未涵蓋的差異：他們 day 6 買第一塊地、我們 day 9，那是現金流條件決定的，沒有直接參數。",
+  "params": {
+    "n_structures": 14,
+    "dynamic_animals": false,
+    "animal": ["COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW", "COW",
+               "SHEEP", "SHEEP", "SHEEP", "SHEEP"],
+
+    "dynamic_basket": false,
+    "basket": ["STRAWBERRY", "STRAWBERRY", "STRAWBERRY", "WHEAT", "WHEAT"],
+
+    "max_quadrants": 3,
+    "tiles_per_unit": 5,
+    "max_hands": 12
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "kawashigi",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "94019142",
+    "player": 0
+  },
+  "note": "真實 ladder 對局 94019142 的 player 0（カワシギ，rating 3228.6，全場最高）。那一局的對手是 Thomas Tschinkel（3162.6），雙方都強、市場競爭充分，所以這份動作序列不是在無競爭環境下錄的。⚠️ 開迴路重播，細節見 agents/replay.py docstring。"
+}

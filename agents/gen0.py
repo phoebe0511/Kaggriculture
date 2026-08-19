@@ -665,6 +665,32 @@ def _plan_animals(days_left, demand_key, inv_key, n_structures, max_share,
     return tuple(plan)
 
 
+def fixed_animal_plan(animal, n_structures):
+    """`dynamic_animals` 關掉時，每個建物格養什麼。
+
+    `animal` 有兩種寫法：
+
+        "GOOSE"                     全部養同一種（舊行為，向後相容）
+        ["COW"] * 10 + ["SHEEP"] * 4   每格指定（2026-08-19 新增）
+
+    後者是為了表達 ladder 頂端隊伍的配置。8 支 rating ≥2979 的隊伍裡有
+    5 支是 COW 10 + SHEEP 4，用單一物種寫不出來（見
+    `docs/memory/journal/2026-08-19.md` §3b）。
+
+    長度不符就截斷 / 用最後一種補滿 —— `n_structures` 是另一個參數，
+    兩邊對不上時不該整個爆掉。
+    """
+    if isinstance(animal, str):
+        return (animal,) * n_structures
+
+    plan = list(animal)
+    if not plan:
+        raise ValueError("params['animal'] 是空的序列")
+    if len(plan) < n_structures:
+        plan.extend([plan[-1]] * (n_structures - len(plan)))
+    return tuple(plan[:n_structures])
+
+
 def structure_assignment(tiles, struct_order, plan):
     """每個建物格該養哪一種，**扣掉已經蓋好 / 已經住了的**。
 
@@ -2071,7 +2097,7 @@ def act(obs, config=None, params=None):
     if p["dynamic_animals"]:
         animal_plan = dynamic_animals(obs, config, p, len(struct_order))
     else:
-        animal_plan = (p["animal"],) * len(struct_order)
+        animal_plan = fixed_animal_plan(p["animal"], len(struct_order))
 
     unit_pos = [tuple(farm["farmer"])] + [tuple(h) for h in farm["hands"]]
     inventories = private["inventories"]

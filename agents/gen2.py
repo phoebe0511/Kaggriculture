@@ -1,0 +1,110 @@
+"""第 2 代：unit 排程交給網路，市場沿用規則式。
+
+網路模仿的是 rating 2979~3229 的真實 ladder 玩家（60 局 replay、842,151 個
+unit-turn）。**不是模仿我們自己的 Gen1** —— 2026-08-19 量到 Gen1 對他們
+6 勝 154 負，模仿一個在輸的老師沒有意義。
+
+## 只換 unit，市場不換
+
+`act()` 先呼叫 `gen0.act()` 拿一份完整的規則式動作，然後把 `farmer` / `hands`
+換成網路的輸出，`market` 原封不動。
+
+⚠️ **已知的不一致**：`gen0._market` 算訂單時會參考它自己排出來的 `unit_actions`
+（例如 PICKUP 了多少 WHEAT 就少賣多少），而我們事後把 unit 動作換掉了。
+所以市場決策是對「規則式會做什麼」最佳化的，不是對「網路實際做什麼」。
+
+代價量得出來：2026-08-19 的逐件收入歸因顯示 WHEAT + FERTILIZER 佔總差距的
+27%，而那兩項主要是市場行為。所以這一版的上限大約是補掉 73% 的差距。
+
+## PLANT 的原子驗證
+
+引擎規則（`engine-notes.md` §10.9）：同一回合所有 unit 對某作物的 PLANT 請求
+總數超過手上種子數 → 該作物的**所有** PLANT 請求全部變成 `PASS`。
+
+所以不能直接把網路的 argmax 送出去 —— 超額的話會連本來種得成的那幾格一起
+作廢。超出的部分改用該 unit 的第二高分動作。
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+
+import numpy as np
+
+import contracts as C
+from agents.gen0 import act as gen0_act
+from agents.gen1 import DEFAULT_PARAMS as GEN1_DEFAULTS
+
+#: 權重檔。用環境變數覆寫，方便同時比較好幾個 checkpoint。
+WEIGHTS_PATH = os.environ.get("KAGGRI_WEIGHTS", "model/weights.npz")
+
+_POLICY = None
+_POLICY_LOCK = threading.Lock()
+
+
+def _policy():
+    """載入一次就好。多行程跑的時候每個 worker 各載自己的。"""
+    global _POLICY
+    if _POLICY is None:
+        with _POLICY_LOCK:
+            if _POLICY is None:
+                from serving.npz_forward import NumpyPolicy
+                policy = NumpyPolicy(WEIGHTS_PATH)
+                if policy.encoder_version != C.ENCODER_VERSION:
+                    raise SystemExit(
+                        f"{WEIGHTS_PATH} 是 ENCODER_VERSION "
+                        f"{policy.encoder_version}，contracts.py 是 "
+                        f"{C.ENCODER_VERSION} —— 重新訓練")
+                _POLICY = policy
+    return _POLICY
+
+
+def _choose(op_logits, qty_logits, mask, obs):
+    """挑動作：先遮掉不合法的，再處理 PLANT 的跨 unit 種子上限。"""
+    scores = np.where(mask, op_logits, -np.inf)
+    order = np.argsort(-scores, axis=1)          # 每個 unit 的偏好排序
+
+    seeds = dict(obs["private"]["seeds"])
+    chosen = []
+    for i in range(scores.shape[0]):
+        picked = None
+        for op_index in order[i]:
+            if not np.isfinite(scores[i, op_index]):
+                break                             # 後面都是不合法的
+            op, item = C.UNIT_OPS[op_index]
+            if op == "PLANT":
+                # 種子是全體共用的，先搶先贏。搶不到就往下一個選項走 ——
+                # 不能硬送，送了會讓該作物**所有** PLANT 一起變 PASS。
+                if seeds.get(item, 0) <= 0:
+                    continue
+                seeds[item] -= 1
+            picked = op_index
+            break
+        if picked is None:
+            picked = C.UNIT_OP_INDEX[("PASS", None)]
+        qty_index = int(np.argmax(qty_logits[i]))
+        chosen.append(C.decode_unit(picked, qty_index))
+    return chosen
+
+
+def act(obs, config=None, params=None):
+    resolved = dict(GEN1_DEFAULTS)
+    resolved.update(params or {})
+    resolved.pop("_replace_defaults", None)
+
+    # 市場、雇工、買地全部沿用規則式的決定
+    base = gen0_act(obs, config, resolved)
+
+    policy = _policy()
+    spatial, scalar = C.encode(obs, config)
+    positions, unit_features = C.encode_units(obs, config)
+    op_logits, qty_logits, _value = policy(spatial, scalar, positions, unit_features)
+    mask = C.legal_unit_mask(obs, config)
+
+    units = _choose(op_logits, qty_logits, mask, obs)
+    return {"farmer": units[0], "hands": units[1:], "market": base["market"]}
+
+
+def agent(obs, config):
+    return act(obs, config)
