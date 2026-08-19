@@ -41,7 +41,7 @@ kaggle competitions submit kaggriculture \
 貨幣 ROI、季末 10→8 人縮編、同優先序任務的全域最短配對、白天精準回倉，
 並禁止在每天最後一小時播下必定立即變成雜草的新苗。
 
-- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$120,794`。
+- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$120,841`。
 - 對第一輪凍結版 ref-v7：60 局全勝，平均 `$94,551 vs $78,720`，差 `+$15,831`。
 - 凍結 ladder：10 個對手 × 5 paired seeds，共 100 局全勝。
 - 對 starter 的動作分布：MOVE `56.4%`／生產 `26.5%`／PASS `17.0%`；

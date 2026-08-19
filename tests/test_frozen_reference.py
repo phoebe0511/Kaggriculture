@@ -104,10 +104,19 @@ def test_ref_v9_stays_frozen_at_its_original_params():
     assert "avoid_last_hour_planting" not in spec["params"]
 
 
-def test_ref_v10_expands_every_gen1_default():
+def test_ref_v10_stays_frozen_at_its_original_params():
     path = REPO_ROOT / "config/opponents/ref-v10.json"
     spec = json.loads(path.read_text(encoding="utf-8"))
     assert _sha256(path) == "73b6a0c5eb3fe6b21bc9b38a7a4f8b3cc8caddfcc807a3bafaa72580d9936046"
+    assert spec["engine_version"] == "1.32.7"
+    assert spec["params"]["avoid_last_hour_planting"] is True
+    assert "sell_same_turn_returns" not in spec["params"]
+
+
+def test_ref_v11_expands_every_gen1_default():
+    path = REPO_ROOT / "config/opponents/ref-v11.json"
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _sha256(path) == "16eb6d2bd5fbdf4691b8c1776af9c1404fbeaece539817705e760afe0220f9ad"
     assert spec["engine_version"] == "1.32.7"
     expected = dict(GEN0_PARAMS)
     expected.update(GEN1_PARAMS)

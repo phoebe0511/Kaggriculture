@@ -23,6 +23,7 @@ from agents.gen0 import (
     _needs_water,
     _pickup_quantities,
     _planned_sale_orders,
+    _project_shed_after_unit_actions,
     _tasks,
     _wheat_reserve,
     active_crop_tiles,
@@ -155,6 +156,33 @@ def test_frozen_policies_keep_legacy_last_hour_planting_without_flag():
     )
 
     assert [task[1] for task in tasks] == ["PLANT"]
+
+
+def test_same_turn_drop_is_visible_to_later_market_orders():
+    farm = {"farmer": [4, 4], "hands": [[4, 5]]}
+    private = {
+        "shed": {"WHEAT": 2},
+        "inventories": [
+            {"MILK": 7, "WOOL": 4},
+            {"STRAWBERRY": 3},
+        ],
+    }
+
+    projected = _project_shed_after_unit_actions(
+        farm,
+        private,
+        [["DROP"], ["PLACE", "STRAWBERRY", 2]],
+        board=10,
+        shed_capacity=100,
+    )
+
+    assert projected == {
+        "WHEAT": 2,
+        "MILK": 7,
+        "WOOL": 4,
+        "STRAWBERRY": 2,
+    }
+    assert private["shed"] == {"WHEAT": 2}
 
 
 def test_daytime_return_moves_only_a_valuable_product_and_keeps_wheat():
@@ -444,6 +472,32 @@ def test_planned_sales_keep_wheat_reserve_and_expose_same_turn_cash():
     assert ["SELL", "STRAWBERRY", 5] in orders
     assert sold == 9
     assert revenue > 0
+
+
+def test_liquidation_sells_all_products_returned_this_turn():
+    inventory = {item: MARKET_PARAMS[item]["I0"] for item in MARKET_PARAMS}
+    obs = {"market": {"inventory": inventory}}
+    private = {"shed": {}, "inventories": [{"MILK": 47}]}
+    params = {
+        "sell_chunk": 40,
+        "sell_price_frac": 0.55,
+        "shed_force_sell": 0.75,
+        "sell_same_turn_returns": True,
+    }
+
+    orders, _revenue, sold = _planned_sale_orders(
+        obs,
+        private,
+        params,
+        shed_capacity=100,
+        picked_from_shed={},
+        wheat_reserve=0,
+        liquidating=True,
+        projected_shed={"MILK": 47},
+    )
+
+    assert ["SELL", "MILK", 47] in orders
+    assert sold == 47
 
 
 def test_reserved_structure_weed_is_dug_for_waiting_animal():

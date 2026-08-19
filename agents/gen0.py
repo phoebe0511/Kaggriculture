@@ -1538,6 +1538,7 @@ def _planned_sale_orders(
     picked_from_shed,
     wheat_reserve,
     liquidating,
+    projected_shed=None,
 ):
     """規劃本回合可成交的賣單，並估算可供後續訂單使用的現金。
 
@@ -1546,6 +1547,7 @@ def _planned_sale_orders(
     所以這只是保守決策用的預估，實際成交仍交由引擎檢查。
     """
     shed = private["shed"]
+    sale_shed = projected_shed if projected_shed is not None else shed
     inv = obs["market"]["inventory"]
     carried = sum(sum(items.values()) for items in private["inventories"])
     tonight = sum(shed.values()) + carried
@@ -1559,10 +1561,18 @@ def _planned_sale_orders(
     projected_revenue = 0.0
     sold = 0
     for item in PRODUCTS:
-        n = max(0, shed.get(item, 0) - picked_from_shed.get(item, 0))
+        n = max(
+            0,
+            sale_shed.get(item, 0)
+            - (0 if projected_shed is not None else picked_from_shed.get(item, 0)),
+        )
         if item == "WHEAT":
             n -= wheat_reserve
-        n = min(n, params["sell_chunk"])
+        if not (
+            projected_shed is not None
+            and params.get("sell_same_turn_returns", False)
+        ):
+            n = min(n, params["sell_chunk"])
         if n <= 0:
             continue
         if not forced:
@@ -1576,6 +1586,59 @@ def _planned_sale_orders(
         )
         sold += n
     return orders, projected_revenue, sold
+
+
+def _project_shed_after_unit_actions(
+    farm,
+    private,
+    unit_actions,
+    board,
+    shed_capacity,
+):
+    """預演本回合 unit 動作後、market 執行前的 shed 數量。
+
+    引擎順序是 unit → market；若同回合 DROP / PLACE 回倉，SELL 可以立刻成交。
+    決策時的 observation 還看不到這批貨，因此要在送出市場訂單前自行預演。
+    只模擬會影響 shed 的三種動作，不修改 observation。
+    """
+    projected = dict(private["shed"])
+    positions = [tuple(farm["farmer"]), *(tuple(p) for p in farm["hands"])]
+    inventories = private["inventories"]
+    access = set(shed_tiles(board))
+
+    for i, action in enumerate(unit_actions):
+        if i >= len(positions) or i >= len(inventories):
+            break
+        if positions[i] not in access or not action:
+            continue
+        op = action[0]
+        inv = inventories[i]
+
+        if op == "PICKUP" and len(action) >= 2:
+            item = action[1]
+            qty = int(action[2]) if len(action) >= 3 else 1
+            qty = min(max(0, qty), projected.get(item, 0))
+            projected[item] = projected.get(item, 0) - qty
+            continue
+
+        if op == "PLACE" and len(action) >= 2 and action[1] in PRODUCTS:
+            item = action[1]
+            qty = int(action[2]) if len(action) >= 3 else 1
+            room = max(0, int(shed_capacity) - sum(projected.values()))
+            qty = min(max(0, qty), inv.get(item, 0), room)
+            projected[item] = projected.get(item, 0) + qty
+            continue
+
+        if op != "DROP":
+            continue
+        # 跟引擎相同：依 inventory 插入順序裝到滿，超出的貨會消失。
+        for item, qty in inv.items():
+            room = max(0, int(shed_capacity) - sum(projected.values()))
+            take = min(max(0, int(qty)), room)
+            if take > 0:
+                projected[item] = projected.get(item, 0) + take
+
+    return projected
 
 
 def _seed_burn_per_day(basket, n_crop_tiles):
@@ -1706,6 +1769,13 @@ def _market(
     days_left = _days_left(obs, config)
     liquidating = days_left <= params["liquidate_days_left"]
     picked_from_shed = _pickup_quantities(unit_actions)
+    projected_shed = None
+    turns_per_day = max(1, int((config or {}).get("turnsPerDay", 24)))
+    final_turn = days_left == 1 and int(obs.get("hour", 0)) == turns_per_day - 2
+    if final_turn and params.get("sell_same_turn_returns", False):
+        projected_shed = _project_shed_after_unit_actions(
+            farm, private, unit_actions, board, shed_capacity
+        )
 
     # --- 現金底線 -----------------------------------------------------------
     # 底線 = **維持現有規模的日常開銷 × cash_reserve_days**。
@@ -1750,6 +1820,7 @@ def _market(
         picked_from_shed,
         reserve,
         liquidating,
+        projected_shed=projected_shed,
     )
     sell_first = bool(params.get("sell_before_spending", False))
     projected_money = money

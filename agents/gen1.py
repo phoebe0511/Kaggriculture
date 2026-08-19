@@ -57,6 +57,12 @@ DEFAULT_PARAMS = {
     # 直接累加至 2 並變成 WEED。對 ref-v9 的兩批獨立 paired seeds 合計
     # 92 勝 8 負，平均現金約 +$4.2k；tetsuya 敗局的 seed 正反兩局也全勝。
     "avoid_last_hour_planting": True,
+    # 引擎同回合順序為 unit → market，且 episodeSteps 會讓 hour 22 成為最後
+    # 可執行回合。該回合預演 DROP / PLACE 後的 shed，讓剛回倉的貨能立刻送
+    # SELL，並取消每品項 40 個上限；其他回合與 unit 排程完全不變。對 ref-v10
+    # 的 100 局 paired 為 43勝14和43負、平均差 $0；問題 seed 則多 $3,629。
+    # 參數開關已完整展開並凍結於 ref-v11。
+    "sell_same_turn_returns": True,
     # active tiles 上限 = (1 + planned_hands) × 這個值。12 個 hand + farmer
     # → 4 給出 52 格（三地可種 69 格）。
     #
