@@ -1,0 +1,5 @@
+{
+  "name": "gen1",
+  "entry": "agents.gen1:act",
+  "note": "榜上跑的那一版：main.py 是 act(obs, config) 不帶 params，所以走 gen1.DEFAULT_PARAMS。⚠️ 不要加 params —— 加了就不是榜上那個 agent 了，量到的數字不能拿來判斷線上表現。gen1-three-land 有覆寫 tiles_per_unit / water_on_demand，是另一個東西。"
+}

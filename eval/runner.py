@@ -27,6 +27,7 @@ import json
 import math
 import multiprocessing as mp
 import os
+import re
 import sys
 import time
 import unicodedata
@@ -233,7 +234,11 @@ def _play(job):
     # 檔名 = tag 的話，`--tag` 直接對得到檔案，不用掃整個目錄找。
     # agent 讀 KAGGRI_LOG_FILE 決定寫哪，沒設的話寫 stderr（會被引擎攔截丟掉）。
     if log_dir:
-        tag = f"seed{seed:04d}_{spec0['name']}_vs_{spec1['name']}"
+        # 🩸 Windows 的檔名不能有 : / \ 等字元。`--a agents.gen1:act` 這種
+        # module:attr 的寫法會讓檔名在冒號處被截斷，產出 0 byte 的檔而且
+        # **不會報錯** —— 2026-08-20 踩到，state_dist 讀到空目錄才發現。
+        safe = lambda n: re.sub(r'[<>:"/\|?*]', '-', str(n))  # noqa: E731
+        tag = f"seed{seed:04d}_{safe(spec0['name'])}_vs_{safe(spec1['name'])}"
         os.environ["KAGGRI_LOG_TAG"] = tag
         os.environ["KAGGRI_LOG_FILE"] = str(Path(log_dir) / f"{tag}.jsonl")
     else:
