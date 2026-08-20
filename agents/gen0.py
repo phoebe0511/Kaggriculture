@@ -1446,8 +1446,13 @@ def step_toward(pos, target):
     return ["NORTH"]
 
 
-def _task_action(pos, target, op, arg, params, board):
-    """組出 unit 的動作。
+def task_destination(pos, target, op, arg, params, board):
+    """一個任務攤成 `(終點格, 到了那裡要做的動作)`。
+
+    公開是因為 DAgger 要它 —— `contracts.py` 的 v3 標籤就是「終點在哪一格、
+    到了做什麼」，而 gen0 **自己就知道**這兩件事，不必像
+    `harness/build_dataset.segment_labels()` 那樣從動作序列反推。少一層推論
+    就少一個會錯又不報錯的地方。
 
     ⚠️ 帶參數的 op 一定要把參數補上。引擎對 `["PLACE"]`（少了物品名）
     的處理是 `if len(action) < 2: return` —— **靜默忽略**，不會有任何錯誤。
@@ -1458,23 +1463,32 @@ def _task_action(pos, target, op, arg, params, board):
         # 走路不用避開 LOCKED —— 引擎允許走進去，只有「對這格做事」會被擋。
         spots = shed_tiles(board)
         if tuple(pos) in {tuple(s) for s in spots}:
-            item, qty = arg
-            return ["PICKUP", item, qty]
-        nearest = min(spots, key=lambda s: abs(s[0] - pos[0]) + abs(s[1] - pos[1]))
-        return step_toward(pos, nearest)
+            dest = tuple(pos)
+        else:
+            dest = tuple(min(
+                spots, key=lambda s: abs(s[0] - pos[0]) + abs(s[1] - pos[1])))
+        item, qty = arg
+        return dest, ["PICKUP", item, qty]
 
-    if tuple(pos) != tuple(target):
-        return step_toward(pos, target)
+    dest = tuple(target)
     if op == "PLANT":
-        return ["PLANT", crop_for(target[0], target[1], params["basket"])]
+        return dest, ["PLANT", crop_for(target[0], target[1], params["basket"])]
     if op == "DROP_PRODUCT":
         item, qty = arg
         # PLACE 在建物上是安置動物，在 shed 相鄰格則是指定品項入庫；不像 DROP
         # 會把 WHEAT / 動物也一起清掉，適合白天精準回倉。
-        return ["PLACE", item, qty]
+        return dest, ["PLACE", item, qty]
     if op == "PLACE":
-        return ["PLACE", arg]
-    return [op]
+        return dest, ["PLACE", arg]
+    return dest, [op]
+
+
+def _task_action(pos, target, op, arg, params, board):
+    """這一步要送出的動作：還沒到終點就走一步，到了就做事。"""
+    dest, final = task_destination(pos, target, op, arg, params, board)
+    if tuple(pos) != dest:
+        return step_toward(pos, dest)
+    return final
 
 
 def _daytime_return_assignments(
@@ -2048,7 +2062,12 @@ def _market(
 # 進入點
 # --------------------------------------------------------------------------
 
-def act(obs, config=None, params=None):
+def act(obs, config=None, params=None, return_plan=False):
+    """`return_plan=True` 時回傳 `(action, plan)`，其餘行為完全不變。
+
+    `plan["plan"][i]` 是第 i 個 unit 的 `(終點格, 到了要做的動作)`，閒置的是
+    `None`。DAgger 拿它當 v3 的訓練標籤 —— 見 `task_destination()`。
+    """
     overrides = dict(params or {})
     replace_defaults = bool(overrides.pop("_replace_defaults", False))
     p = {} if replace_defaults else dict(DEFAULT_PARAMS)
@@ -2196,6 +2215,20 @@ def act(obs, config=None, params=None):
 
     if LOG_LEVEL >= 2:
         _log(obs, farm, private, tasks, assigned, action)
+    if return_plan:
+        # DAgger 要的是「每個 unit 的終點格 + 到了做什麼」，那是 v3 的標籤格式。
+        # 這裡直接把規劃器的決定交出去，不要讓呼叫端從 action 反推 ——
+        # 反推 MOVE 段落是 harness/build_dataset 為了老師的 replay 才做的事，
+        # 我們自己的 agent 沒有理由丟掉已經知道的答案。
+        plan = []
+        for i, pos in enumerate(unit_pos):
+            if i not in assigned:
+                plan.append(None)            # 閒置，送 PASS
+                continue
+            op, tx, ty, arg = assigned[i]
+            plan.append(task_destination(pos, (tx, ty), op, arg, p, board))
+        return action, {"unit_pos": list(unit_pos), "plan": plan,
+                        "board": board, "params": p}
     return action
 
 

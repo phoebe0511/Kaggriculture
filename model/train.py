@@ -245,7 +245,9 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", default="data/dataset")
+    ap.add_argument("--data", default="data/dataset",
+                    help="npz 目錄，逗號分隔可以給多個。DAgger 的 Aggregation "
+                         "就是把每一輪的資料併起來一起訓")
     ap.add_argument("--out", default="model/checkpoints")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=256)
@@ -275,7 +277,13 @@ def main(argv=None):
 
     torch.manual_seed(args.seed)
 
-    paths = sorted(glob.glob(os.path.join(args.data, "*.npz")))
+    paths = []
+    for folder in args.data.split(","):
+        folder = folder.strip()
+        found = sorted(glob.glob(os.path.join(folder, "*.npz")))
+        if not found:
+            raise SystemExit(f"{folder} 裡沒有 npz")
+        paths.extend(found)
     if len(paths) <= args.val_episodes:
         raise SystemExit(f"{args.data} 只有 {len(paths)} 局，不夠切驗證集")
 

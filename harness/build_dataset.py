@@ -110,6 +110,26 @@ MOVE_OP_INDICES = frozenset(
     C.UNIT_OP_INDEX[(move, None)] for move in C.MOVES)
 
 
+def dense_market(market_board, market_op, market_qty, n_boards):
+    """稀疏的市場訂單 -> 逐盤面的 `(present [S,21] int8, qty 桶 [S,21] int16)`。
+
+    ⚠️ 同一回合同一個 op 出現兩次以上的佔 **9.6%**，數量要**相加**不是取後者。
+    引擎逐單位重新報價，`SELL 5` + `SELL 5` 與 `SELL 10` 完全等價；`HIRE` 兩筆
+    就是雇兩個人。相加之後才轉桶。
+
+    `harness/rollout.py` 也用這支 —— DAgger 產的資料要跟 replay 抽的長一樣，
+    `model/train.py` 才吃得下同一份 schema。
+    """
+    dense_qty = np.zeros((n_boards, C.N_MARKET_OPS), dtype=np.int32)
+    for b, op, q in zip(market_board, market_op, market_qty):
+        dense_qty[int(b), int(op)] += int(q)
+    present = dense_qty > 0
+    bucket = np.full((n_boards, C.N_MARKET_OPS), -1, dtype=np.int16)
+    for b, op in zip(*np.nonzero(present)):
+        bucket[b, op] = C.market_qty_bucket(dense_qty[b, op])
+    return present.astype(np.int8), bucket
+
+
 def segment_labels(rows, turns_per_day, board):
     """把逐步標籤反推成 segment 標籤。
 
@@ -276,20 +296,9 @@ def build_episode(path, engine="1.32.7", team=None):
         "episode_id": np.asarray([data.get("episode_id") or 0], dtype=np.int64),
         "rewards": np.asarray(rewards, dtype=np.float32),
     }
-    # --- v4：市場標籤攤成逐盤面的稠密形式 --------------------------------
-    # ⚠️ 同一回合同一個 op 出現兩次以上的佔 9.6%，數量要**相加**不是取後者。
-    # 引擎逐單位重新報價，`SELL 5` + `SELL 5` 與 `SELL 10` 完全等價；
-    # `HIRE` 兩筆就是雇兩個人。相加之後才轉桶。
-    n_boards = len(board_scalar)
-    dense_qty = np.zeros((n_boards, C.N_MARKET_OPS), dtype=np.int32)
-    for b, op, q in zip(market_board, market_op, market_qty):
-        dense_qty[b, op] += q
-    present = (dense_qty > 0)
-    bucket = np.full((n_boards, C.N_MARKET_OPS), -1, dtype=np.int16)
-    for b, op in zip(*np.nonzero(present)):
-        bucket[b, op] = C.market_qty_bucket(dense_qty[b, op])
-
-    arrays["board_market_present"] = present.astype(np.int8)
+    present, bucket = dense_market(
+        market_board, market_op, market_qty, len(board_scalar))
+    arrays["board_market_present"] = present
     arrays["board_market_qty"] = bucket
 
     dangling = sum(1 for v in unit_target if v < 0)

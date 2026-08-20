@@ -84,9 +84,11 @@ def _resolve_params(params=None):
     return resolved
 
 
-def act(obs, config=None, params=None):
+def act(obs, config=None, params=None, return_plan=False):
+    """`return_plan=True` 時回傳 `(action, plan)` —— DAgger 用，見
+    `agents/gen0.task_destination()`。其餘行為完全不變。"""
     resolved = _resolve_params(params)
-    return gen0_act(obs, config, resolved)
+    return gen0_act(obs, config, resolved, return_plan=return_plan)
 
 
 def agent(obs, config):
