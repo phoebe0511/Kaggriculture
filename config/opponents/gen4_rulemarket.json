@@ -1,0 +1,8 @@
+{
+  "name": "gen4_rulemarket",
+  "entry": "agents.gen4_demand:act",
+  "params": {
+    "model_market": false
+  },
+  "note": "gen4_demand 的 A/B 對照組：unit 那一半走網路的 demand map，市場退回 gen0._market。跟 gen4_demand 用同一份權重，唯一差別是 model_market —— 量得出「市場那一半」單獨值多少。⚠️ 權重要 ENCODER_VERSION 5。"
+}

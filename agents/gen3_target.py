@@ -139,8 +139,11 @@ def act(obs, config=None, params=None):
     policy = _policy()
     spatial, scalar = C.encode(obs, config)
     positions, unit_features = C.encode_units(obs, config)
+    # ⚠️ v5 起多一個 demand head，這一版用不到 —— 它的比較對象就是 v5
+    # （`agents/gen4_demand.py`），留著當 A/B 的舊臂。
     (op_logits, qty_logits, target_logits,
-     mk_present, mk_qty, _value) = policy(spatial, scalar, positions, unit_features)
+     mk_present, mk_qty, _value, _demand) = policy(
+        spatial, scalar, positions, unit_features)
 
     board = len(obs["farms"][int(obs["player"])]["tiles"])
     targets = _choose_targets(target_logits, C.legal_target_mask(obs, config))

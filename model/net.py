@@ -15,6 +15,19 @@
 
     value head：trunk 全域池化（mean + max）→ 期末現金（正規化過）
     market head：同一個池化 → present [21] 與 qty [21, 18]
+    demand head：1×1 conv 逐格 → [11, 10, 10]，攤成 [11, 100]
+
+## v5：逐格需求（demand head）
+
+`demand_logits` 說**哪一格要做什麼**（11 個 op × 100 格的 multi-label），
+派誰去做由 `agents/gen0._assign` 的 `_minimum_cost_assignment` 算，不經過網路。
+
+v4 是反過來的：target head 逐 unit 輸出「這個 unit 去哪一格」。DAgger 三輪
+之後準確率停在 0.6301，而一個回合有 12 個 unit —— `0.63 ** 12 = 0.4%`。
+而且準確率**隨資料量下降**（0.7580 → 0.6505 → 0.6301），因為兩個 unit 對兩個
+等距任務的配對是任意的，同一個盤面會有不同標籤。那是學不起來的雜訊。
+
+demand 沒有這個問題：一格該不該澆水是盤面的函式，跟哪個 unit 去無關。
 
 ## v4：市場也在裡面
 
@@ -60,11 +73,12 @@ import torch.nn.functional as F
 class KaggricultureNet(nn.Module):
     def __init__(self, n_spatial, n_scalar, n_unit_features,
                  n_ops, n_qty, n_targets, n_market_ops, n_market_qty,
-                 width=64, unit_hidden=256, n_blocks=4):
+                 n_task_ops, width=64, unit_hidden=256, n_blocks=4):
         super().__init__()
         self.width = width
         self.n_market_ops = n_market_ops
         self.n_market_qty = n_market_qty
+        self.n_task_ops = n_task_ops
 
         self.stem = nn.Conv2d(n_spatial, width, 3, padding=1)
         self.blocks = nn.ModuleList(
@@ -101,6 +115,15 @@ class KaggricultureNet(nn.Module):
         )
         self.market_present_out = nn.Linear(256, n_market_ops)
         self.market_qty_out = nn.Linear(256, n_market_ops * n_market_qty)
+
+        # v5 的 demand head：**逐格**輸出「這一格要做什麼」。1×1 conv 就是
+        # 對 trunk 每一格的 width 維各做一次同樣的線性層 —— 這正好對應
+        # 「同一條判斷規則套用在每一格上」，而且參數量只有 width × 11。
+        #
+        # 為什麼不掛在 unit head 上（v4 的 target head 就是）：unit head 是
+        # 逐 unit 的，12 個 unit 各猜各的格子，錯誤沿 unit 軸累乘
+        # （實測 0.63 ** 12 = 0.4%）。demand 跟 unit 無關，一個盤面一份答案。
+        self.demand_out = nn.Conv2d(width, n_task_ops, 1)
 
     def trunk(self, spatial, scalar):
         """回傳 [B, width, H, W]。一個 batch 的盤面只跑一次。"""
@@ -140,13 +163,22 @@ class KaggricultureNet(nn.Module):
             -1, self.n_market_ops, self.n_market_qty)
         return self.market_present_out(hidden), qty
 
+    def demand_logits(self, features):
+        """回傳 `[B, n_task_ops, 100]`。
+
+        `flatten(2)` 把 `[H, W]` 攤成 `y * W + x`，跟 `contracts.target_index()`
+        是同一個順序 —— 兩邊對不上的話會表現成「需求整個轉置了」，不會報錯。
+        """
+        return self.demand_out(features).flatten(2)
+
     def forward(self, spatial, scalar, unit_board, unit_pos, unit_features):
         features = self.trunk(spatial, scalar)
         op_logits, qty_logits, target_logits = self.unit_logits(
             features, unit_board, unit_pos, unit_features)
         market_present, market_qty = self.market_logits(features)
         return (op_logits, qty_logits, target_logits,
-                market_present, market_qty, self.value(features))
+                market_present, market_qty, self.value(features),
+                self.demand_logits(features))
 
 
 def count_parameters(model):

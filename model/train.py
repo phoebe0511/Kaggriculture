@@ -2,15 +2,23 @@
 
     python -m model.train --data data/dataset --epochs 8
 
-## v3：四個 head
+## v5：unit 那一半改成逐格需求
 
-    op      到了目標格要做什麼（44 選 1）  ← 語意跟 v2 不同
+    demand  哪一格要做什麼（11 個 op × 100 格的 multi-label）  ← 主要訊號
+    op      到了目標格要做什麼（44 選 1）
     qty     那個動作的數量（12 選 1）
-    target  這一段要走去哪一格（100 選 1）  ← 新的
+    target  這一段要走去哪一格（100 選 1）  ← v4 的，仍然訓但不再計分
+    market  present [21] + qty [21, 18]
     value   期末現金 / 100k
 
-走路不經過網路，用 `agents/gen0.step_toward`。`--labels immediate` 可以切回
-v2 的舊標籤做 A/B，資料不用重抽。
+派誰去哪一格由 `agents/gen0._minimum_cost_assignment` 算，走路用
+`agents/gen0.step_toward`，兩個都不經過網路。
+
+`demand` 的 loss **只在合法的格子上算**（`contracts.legal_demand_mask`）——
+1,100 個格子裡九成多是「沒種東西的地不能澆水」這種白送的負例。
+
+⚠️ demand 標籤只有 `harness.rollout` 產得出來（它讀規劃器的任務清單）。
+老師的 replay 沒有任務清單可讀，所以 `data/dataset/` 訓不了 v5。
 
 ## ⚠️ 準確率不是 kill switch
 
@@ -62,7 +70,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import contracts as C          # noqa: E402
+from harness.rollout import unpack_demand                 # noqa: E402
 from model.net import KaggricultureNet, count_parameters  # noqa: E402
+
+
+def demand_f1(pred, truth, legal):
+    """只在合法的格子上算 —— 不合法的格子推論時本來就會被遮掉。
+
+    用 F1 不用準確率：11 × 100 個格子裡通常只有幾十個有需求，「永遠說沒有」
+    的準確率就有九成多，看不出學到什麼（跟 market present 同一個理由）。
+    """
+    tp = int((pred & truth & legal).sum())
+    fp = int((pred & ~truth & legal).sum())
+    fn = int((~pred & truth & legal).sum())
+    return tp, fp, fn
 
 
 class Dataset:
@@ -80,6 +101,7 @@ class Dataset:
     def __init__(self, paths, labels="target"):
         boards_spatial, boards_scalar, boards_reward = [], [], []
         market_present, market_qty = [], []
+        demand_bits, demand_legal_bits = [], []
         units = {name: [] for name in self.UNIT_FIELDS}
         offset = 0
         for path in paths:
@@ -99,6 +121,14 @@ class Dataset:
                             "重跑 harness.build_dataset")
                 market_present.append(data["board_market_present"])
                 market_qty.append(data["board_market_qty"])
+                for name in ("board_demand_bits", "board_demand_legal_bits"):
+                    if name not in data.files:
+                        raise SystemExit(
+                            f"{path} 沒有 {name} —— 這是 v5 的逐格需求標籤，"
+                            "而它只有 harness.rollout 產得出來"
+                            "（老師的 replay 沒有任務清單可讀）")
+                demand_bits.append(data["board_demand_bits"])
+                demand_legal_bits.append(data["board_demand_legal_bits"])
                 for name in self.UNIT_FIELDS:
                     if name not in data.files:
                         raise SystemExit(
@@ -114,6 +144,11 @@ class Dataset:
         self.reward = np.concatenate(boards_reward)
         self.market_present = np.concatenate(market_present).astype(np.float32)
         self.market_qty = np.concatenate(market_qty).astype(np.int64)
+        # packed 的留 packed（`[N, 11, 13]`，一個盤面 143 byte）。dense 是
+        # 1,100 byte，39 萬個盤面就是 427 MB 一份、而且要兩份 —— 這份資料集
+        # 光 `spatial` 就已經 2.95 GB。解開的成本在 `make_batch` 分攤掉。
+        self.demand_bits = np.concatenate(demand_bits)
+        self.demand_legal_bits = np.concatenate(demand_legal_bits)
         self.unit_board = np.concatenate(units["unit_board"])
         self.unit_pos = np.concatenate(units["unit_pos"])
         self.unit_feat = np.concatenate(units["unit_feat"])
@@ -159,6 +194,9 @@ def make_batch(dataset, board_indices, device):
         "unit_target": to(dataset.unit_target[rows], torch.long),
         "market_present": to(dataset.market_present[board_indices], torch.float32),
         "market_qty": to(dataset.market_qty[board_indices], torch.long),
+        "demand": to(unpack_demand(dataset.demand_bits[board_indices]), torch.float32),
+        "demand_legal": to(
+            unpack_demand(dataset.demand_legal_bits[board_indices]), torch.bool),
         # 「目標就是自己現在這格」—— target head 的 dummy 對照組
         "unit_self_cell": to(
             dataset.unit_pos[rows][:, 1].astype(np.int64) * C.BOARD_SIZE
@@ -179,6 +217,8 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
     tgt_correct = tgt_total = tgt_dummy = 0
     mk_tp = mk_fp = mk_fn = 0
     mkq_correct = mkq_total = 0
+    dm_tp = dm_fp = dm_fn = 0
+    dm_all_tp = dm_all_fp = dm_all_fn = 0
     value_sq = 0.0
     order = np.arange(len(dataset))
     with torch.no_grad():
@@ -187,9 +227,21 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
                 break
             batch = make_batch(dataset, order[start:start + batch_size], device)
             (op_logits, qty_logits, target_logits,
-             mk_present, mk_qty, value) = model(
+             mk_present, mk_qty, value, demand_logits) = model(
                 batch["spatial"], batch["scalar"],
                 batch["unit_board"], batch["unit_pos"], batch["unit_feat"])
+
+            # demand：逐格 multi-label，只在合法格上算。
+            legal = batch["demand_legal"]
+            truth_demand = batch["demand"] > 0.5
+            tp, fp, fn = demand_f1(demand_logits > 0, truth_demand, legal)
+            dm_tp, dm_fp, dm_fn = dm_tp + tp, dm_fp + fp, dm_fn + fn
+            # dummy 對照組是「**所有合法的格子都要做**」（召回率 1，精確率就是
+            # 需求佔合法格的比例）。「永遠說沒有」的 F1 是 0，過了不代表學到
+            # 判斷；要贏的是這一個 —— 它才是「不做判斷」的下限。
+            tp, fp, fn = demand_f1(legal, truth_demand, legal)
+            dm_all_tp, dm_all_fp, dm_all_fn = (
+                dm_all_tp + tp, dm_all_fp + fp, dm_all_fn + fn)
 
             # market：present 用 F1 不用準確率 —— 51.7% 的回合一筆訂單都沒有，
             # 「永遠不下單」的準確率就有九成多，看不出學到什麼。
@@ -229,6 +281,14 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
     model.train()
     precision = mk_tp / max(1, mk_tp + mk_fp)
     recall = mk_tp / max(1, mk_tp + mk_fn)
+
+    def _f1(tp, fp, fn):
+        p = tp / max(1, tp + fp)
+        r = tp / max(1, tp + fn)
+        return 2 * p * r / max(1e-9, p + r), p, r
+
+    demand_score, demand_p, demand_r = _f1(dm_tp, dm_fp, dm_fn)
+    demand_dummy, _, _ = _f1(dm_all_tp, dm_all_fp, dm_all_fn)
     return {
         "op_acc": n_correct / max(1, n_total),
         "qty_acc": qty_correct / max(1, qty_total),
@@ -238,6 +298,10 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
         "market_precision": precision,
         "market_recall": recall,
         "market_qty_acc": mkq_correct / max(1, mkq_total),
+        "demand_f1": demand_score,
+        "demand_precision": demand_p,
+        "demand_recall": demand_r,
+        "demand_dummy": demand_dummy,
         "value_rmse": (value_sq / max(1, len(dataset))) ** 0.5,
     }
 
@@ -267,6 +331,10 @@ def main(argv=None):
     ap.add_argument("--target-weight", type=float, default=1.0,
                     help="target head 的 loss 權重。v3 的主要學習訊號，跟 op "
                          "同一個量級")
+    ap.add_argument("--demand-weight", type=float, default=2.0,
+                    help="逐格需求的 BCE 權重。v5 的主要學習訊號 —— unit 要去"
+                         "哪一格是從它算出來的，比 target head 重要，所以預設"
+                         "給兩倍")
     ap.add_argument("--labels", choices=("target", "immediate"), default="target",
                     help="target：op 標籤是 segment 的終點動作（v3 預設）。"
                          "immediate：v2 的舊標籤，留著做 A/B，不用重抽資料")
@@ -329,7 +397,7 @@ def main(argv=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = KaggricultureNet(
         C.N_SPATIAL, C.N_SCALAR, C.N_UNIT_FEATURES, C.N_UNIT_OPS, C.N_QTY,
-        C.N_TARGET_CELLS, C.N_MARKET_OPS, C.N_MARKET_QTY,
+        C.N_TARGET_CELLS, C.N_MARKET_OPS, C.N_MARKET_QTY, C.N_TASK_OPS,
         width=args.width, n_blocks=args.blocks).to(device)
     print(f"  device {device}   參數 {count_parameters(model):,}")
 
@@ -352,7 +420,7 @@ def main(argv=None):
             batch_idx = indices[step * args.batch:(step + 1) * args.batch]
             batch = make_batch(train, batch_idx, device)
             (op_logits, qty_logits, target_logits,
-             mk_present, mk_qty, value) = model(
+             mk_present, mk_qty, value, demand_logits) = model(
                 batch["spatial"], batch["scalar"],
                 batch["unit_board"], batch["unit_pos"], batch["unit_feat"])
 
@@ -375,6 +443,16 @@ def main(argv=None):
                 loss = loss + args.market_qty_weight * F.cross_entropy(
                     mk_qty[has_mk], batch["market_qty"][has_mk])
 
+            # demand：逐格 multi-label。**只在合法的格子上算 loss** ——
+            # 不合法的格子（沒種東西的地不能澆水）永遠是 0，把它們算進去的話
+            # 1,100 個格子裡有九成多是白送的負例，梯度會被「說沒有」淹掉。
+            # 遮掉之後剩下的才是真的要判斷的格子。
+            legal = batch["demand_legal"]
+            bce = F.binary_cross_entropy_with_logits(
+                demand_logits, batch["demand"], reduction="none")
+            loss = loss + args.demand_weight * (
+                (bce * legal).sum() / legal.sum().clamp(min=1))
+
             loss = loss + args.value_weight * F.mse_loss(value, batch["reward"])
 
             opt.zero_grad(set_to_none=True)
@@ -387,6 +465,9 @@ def main(argv=None):
         stats = evaluate(model, val, device, args.batch)
         elapsed = time.perf_counter() - started
         print(f"epoch {epoch:2d}  loss {running / steps_per_epoch:.4f}  "
+              f"demand F1 {stats['demand_f1']:.4f} "
+              f"(d {stats['demand_dummy']:.4f}, "
+              f"P {stats['demand_precision']:.2f} R {stats['demand_recall']:.2f})  "
               f"op {stats['op_acc']:.4f} (d {dummy_acc:.4f})  "
               f"qty {stats['qty_acc']:.4f} (d {dummy_qty_acc:.4f})  "
               f"target {stats['target_acc']:.4f} (d {stats['target_dummy']:.4f})  "
@@ -396,12 +477,14 @@ def main(argv=None):
               f"value {stats['value_rmse']:.4f} (d {dummy_value_rmse:.4f})  "
               f"{elapsed:.0f}s", flush=True)
 
-        # 選 checkpoint 要把三個 head 一起看 —— 只看 op 的話，一個「終點動作
-        # 猜得準但目標亂指、市場不下單」的模型會被選上，而它上場時每一步都在
-        # 往錯的地方走、農場什麼都買不到。
+        # 選 checkpoint 要把幾個 head 一起看 —— 只看 op 的話，一個「終點動作
+        # 猜得準但需求亂指、市場不下單」的模型會被選上，而它上場時整張農場
+        # 沒人照顧、什麼都買不到。v5 起 demand 是 unit 那一半的主要訊號，
+        # 所以它跟 op / market 同權重進來；target head 仍然訓，但不再計分
+        # —— 它已經不決定 unit 去哪裡了（`agents/gen4_demand.py`）。
         score = stats["op_acc"]
         if args.labels == "target":
-            score += stats["target_acc"] + stats["market_f1"]
+            score += stats["demand_f1"] + stats["market_f1"]
         if score > best:
             best, best_stats = score, stats
             torch.save({
@@ -413,16 +496,22 @@ def main(argv=None):
                 "val_op_acc": stats["op_acc"],
                 "val_target_acc": stats["target_acc"],
                 "val_market_f1": stats["market_f1"],
+                "val_demand_f1": stats["demand_f1"],
             }, out_dir / "best.pt")
 
-    print(f"\n存下來的 checkpoint：op {best_stats['op_acc']:.4f}"
-          f"（dummy {dummy_acc:.4f}）"
+    print(f"\n存下來的 checkpoint：demand F1 {best_stats['demand_f1']:.4f}"
+          f"（dummy {best_stats['demand_dummy']:.4f} —— 所有合法的格子都做）"
+          f"  op {best_stats['op_acc']:.4f}（dummy {dummy_acc:.4f}）"
           f"  target {best_stats['target_acc']:.4f}"
           f"（dummy {best_stats['target_dummy']:.4f}）"
           f"  market F1 {best_stats['market_f1']:.4f}（dummy 0 —— 永遠不下單）")
     if best_stats["op_acc"] <= dummy_acc * 1.2:
         print("⚠️  op 贏不過 dummy 多少 —— 先懷疑 contracts.py 漏了資訊，"
               "不要調訓練參數硬撐（workflow.md §5 失敗模式 #2）")
+    if best_stats["demand_f1"] <= best_stats["demand_dummy"]:
+        print("⚠️  demand 贏不過「所有合法的格子都做」—— 網路沒有學到任何判斷，"
+              "只是把 mask 抄了一遍。先看 legal_demand_mask 是不是擋太多"
+              "（擋到只剩正解，那 dummy 自然就滿分）")
     if args.labels == "target" and \
             best_stats["target_acc"] <= best_stats["target_dummy"] * 1.2:
         print("⚠️  target 贏不過「猜自己這格」多少 —— 目標可能不是盤面的函數，"

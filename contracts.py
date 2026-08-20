@@ -101,7 +101,28 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 #: 的 p5**（我們 1 隻、老師 p5 是 6 隻），而動物是市場買的不是 unit 決定的 ——
 #: 整季 gen0 只買了 3 隻 COW、13 個 WHEAT，老師是 14 隻動物、553 個 WHEAT。
 #: 「只模仿一半的 policy」就是這個意思。
-ENCODER_VERSION = 4
+#:
+#: v4 -> v5（2026-08-20）：**unit 的輸出從「每個 unit 去哪一格」改成「每一格
+#: 要做什麼」**（`TASK_OPS` + `legal_demand_mask` + net 的 demand head）。
+#: 輸入 schema 仍然一個 bit 都沒動。
+#:
+#: 為什麼要改：v4 的 target head 是逐 unit 的，12 個 unit 各自獨立猜格子，
+#: 而 DAgger 三輪之後 target 準確率停在 0.6301 —— `0.63 ** 12 = 0.4%`，
+#: 也就是「整個回合 12 個 unit 全部放對」幾乎不會發生。錯誤從時間軸（v3 修掉的
+#: 那條）搬到了 unit 軸，仍然是乘法。
+#:
+#: 而且 0.6301 這個數字是**資料愈多愈低**（0.7580 -> 0.6505 -> 0.6301）。原因是
+#: 標籤本身有雜訊：`agents/gen0._assign` 用 `_minimum_cost_assignment` 做全域
+#: 最短配對，兩個 unit 對兩個等距任務的配對是任意的（Hungarian 的內部順序決定），
+#: 盤面相同、標籤不同 —— 那是學不起來的東西。
+#:
+#: v5 把這件事切開：
+#:   - **判斷**（哪一格該澆水、值不值得施肥）是盤面的函式，有唯一答案 -> 網路
+#:   - **配對**（哪個 unit 去哪一格比較近）算得出最佳解 -> 還給
+#:     `_minimum_cost_assignment`
+#: demand map 是 `[N_TASK_OPS, N_TARGET_CELLS]` 的 multi-label，逐格獨立，
+#: 一格猜錯只影響那一格，不會像 v4 那樣讓整個回合的配對錯位。
+ENCODER_VERSION = 5
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +237,28 @@ def target_xy(index, board):
             f"板子是 {board}×{board}，target head 是 {N_TARGET_CELLS} 格")
     index = int(index)
     return index % board, index // board
+
+
+#: v5 的 demand head：**這一格要做什麼**，跟哪個 unit 去做無關。
+#:
+#: 順序寫死，跟 `UNIT_OPS` 一樣是 schema 的一部分。這 11 個就是
+#: `agents/gen0._tasks()` 會掃出來的逐格任務。
+#:
+#: **`FETCH_*` 不在裡面** —— 那三個是導出的：要幾趟 WHEAT 由 FEED 的格數決定、
+#: 要幾趟 FERTILIZER 由 FERTILIZE 的格數決定、要幾趟動物由 PLACE 的格數決定。
+#: 它們的目標格永遠是 shed 那四格，也不是「哪一格該做什麼」這個問題的答案。
+#: 讓網路預測導出量只會多一個對不上的機會，所以留給 `gen0` 算。
+#:
+#: **`arg` 也不在裡面**：`PLANT` 種什麼由 `crop_for(x, y, basket)` 決定（同一格
+#: 永遠同一種），`PLACE` / `BUILD_*` 放哪一species由 `_house_animals()` 決定
+#: （看手上真的有什麼）。兩個都是查表，不是判斷。
+TASK_OPS = (
+    "WATER", "HARVEST", "FERTILIZE", "DIG", "PLANT",
+    "FEED", "CARE", "COLLECT_FERTILIZER",
+    "PLACE", "BUILD_COOP", "BUILD_PASTURE",
+)
+N_TASK_OPS = len(TASK_OPS)
+TASK_OP_INDEX = {op: i for i, op in enumerate(TASK_OPS)}
 
 
 # --------------------------------------------------------------------------
@@ -940,6 +983,75 @@ def legal_target_mask(obs, config=None):
 
     n_units = 1 + len(farm["hands"])
     return np.broadcast_to(row, (n_units, N_TARGET_CELLS)).copy()
+
+
+def legal_demand_mask(obs, config=None):
+    """v5 的 demand head 遮罩，回傳 `[N_TASK_OPS, N_TARGET_CELLS]` 的 bool。
+
+    「這一格**有可能**需要做這件事嗎」——只看格子的狀態。
+
+    ## 跟 `legal_unit_mask` 的差別：這裡不看 inventory
+
+    `legal_unit_mask` 的 `FEED` 要求該 unit 手上有 WHEAT、`FERTILIZE` 要求有
+    FERTILIZER、`PLANT` 要求有種子。**demand 不看這些** —— 「那頭牛今天還沒吃」
+    是格子的事實，手上有沒有飼料是物流問題，答案是派人去 shed 拿
+    （`FETCH_WHEAT`），不是把需求抹掉。出發前就擋掉的話，整條補給鏈就沒有
+    觸發條件了。
+
+    ## 不變式跟前兩個 mask 同一條：寧可放寬
+
+    `agents/gen0._tasks()` 掃出來的每一筆任務都必須落在這個 mask 裡面 ——
+    `harness/rollout.Recorder.record()` 每個回合都會驗，不合就直接拋錯。
+    擋掉的話那筆需求連學都學不到，而且不會有人告訴你。
+
+    所以這裡取的都是寬鬆側：`_tasks` 的 `FERTILIZE` 要過
+    `_fertilize_worth_it()`（看價格、看天數），mask 只要求「這格是作物」；
+    `DIG` 只在 WEED 上發，mask 連作物和空建物都放行（引擎允許）。
+    **值不值得做是網路要學的判斷，能不能做才是 mask 的事。**
+
+    `LOCKED` 全擋 —— 引擎的 `DROP` / `PICKUP` / `PLACE`（存貨那一路）雖然在
+    LOCKED guard 之前處理，但那三個都不在 `TASK_OPS` 裡；`TASK_OPS` 的
+    `PLACE` 是「把動物放進建物」，那需要格子上先有建物，LOCKED 的格子沒有。
+    """
+    player = int(obs["player"])
+    tiles = obs["farms"][player]["tiles"]
+    board = len(tiles)
+
+    mask = np.zeros((N_TASK_OPS, N_TARGET_CELLS), dtype=bool)
+    for y in range(board):
+        for x in range(board):
+            tile = tiles[y][x]
+            if tile == "LOCKED":
+                continue
+            cell = target_index(x, y, board)
+            if tile is None:
+                mask[TASK_OP_INDEX["PLANT"], cell] = True
+                mask[TASK_OP_INDEX["BUILD_COOP"], cell] = True
+                mask[TASK_OP_INDEX["BUILD_PASTURE"], cell] = True
+                continue
+            if not isinstance(tile, dict):
+                continue
+            kind = tile.get("kind")
+            animal = bool(tile.get("animal"))
+            yield_units = tile.get("yield_units", 0)
+
+            if kind == "PLANT":
+                mask[TASK_OP_INDEX["WATER"], cell] = not tile.get("watered_today")
+                mask[TASK_OP_INDEX["FERTILIZE"], cell] = True
+            if kind in ("PLANT", "WEED") or (
+                    kind in ("COOP", "PASTURE") and not animal):
+                # 有動物的建物挖不掉（engine-notes §10.7）
+                mask[TASK_OP_INDEX["DIG"], cell] = True
+            if kind in ("COOP", "PASTURE") and not animal:
+                mask[TASK_OP_INDEX["PLACE"], cell] = True
+            if (kind == "PLANT" or animal) and yield_units > 0:
+                mask[TASK_OP_INDEX["HARVEST"], cell] = True
+            if animal:
+                mask[TASK_OP_INDEX["FEED"], cell] = not tile.get("fed_today")
+                mask[TASK_OP_INDEX["CARE"], cell] = not tile.get("cared_today")
+                mask[TASK_OP_INDEX["COLLECT_FERTILIZER"], cell] = bool(
+                    tile.get("fertilizer_available"))
+    return mask
 
 
 # --------------------------------------------------------------------------

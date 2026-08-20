@@ -130,10 +130,23 @@ class NumpyPolicy:
         qty = _linear(h, w["market_qty_out.weight"], w["market_qty_out.bias"])
         return present, qty.reshape(len(present), -1)
 
+    def demand_logits(self, features):
+        """v5 的逐格需求，回傳 `[n_task_ops, 100]`。
+
+        1×1 conv 就是對每一格的 width 維各做一次同樣的線性層，所以直接把
+        `[width, 10, 10]` 攤成 `[width, 100]` 做矩陣乘法。攤的順序是
+        `y * 10 + x`，跟 `torch` 的 `flatten(2)` 和 `contracts.target_index()`
+        都一致。
+        """
+        w = self.w
+        flat = features.reshape(features.shape[0], -1)          # [width, 100]
+        return w["demand_out.weight"][:, :, 0, 0] @ flat + w["demand_out.bias"][:, None]
+
     def __call__(self, spatial, scalar, positions, unit_features):
         features = self.trunk(spatial, scalar)
         op_logits, qty_logits, target_logits = self.unit_logits(
             features, positions, unit_features)
         market_present, market_qty = self.market_logits(features)
         return (op_logits, qty_logits, target_logits,
-                market_present, market_qty, self.value(features))
+                market_present, market_qty, self.value(features),
+                self.demand_logits(features))

@@ -22,6 +22,15 @@ DAgger 就是為這個病設計的：**訓練資料來自 policy 自己會走到
 self-play 資料 —— 第二輪要拿那份資料訓一個能分辨盤面好壞的 value head，
 再把 expert 換成離線 search。
 
+## v5：多錄一份逐格需求
+
+`board_demand_bits` / `board_demand_legal_bits` 是「哪一格要做什麼」，直接讀
+`gen0._tasks()` 掃出來的任務清單（`plan["tasks"]`）。v4 的逐 unit target 標籤
+仍然照錄 —— 兩組標籤都在同一份 npz 裡，`agents/gen3_target.py` 和
+`agents/gen4_demand.py` 可以用同一份權重做 A/B。
+
+每個回合都驗「expert 的需求 ⊆ `legal_demand_mask`」，不合就拋錯。
+
 ## 標籤直接讀規劃器，不反推
 
 `agents/gen0.act(return_plan=True)` 會交出每個 unit 的**終點格與到了要做的動作**
@@ -66,6 +75,32 @@ from harness.build_dataset import dense_market           # noqa: E402
 DEFAULT_OPPONENTS = ("ladder-top-a", "ref-v4", "starter")
 
 
+def demand_from_tasks(tasks, board):
+    """expert 的任務清單 -> `[N_TASK_OPS, N_TARGET_CELLS]` 的 bool（v5 標籤）。
+
+    `FETCH_*` 不進去 —— 那三個是從 FEED / FERTILIZE / PLACE 的格數導出的
+    （`agents/gen0._tasks()` 的補給那一段），目標格永遠是 shed 那四格，
+    不是「哪一格該做什麼」的答案。網路預測導出量只會多一個對不上的機會。
+
+    標籤直接讀規劃器的輸出，不從動作反推 —— 跟 v3 的 target 標籤同一個理由。
+    """
+    grid = np.zeros((C.N_TASK_OPS, C.N_TARGET_CELLS), dtype=bool)
+    for _pri, op, x, y, _arg in tasks:
+        index = C.TASK_OP_INDEX.get(op)
+        if index is not None:
+            grid[index, C.target_index(x, y, board)] = True
+    return grid
+
+
+def unpack_demand(bits):
+    """`board_demand_bits` -> `[..., N_TASK_OPS, N_TARGET_CELLS]` 的 uint8（0/1）。
+
+    `count` 一定要給 —— 不給的話最後一個 byte 的 4 個 padding bit 會被當成
+    第 101~104 格，形狀變 104 而不是 100，之後所有的 reshape 都會錯位。
+    """
+    return np.unpackbits(bits, axis=-1, count=C.N_TARGET_CELLS)
+
+
 class Recorder:
     """一局之內累積樣本；`finish()` 補上期末現金後吐出 arrays。"""
 
@@ -76,6 +111,7 @@ class Recorder:
         self.unit_op, self.unit_qty = [], []
         self.unit_target, self.unit_term_op, self.unit_term_qty = [], [], []
         self.market_board, self.market_op, self.market_qty = [], [], []
+        self.demand, self.demand_legal = [], []
         self.skipped = 0
 
     def record(self, obs, config, action, plan):
@@ -88,6 +124,21 @@ class Recorder:
         self.spatial.append(spatial.astype(np.float16))
         self.scalar.append(scalar)
         self.step.append(int(obs.get("step", 0)))
+
+        # v5：逐格需求。expert 掃出來的每一筆都必須落在 mask 裡面 ——
+        # 擋掉的話網路連學都學不到那筆需求，而且不會有人告訴你
+        # （`contracts.legal_demand_mask` 的不變式）。所以這裡直接拋錯。
+        demand = demand_from_tasks(plan["tasks"], board)
+        legal = C.legal_demand_mask(obs, config)
+        outside = demand & ~legal
+        if outside.any():
+            op_index, cell = (int(a[0]) for a in np.nonzero(outside))
+            raise AssertionError(
+                f"step {obs.get('step')}：expert 要求 "
+                f"{C.TASK_OPS[op_index]} @ {C.target_xy(cell, board)}，"
+                f"但 legal_demand_mask 擋掉了 —— 放寬 mask，不要改這裡")
+        self.demand.append(np.packbits(demand, axis=-1))
+        self.demand_legal.append(np.packbits(legal, axis=-1))
 
         emitted = [action.get("farmer")] + list(action.get("hands") or [])
         for i in range(len(positions)):
@@ -150,6 +201,15 @@ class Recorder:
             "market_qty": np.asarray(self.market_qty, dtype=np.int16),
             "board_market_present": present,
             "board_market_qty": bucket,
+            # v5 的 demand 標籤與遮罩。存的是 `np.packbits` 之後的 `[N, 11, 13]`
+            # 而不是 `[N, 11, 100]` —— 8 倍的差別，而且 `model/train.py` 本來就
+            # 要以 packed 的形式放在記憶體裡（一輪 39 萬個盤面，dense 是 427 MB
+            # 一份、要兩份）。名字帶 `_bits` 就是提醒不要當 dense 用，
+            # 解開用 `unpack_demand()`。
+            "board_demand_bits": np.asarray(self.demand, dtype=np.uint8).reshape(
+                n, C.N_TASK_OPS, -1),
+            "board_demand_legal_bits": np.asarray(
+                self.demand_legal, dtype=np.uint8).reshape(n, C.N_TASK_OPS, -1),
             "encoder_version": np.asarray([C.ENCODER_VERSION], dtype=np.int32),
             "episode_id": np.asarray([episode_id], dtype=np.int64),
             "rewards": np.asarray(rewards, dtype=np.float32),
@@ -207,6 +267,12 @@ def _play(job):
             "cash": rewards[0], "opp_cash": rewards[1],
             "boards": len(arrays["board_scalar"]),
             "units": len(arrays["unit_op"]), "skipped": rec.skipped,
+            # demand 的密度：`model/train.py` 的 dummy 對照組（「所有合法的格子
+            # 都做」）的精確率就是這兩個數的比值 —— 太接近 1 代表 mask 已經把
+            # 答案框死了，網路沒有判斷可做。
+            "demand_on": int(unpack_demand(arrays["board_demand_bits"]).sum()),
+            "demand_legal_on": int(
+                unpack_demand(arrays["board_demand_legal_bits"]).sum()),
             "bytes": dest.stat().st_size, "elapsed": time.perf_counter() - t0}
 
 
@@ -258,6 +324,12 @@ def main(argv=None):
     print(f"  board 樣本   {sum(r['boards'] for r in ok):,}")
     print(f"  unit 樣本    {sum(r['units'] for r in ok):,}"
           f"（編不出來而跳過 {sum(r['skipped'] for r in ok):,}）")
+    on = sum(r["demand_on"] for r in ok)
+    legal_on = sum(r["demand_legal_on"] for r in ok)
+    boards = sum(r["boards"] for r in ok)
+    print(f"  demand        每個盤面 {on / max(1, boards):.1f} 筆需求 / "
+          f"{legal_on / max(1, boards):.1f} 個合法格"
+          f"（dummy 精確率 {on / max(1, legal_on):.1%}）")
     print(f"  磁碟          {size / 2**20:,.0f} MB")
     print(f"  吞吐          {len(ok) / elapsed * 3600:,.0f} 局/小時")
     # value head 要靠這個範圍才學得到東西 —— replay 資料只有 0.363~1.402

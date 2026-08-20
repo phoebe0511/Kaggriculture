@@ -1062,51 +1062,28 @@ def _pickup_quantities(unit_actions):
     return picked
 
 
-def _tasks(
+def _tile_tasks(
     tiles,
     day,
     board,
     params,
-    struct_order,
+    struct_set,
     struct_plan,
-    unit_inv,
-    private,
-    active_tiles=None,
-    days_left=None,
-    prices=None,
-    hour=None,
-    turns_per_day=24,
+    place_target,
+    homeless,
+    active_tiles,
+    days_left,
+    prices,
+    planting_allowed,
 ):
-    """掃出全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
+    """掃盤面，回傳 `(逐格任務, place_want, n_feed, n_fert)`。**不含 `FETCH_*`。**
 
-    `arg`：FETCH_* 是 `(item, 數量)`，BUILD_* / PLACE 是要養的species，其餘 None。
-    順序只取決於 (優先序, y, x)，不依賴 dict 迭代順序 —— 保證可重現。
+    這是 v5 切開的「判斷」那一半 —— `demand_tile_tasks()` 是同一個回傳形狀的
+    網路版本。補給任務（`FETCH_*`）兩邊共用，留在 `_tasks()` 裡。
+
+    ⚠️ 會就地遞減 `homeless`：一格 BUILD 掉一隻，下一格才不會重複蓋。
     """
     out = []
-    struct_set = set(struct_order)
-    # 新苗建立時 consecutive_unwatered=1；若在每天最後一小時才種，當回合
-    # 已沒有第二個 unit-turn 可以 WATER，EOD 會立刻加到 2 並變成 WEED。
-    # 由參數開關隔離，凍結的舊對手沒有此參數時仍保留原行為。
-    planting_allowed = (
-        not params.get("avoid_last_hour_planting", False)
-        or hour is None
-        or int(hour) < max(1, int(turns_per_day)) - 1
-    )
-
-    # **有動物在手上才蓋建物。**
-    #
-    # 建物種類蓋下去就綁死（COOP 放不了 COW，`DIG` 也移不掉有動物的建物），
-    # 所以蓋的那一刻就是決定的那一刻 —— 要把它推到資訊最多的時候。
-    # 之前是「計畫要幾隻就先蓋幾個」，用季末預期需求算的話 day 1 就把 12 個
-    # 全蓋成 PASTURE，整季一隻鵝都養不了（實測期末少 $8,786）。
-    #
-    # 改成：手上（shed + 各 unit 的 inventory）有動物、而且沒有結構相符的
-    # 空建物可以放，才蓋一個給牠。這樣不會蓋出填不滿的建物。
-    held = {}
-    for s in ANIMALS:
-        held[s] = private["shed"].get(s, 0) + sum(
-            inv.get(s, 0) for inv in unit_inv)
-    place_target, homeless = _house_animals(tiles, board, struct_plan, held)
     n_feed = n_fert = 0
     place_want = {}          # species -> 有幾個空建物在等它
 
@@ -1191,6 +1168,126 @@ def _tasks(
                     out.append((_PRI["PLACE"], "PLACE", x, y, species))
                     place_want[species] = place_want.get(species, 0) + 1
 
+    return out, place_want, n_feed, n_fert
+
+
+def demand_tile_tasks(demand, tiles, board, struct_plan, place_target):
+    """網路的 demand map -> 跟 `_tile_tasks()` 一樣的 `(任務, place_want, n_feed, n_fert)`。
+
+    `demand[op_index][cell]` 是 truthy 就代表那一格要做那件事，`op_index` 依
+    `contracts.TASK_OPS`、`cell` 依 `contracts.target_index`。**這裡不 import
+    numpy** —— 傳 numpy 陣列進來一樣能用，而 `agents/gen0.py` 是 submission 的
+    核心，能少一個 import 就少一個。
+
+    ## 只補三件 demand map 表達不了的東西
+
+    1. **優先序**：查 `_PRI`。網路不預測優先序 —— 那是「unit 不夠時先做哪個」，
+       是配對那一半的事。⚠️ 這代表網路只能加減需求，不能改順序。
+    2. **`PLANT` 的作物**：`crop_for(x, y, basket)`，同一格永遠同一種。
+    3. **`PLACE` / `BUILD_*` 的species**：`place_target`（`_house_animals()` 算的，
+       手上真的有貨的優先）；那一格沒配到就退回 `species_for_structure()`。
+
+    ## 跟 `_tile_tasks()` 刻意不同的一點：BUILD 不再看 `homeless`
+
+    規則版只在「手上有動物、而且沒有結構相符的空建物」時才發 BUILD。那是一條
+    判斷，v5 把判斷交給網路了 —— 這裡照 demand 發。網路是拿規則版的輸出訓的，
+    所以它會學到同一個時機；學歪的話會表現成建物太多，`tools/action_dist.py`
+    的 `BUILD_*` 次數看得出來。**不要在這裡偷偷加回門檻** —— 那會變成
+    「網路說要蓋但沒蓋」，一個不會報錯的無聲否決。
+    """
+    from contracts import TASK_OPS, target_xy               # noqa: PLC0415
+
+    out = []
+    n_feed = n_fert = 0
+    place_want = {}
+
+    for op_index, op in enumerate(TASK_OPS):
+        row = demand[op_index]
+        for cell in range(board * board):
+            if not row[cell]:
+                continue
+            x, y = target_xy(cell, board)
+            tile = tiles[y][x]
+            arg = None
+            if op == "PLANT":
+                pass                                    # 作物由 `_task_action` 查表
+            elif op in ("PLACE", "BUILD_COOP", "BUILD_PASTURE"):
+                kind = ("COOP" if op == "BUILD_COOP"
+                        else "PASTURE" if op == "BUILD_PASTURE"
+                        else tile.get("kind") if isinstance(tile, dict) else None)
+                arg = place_target.get((x, y)) or species_for_structure(
+                    kind, struct_plan.get((x, y)))
+                if arg is None:
+                    continue                            # 這個結構沒有對應的species
+                if op == "PLACE":
+                    place_want[arg] = place_want.get(arg, 0) + 1
+            elif op == "FEED":
+                n_feed += 1
+            elif op == "FERTILIZE":
+                n_fert += 1
+            out.append((_PRI["BUILD"] if op.startswith("BUILD_") else _PRI[op],
+                        op, x, y, arg))
+
+    return out, place_want, n_feed, n_fert
+
+
+def _tasks(
+    tiles,
+    day,
+    board,
+    params,
+    struct_order,
+    struct_plan,
+    unit_inv,
+    private,
+    active_tiles=None,
+    days_left=None,
+    prices=None,
+    hour=None,
+    turns_per_day=24,
+    demand=None,
+):
+    """全盤待辦任務，回傳 [(優先序, op, x, y, arg)]。
+
+    `arg`：FETCH_* 是 `(item, 數量)`，BUILD_* / PLACE 是要養的species，其餘 None。
+    順序只取決於 (優先序, y, x)，不依賴 dict 迭代順序 —— 保證可重現。
+
+    `demand` 給了就走 v5 那一路：逐格任務由網路的 demand map 決定，補給任務
+    （`FETCH_*`）仍然是導出的。給 `None` 就是原本的規則式掃描，行為完全不變。
+    """
+    struct_set = set(struct_order)
+    # 新苗建立時 consecutive_unwatered=1；若在每天最後一小時才種，當回合
+    # 已沒有第二個 unit-turn 可以 WATER，EOD 會立刻加到 2 並變成 WEED。
+    # 由參數開關隔離，凍結的舊對手沒有此參數時仍保留原行為。
+    planting_allowed = (
+        not params.get("avoid_last_hour_planting", False)
+        or hour is None
+        or int(hour) < max(1, int(turns_per_day)) - 1
+    )
+
+    # **有動物在手上才蓋建物。**
+    #
+    # 建物種類蓋下去就綁死（COOP 放不了 COW，`DIG` 也移不掉有動物的建物），
+    # 所以蓋的那一刻就是決定的那一刻 —— 要把它推到資訊最多的時候。
+    # 之前是「計畫要幾隻就先蓋幾個」，用季末預期需求算的話 day 1 就把 12 個
+    # 全蓋成 PASTURE，整季一隻鵝都養不了（實測期末少 $8,786）。
+    #
+    # 改成：手上（shed + 各 unit 的 inventory）有動物、而且沒有結構相符的
+    # 空建物可以放，才蓋一個給牠。這樣不會蓋出填不滿的建物。
+    held = {}
+    for s in ANIMALS:
+        held[s] = private["shed"].get(s, 0) + sum(
+            inv.get(s, 0) for inv in unit_inv)
+    place_target, homeless = _house_animals(tiles, board, struct_plan, held)
+
+    if demand is None:
+        out, place_want, n_feed, n_fert = _tile_tasks(
+            tiles, day, board, params, struct_set, struct_plan, place_target,
+            homeless, active_tiles, days_left, prices, planting_allowed)
+    else:
+        out, place_want, n_feed, n_fert = demand_tile_tasks(
+            demand, tiles, board, struct_plan, place_target)
+
     # --- 補給任務 ---
     # 每筆 FETCH 讓一個 unit 去 shed 拿一趟。目標格用 shed 相鄰四格的第一格
     # 當距離代表值，實際走位在 `_task_action` 裡挑最近的那一格。
@@ -1214,9 +1311,10 @@ def _tasks(
         have_wheat -= take
         need_feeders -= take
 
-    if params["use_fertilizer"]:
-        for _ in range(min(_short(n_fert, "FERTILIZER"), shed.get("FERTILIZER", 0))):
-            out.append((_PRI["FETCH_FERTILIZER"], "FETCH_FERTILIZER", sx, sy, ("FERTILIZER", 1)))
+    # `n_fert` 已經隱含了 `params["use_fertilizer"]` —— `_tile_tasks()` 只在那個
+    # 開關開著時才數。所以這裡不再重複檢查，v5 的 demand 路徑才拿得到補給。
+    for _ in range(min(_short(n_fert, "FERTILIZER"), shed.get("FERTILIZER", 0))):
+        out.append((_PRI["FETCH_FERTILIZER"], "FETCH_FERTILIZER", sx, sy, ("FERTILIZER", 1)))
 
     out.sort(key=lambda t: (t[0], t[3], t[2]))
     return out
@@ -2062,11 +2160,15 @@ def _market(
 # 進入點
 # --------------------------------------------------------------------------
 
-def act(obs, config=None, params=None, return_plan=False):
+def act(obs, config=None, params=None, return_plan=False, demand=None):
     """`return_plan=True` 時回傳 `(action, plan)`，其餘行為完全不變。
 
     `plan["plan"][i]` 是第 i 個 unit 的 `(終點格, 到了要做的動作)`，閒置的是
     `None`。DAgger 拿它當 v3 的訓練標籤 —— 見 `task_destination()`。
+    `plan["tasks"]` 是完整的任務清單，v5 的 demand 標籤從它來。
+
+    `demand` 給了就用網路的逐格需求取代規則式掃描（`demand_tile_tasks()`），
+    **配對、走路、市場那三段完全共用** —— 那正是 v5 要保留的部分。
     """
     overrides = dict(params or {})
     replace_defaults = bool(overrides.pop("_replace_defaults", False))
@@ -2138,7 +2240,7 @@ def act(obs, config=None, params=None, return_plan=False):
         tiles, day, board, p, struct_order, struct_plan,
         unit_inv, private, active_tiles=active_tiles, days_left=days_left,
         prices=obs["market"]["prices"], hour=obs.get("hour", 0),
-        turns_per_day=turns_per_day,
+        turns_per_day=turns_per_day, demand=demand,
     )
 
     # 最後一天的 EOD 產出沒有下一個市場回合可賣。此時 WATER / CARE /
@@ -2228,7 +2330,7 @@ def act(obs, config=None, params=None, return_plan=False):
             op, tx, ty, arg = assigned[i]
             plan.append(task_destination(pos, (tx, ty), op, arg, p, board))
         return action, {"unit_pos": list(unit_pos), "plan": plan,
-                        "board": board, "params": p}
+                        "tasks": tasks, "board": board, "params": p}
     return action
 
 

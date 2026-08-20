@@ -45,7 +45,7 @@ def test_encoder_version_is_bound_to_schema_size():
     ⚠️ 這個測試紅掉的正確反應是**升 `ENCODER_VERSION` 並改這裡的數字**，
     順便確認舊權重檔已經作廢。不是把數字改掉了事 —— 那等於把保護拆掉。
     """
-    assert C.ENCODER_VERSION == 4
+    assert C.ENCODER_VERSION == 5
     assert C.N_SPATIAL == 38
     assert C.N_SCALAR == 75
     assert C.N_UNIT_FEATURES == 18
@@ -54,6 +54,7 @@ def test_encoder_version_is_bound_to_schema_size():
     assert C.N_TARGET_CELLS == 100
     assert C.N_MARKET_OPS == 21
     assert C.N_MARKET_QTY == 18
+    assert C.N_TASK_OPS == 11
 
 
 def test_schema_names_are_unique():
@@ -227,3 +228,42 @@ def test_mask_rarely_blocks_what_the_teacher_actually_did():
     assert total > 10_000
     rate = blocked / total
     assert rate < 0.005, f"擋掉了 {blocked}/{total} = {rate:.3%}"
+
+
+def test_demand_mask_and_unit_mask_agree_about_the_tile():
+    """兩個 mask 對「這格能不能做這件事」必須說同一句話。
+
+    `legal_demand_mask` 是「這格**需不需要**」，`legal_unit_mask` 是「站在這格的
+    這個 unit **能不能**」。差別只該來自 unit 自己的 inventory —— 對
+    `WATER` / `HARVEST` / `DIG` / `CARE` / `COLLECT_FERTILIZER` 這五個，
+    `legal_unit_mask` 根本不看 inventory，所以兩邊要**逐格完全相同**。
+
+    不同就代表其中一邊的格子條件寫錯了，而那不會報錯：demand 那邊寫寬了會
+    派人去做 no-op，寫窄了會讓那種需求整季不出現。
+    """
+    obs, config = _fresh_observation()
+    demand = C.legal_demand_mask(obs, config)
+    unit = C.legal_unit_mask(obs, config)
+
+    farm = obs["farms"][0]
+    board = len(farm["tiles"])
+    positions = [tuple(farm["farmer"])] + [tuple(h) for h in farm["hands"]]
+    assert positions, "這一步沒有任何 unit，換一個 step"
+
+    no_inventory = ("WATER", "HARVEST", "DIG", "CARE", "COLLECT_FERTILIZER")
+    for i, (x, y) in enumerate(positions):
+        cell = C.target_index(x, y, board)
+        for op in no_inventory:
+            assert bool(demand[C.TASK_OP_INDEX[op], cell]) == \
+                bool(unit[i, C.UNIT_OP_INDEX[(op, None)]]), \
+                f"{op} @ ({x},{y})：demand 與 unit mask 不一致"
+        # 這幾個 `legal_unit_mask` 另外檢查 inventory / 種子，所以只能是子集。
+        # 反過來（demand 擋掉而 unit 允許）就是 demand 寫窄了。
+        for op in ("PLANT", "FERTILIZE", "FEED", "BUILD_COOP", "BUILD_PASTURE"):
+            # `FEED` / `FERTILIZE` 都是 `NO_ARG_OPS` —— 消耗的 WHEAT 與
+            # FERTILIZER 是從 unit 自己的 inventory 扣的，不寫在動作裡。
+            unit_ops = ([C.UNIT_OP_INDEX[("PLANT", crop)] for crop in C.CROP_ORDER]
+                        if op == "PLANT" else [C.UNIT_OP_INDEX[(op, None)]])
+            if any(unit[i, j] for j in unit_ops):
+                assert demand[C.TASK_OP_INDEX[op], cell], \
+                    f"{op} @ ({x},{y})：unit mask 允許但 demand mask 擋掉了"
