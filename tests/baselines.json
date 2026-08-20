@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "engine": "kaggle-environments==1.32.7",
-  "agent": "main:agent",
+  "agent": "agents.gen1:act",
   "opponent": "starter",
   "created": "2026-08-19",
   "seeds": {
@@ -17,5 +17,6 @@
       "cash_agent": 86199.0,
       "cash_opponent": 3676.0
     }
-  }
+  },
+  "agent_note": "規則式那條路的決定性基準。main.py 2026-08-20 起是網路版（agents/gen4_demand），期末現金會隨權重變，不適合當基準線。"
 }

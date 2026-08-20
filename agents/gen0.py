@@ -32,6 +32,21 @@
 import functools
 import os
 
+# 🩸 **一定要在模組層 import，不可以搬進函式裡。**
+#
+# `kaggle_environments` 載入 agent 的方式是（`agent.py:48-58`）：
+#
+#     sys.path.append(exec_dir)
+#     exec(code_object, env)
+#     sys.path.pop()            # ← 立刻就拿掉了
+#
+# 所以 submission 那些攤平的模組**只有在 import main.py 的那一瞬間找得到**。
+# 第一版把它寫成 `demand_tile_tasks()` 裡的區域 import，本機（repo root 在
+# sys.path 上）跑得好好的，`eval.runner --a submission` 一跑就每局
+# `ModuleNotFoundError: No module named 'npz_forward'`（同一個病的另一個點）。
+# 上場的話就是每一回合都拋錯、整局 PASS。
+from contracts import TASK_OPS, target_xy
+
 from kaggle_environments.envs.kaggriculture.kaggriculture import (
     ANIMALS,
     CROPS,
@@ -1195,8 +1210,6 @@ def demand_tile_tasks(demand, tiles, board, struct_plan, place_target):
     的 `BUILD_*` 次數看得出來。**不要在這裡偷偷加回門檻** —— 那會變成
     「網路說要蓋但沒蓋」，一個不會報錯的無聲否決。
     """
-    from contracts import TASK_OPS, target_xy               # noqa: PLC0415
-
     out = []
     n_feed = n_fert = 0
     place_want = {}

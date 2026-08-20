@@ -54,12 +54,35 @@ OUTPUT = SUBMISSION_DIR / "submission.tar.gz"
 # `serving/action_validation.py` **故意不在裡面** —— 理由寫在 `main.py` 底部
 # （成本、比賽當下抓到 bug 也沒用、綁死引擎私有 API 導致換版本每回合 TypeError）。
 # 它留在開發側，`tests/test_l0_smoke.py` 每回合都會呼叫。
+#
+# `model/train.py` / `model/net.py` 也不在裡面 —— 那兩支 import torch，
+# 而 submission **不准 import torch**（`docs/CLAUDE.md`）。比賽端走
+# `npz_forward.py` 的純 numpy 前向。
 FILE_MAP = {
     "main.py": "main.py",
+    "contracts.py": "contracts.py",
     "agents/gen0.py": "gen0.py",
     "agents/gen1.py": "gen1.py",
+    "agents/gen2_model.py": "gen2_model.py",
+    "agents/gen4_demand.py": "gen4_demand.py",
+    "serving/npz_forward.py": "npz_forward.py",
 }
-FILES = tuple(FILE_MAP.values())
+
+#: 權重。二進位，不做 import 改寫，檔名固定成 `weights.npz` ——
+#: `agents/gen2_model.py` 沒有 `KAGGRI_WEIGHTS` 時就找自己旁邊這一個。
+WEIGHTS_NAME = "weights.npz"
+DEFAULT_WEIGHTS = "model/weights-v5-round1.npz"
+
+FILES = tuple(FILE_MAP.values()) + (WEIGHTS_NAME,)
+
+#: 攤平之後這些名字會變成 top-level 模組，撞到 Kaggle 載入環境裡既有的同名
+#: 模組就會抓錯（docstring 上面那段 lux_ai_s3 `agents.py` 的事）。
+#: 2026-08-20 在 repo 外的目錄用 `importlib.util.find_spec` 逐個確認過都是 None。
+#: ⚠️ 那是**本機**的證據，不是 Kaggle runtime 的。新增名字時要重新確認。
+VERIFIED_FREE_NAMES = (
+    "main", "contracts", "gen0", "gen1", "gen2_model", "gen4_demand",
+    "npz_forward", "action_validation",
+)
 
 # 攤平之後 package 前綴要拿掉。用 regex 而不是純字串取代，是為了不去動到
 # 註解和文件裡提到的 `agents/gen0.py` 這種路徑寫法。
@@ -111,16 +134,21 @@ def build(output=OUTPUT, dest=SUBMISSION_DIR):
     return output
 
 
-def copy_files(dest=SUBMISSION_DIR):
+def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
     """把 `FILE_MAP` 的檔案攤平複製到 `dest`，並改寫 package import。
 
     整個 `dest` 先砍掉重建 —— 不清的話，上一版的 `agents/` 子目錄會留在
     那裡，而 Kaggle 那邊 import 得到它，等於帶著一份過期的 agent 上場。
+
+    ⚠️ **`dest` 會被 `rmtree`。** 跑之前先看裡面有沒有別人放的備份。
     """
     dest = Path(dest)
     for relative in FILE_MAP:
         if not (REPO_ROOT / relative).is_file():
             raise FileNotFoundError(REPO_ROOT / relative)
+    weights_src = REPO_ROOT / weights
+    if not weights_src.is_file():
+        raise FileNotFoundError(f"{weights_src}（先跑 serving.export_npz）")
 
     if dest.exists():
         shutil.rmtree(dest)
@@ -133,6 +161,11 @@ def copy_files(dest=SUBMISSION_DIR):
         target.write_text(text, encoding="utf-8", newline="\n")
         digest = hashlib.sha256(target.read_bytes()).hexdigest()[:12]
         copied.append((relative, flat, target.stat().st_size, rewrites, digest))
+
+    # 權重是二進位，原樣複製 —— 不能走 `_flatten`（它會用 utf-8 讀）。
+    shutil.copyfile(weights_src, dest / WEIGHTS_NAME)
+    copied.append((weights, WEIGHTS_NAME, (dest / WEIGHTS_NAME).stat().st_size, 0,
+                   hashlib.sha256((dest / WEIGHTS_NAME).read_bytes()).hexdigest()[:12]))
 
     total = sum(size for _, _, size, _, _ in copied)
     try:
@@ -153,8 +186,11 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tar", action="store_true",
                     help="另外產出 submission.tar.gz")
+    ap.add_argument("--weights", default=DEFAULT_WEIGHTS,
+                    help="要打包的 .npz。ENCODER_VERSION 不符的話 agent 第一回合"
+                         "就會 SystemExit —— 所以換 schema 一定要一起換這個")
     args = ap.parse_args(argv)
-    copy_files()
+    copy_files(weights=args.weights)
     if args.tar:
         build()
 

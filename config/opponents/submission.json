@@ -1,0 +1,5 @@
+{
+  "name": "submission",
+  "builtin": "submission/main.py",
+  "note": "打包好的那一份（submission/ 攤平後的檔案），走 kaggle_environments 自己的 file-path agent 載入 —— 跟 Kaggle 上場時同一條路徑，不是 import repo 的 agents/。⚠️ 內容由 `python -m serving.build_submission` 決定，改了 agents/ 不重打包的話這裡量到的還是舊版。⚠️ 執行時 cwd 必須是 repo root（路徑是相對的）。"
+}

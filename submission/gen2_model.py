@@ -34,11 +34,11 @@ from pathlib import Path
 import numpy as np
 
 import contracts as C
-from agents.gen0 import act as gen0_act
-from agents.gen1 import DEFAULT_PARAMS as GEN1_DEFAULTS
+from gen0 import act as gen0_act
+from gen1 import DEFAULT_PARAMS as GEN1_DEFAULTS
 # 🩸 模組層，不可以搬進 `_policy()` —— 理由見 `agents/gen0.py` 頂端那一段。
 # 這裡只是把類別 import 進來，**權重仍然是 lazy 的**（`NumpyPolicy(path)` 才讀檔）。
-from serving.npz_forward import NumpyPolicy
+from npz_forward import NumpyPolicy
 
 #: 權重檔。`KAGGRI_WEIGHTS` 覆寫，方便同時比較好幾個 checkpoint。
 #:
@@ -48,17 +48,10 @@ from serving.npz_forward import NumpyPolicy
 #:
 #: ⚠️ 這裡可以用 `__file__`：`main.py` 是被 `exec()` 進去的、沒有 `__file__`，
 #: 但這支是正常 `import` 進來的模組，有。
-#:
-#: 找不到的話退回 repo 的 `submission/weights.npz` —— 那是 `build_submission`
-#: 剛打包進去的同一個檔案，所以開發側跑 `main.py` 跟上場跑的是同一份權重。
-#: **不要退回 `model/weights.npz`**：那支是 ENCODER_VERSION 2 的舊檔，
-#: 載進來會在第一回合 SystemExit，而錯誤訊息看起來像是 contracts.py 的問題。
-_HERE = Path(__file__).resolve().parent
+_LOCAL_WEIGHTS = Path(__file__).resolve().parent / "weights.npz"
 WEIGHTS_PATH = os.environ.get(
     "KAGGRI_WEIGHTS",
-    str(next((p for p in (_HERE / "weights.npz",
-                          _HERE.parent / "submission" / "weights.npz")
-              if p.is_file()), _HERE / "weights.npz")))
+    str(_LOCAL_WEIGHTS) if _LOCAL_WEIGHTS.is_file() else "model/weights.npz")
 
 _POLICY = None
 _POLICY_LOCK = threading.Lock()
