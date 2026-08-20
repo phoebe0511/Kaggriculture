@@ -10,7 +10,8 @@ torch 載入要好幾秒，第一回合就可能超時（`workflow.md` §4）。
 
     spatial [C, 10, 10]、scalar [D]     一個盤面（比賽端一次只算一個）
     trunk  -> [width, 10, 10]
-    每個 unit：trunk 在它格子的 width 維 + 它自己的 18 維 -> op / qty 分數
+    每個 unit：trunk 在它格子的 width 維 + 它自己的 18 維
+               -> op / qty / target 分數
 
 ## 為什麼 conv 用 im2col
 
@@ -95,22 +96,44 @@ class NumpyPolicy:
         return x
 
     def unit_logits(self, features, positions, unit_features):
-        """`positions` 是 `[n, 2]` 的 (x, y)。回傳 `(op [n, ops], qty [n, qty])`。"""
+        """`positions` 是 `[n, 2]` 的 (x, y)。
+
+        回傳 `(op [n, ops], qty [n, qty], target [n, cells])`。v3 起 `op` 是
+        **到了目標格要做什麼**，不是這一步做什麼。
+        """
         w = self.w
         picked = features[:, positions[:, 1], positions[:, 0]].T   # [n, width]
         h = np.concatenate([picked, unit_features], axis=1)
         h = _relu(_linear(h, w["unit_head.0.weight"], w["unit_head.0.bias"]))
         h = _relu(_linear(h, w["unit_head.2.weight"], w["unit_head.2.bias"]))
         return (_linear(h, w["op_out.weight"], w["op_out.bias"]),
-                _linear(h, w["qty_out.weight"], w["qty_out.bias"]))
+                _linear(h, w["qty_out.weight"], w["qty_out.bias"]),
+                _linear(h, w["target_out.weight"], w["target_out.bias"]))
+
+    def pooled(self, features):
+        """整盤面壓成一個向量。value 與 market 共用（`model/net.py` 同名方法）。"""
+        return np.concatenate([features.mean(axis=(1, 2)), features.max(axis=(1, 2))])
 
     def value(self, features):
         w = self.w
-        pooled = np.concatenate([features.mean(axis=(1, 2)), features.max(axis=(1, 2))])
-        h = _relu(_linear(pooled, w["value_head.0.weight"], w["value_head.0.bias"]))
+        h = _relu(_linear(self.pooled(features),
+                          w["value_head.0.weight"], w["value_head.0.bias"]))
         return float(_linear(h, w["value_head.2.weight"], w["value_head.2.bias"])[0])
+
+    def market_logits(self, features):
+        """回傳 `(present [ops], qty [ops, buckets])`。"""
+        w = self.w
+        h = _relu(_linear(self.pooled(features),
+                          w["market_head.0.weight"], w["market_head.0.bias"]))
+        present = _linear(h, w["market_present_out.weight"],
+                          w["market_present_out.bias"])
+        qty = _linear(h, w["market_qty_out.weight"], w["market_qty_out.bias"])
+        return present, qty.reshape(len(present), -1)
 
     def __call__(self, spatial, scalar, positions, unit_features):
         features = self.trunk(spatial, scalar)
-        op_logits, qty_logits = self.unit_logits(features, positions, unit_features)
-        return op_logits, qty_logits, self.value(features)
+        op_logits, qty_logits, target_logits = self.unit_logits(
+            features, positions, unit_features)
+        market_present, market_qty = self.market_logits(features)
+        return (op_logits, qty_logits, target_logits,
+                market_present, market_qty, self.value(features))

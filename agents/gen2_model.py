@@ -99,7 +99,10 @@ def act(obs, config=None, params=None):
     policy = _policy()
     spatial, scalar = C.encode(obs, config)
     positions, unit_features = C.encode_units(obs, config)
-    op_logits, qty_logits, _value = policy(spatial, scalar, positions, unit_features)
+    # ⚠️ v3 起 policy 多回傳一個 target head。這一版用不到它 —— 它的權重是
+    # ENCODER_VERSION 2，`_policy()` 的版本檢查會先擋下來（見上面）。
+    op_logits, qty_logits, _target, _value = policy(
+        spatial, scalar, positions, unit_features)
     mask = C.legal_unit_mask(obs, config)
 
     units = _choose(op_logits, qty_logits, mask, obs)

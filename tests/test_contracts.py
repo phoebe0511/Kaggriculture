@@ -45,12 +45,15 @@ def test_encoder_version_is_bound_to_schema_size():
     ⚠️ 這個測試紅掉的正確反應是**升 `ENCODER_VERSION` 並改這裡的數字**，
     順便確認舊權重檔已經作廢。不是把數字改掉了事 —— 那等於把保護拆掉。
     """
-    assert C.ENCODER_VERSION == 2
+    assert C.ENCODER_VERSION == 4
     assert C.N_SPATIAL == 38
     assert C.N_SCALAR == 75
     assert C.N_UNIT_FEATURES == 18
     assert C.N_UNIT_OPS == 44
     assert C.N_QTY == 12
+    assert C.N_TARGET_CELLS == 100
+    assert C.N_MARKET_OPS == 21
+    assert C.N_MARKET_QTY == 18
 
 
 def test_schema_names_are_unique():

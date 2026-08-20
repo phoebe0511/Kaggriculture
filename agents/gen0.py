@@ -1425,7 +1425,16 @@ def _assign(
 # 動作組裝
 # --------------------------------------------------------------------------
 
-def _step_toward(pos, target):
+def step_toward(pos, target):
+    """往目標走一步：先對齊 x，再對齊 y。
+
+    公開是因為 `agents/gen3_target.py` 要用同一份 —— 網路只決定「去哪一格」，
+    走路交給這裡。實測拿 60 局 replay 驗證：這個貪婪走法重現老師實際那一步的
+    比例是 **93.02%**（19,750 個 MOVE 裡對 18,372 個），剩下的差別是先走 x
+    還先走 y。**不要另外抄一份**（`CLAUDE.md` 硬規則）。
+
+    走路不用避開 `LOCKED` —— 引擎允許走進去，只有「對這格做事」會被擋。
+    """
     x, y = pos
     tx, ty = target
     if tx > x:
@@ -1452,10 +1461,10 @@ def _task_action(pos, target, op, arg, params, board):
             item, qty = arg
             return ["PICKUP", item, qty]
         nearest = min(spots, key=lambda s: abs(s[0] - pos[0]) + abs(s[1] - pos[1]))
-        return _step_toward(pos, nearest)
+        return step_toward(pos, nearest)
 
     if tuple(pos) != tuple(target):
-        return _step_toward(pos, target)
+        return step_toward(pos, target)
     if op == "PLANT":
         return ["PLANT", crop_for(target[0], target[1], params["basket"])]
     if op == "DROP_PRODUCT":

@@ -78,7 +78,30 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 #: v1 訓練出來的網路驗證準確率 93.96%，實戰卻 0 勝 12 負 —— 它蓋到 24 個建物
 #: 停不下來、16 隻買回來的動物只放進去 3 隻。原因是 v1 沒給「已經蓋了幾個」
 #: 這種計數，而那正是那些罕見但決定勝負的動作的觸發條件。
-ENCODER_VERSION = 2
+#:
+#: v2 -> v3（2026-08-20）：**輸入 schema 一個 bit 都沒動**，升版的是
+#: `op_logits` 的語意 —— 從「這一步做什麼」改成「**這一段的終點做什麼**」，
+#: 另外多一個 target head 指出終點在哪一格。
+#:
+#: 為什麼語意變更也要升版：v2 權重載進 v3 的 serving **不會報錯**，只會把
+#: 「終點動作」當「立即動作」用，然後分數莫名其妙掉下來 —— 正是版本號要擋的
+#: 那種無聲失敗。
+#:
+#: v2 的實測（`tools/action_dist.py`，gen2_model vs ladder-top-a 4 局）：對老師
+#: 局面的 unit-turn 準確率 0.9666，自己下場卻 MOVE 佔 75.6%（老師 51.8%）、
+#: FEED 只做了 70 次（老師 1,252 次）。壞的是閉迴路，不是每一步的準確率。
+#:
+#: v3 -> v4（2026-08-20）：市場那一半也交給網路（`MARKET_OPS` 搬進來、加兩個
+#: market head），`legal_unit_mask` 補上「同一天重複做」的五條。**輸入 schema
+#: 仍然一個 bit 都沒動**，升版是因為 v3 的權重沒有 market head，載進 v4 的
+#: serving 會炸在缺 key 上。
+#:
+#: v3 的實測：unit 動作已經像老師了（target 準確率 0.8716、MOVE 36.9%），但
+#: 期末現金只有 2,405 對 140,210。按天比對狀態分布發現 **day 6 動物就掉出老師
+#: 的 p5**（我們 1 隻、老師 p5 是 6 隻），而動物是市場買的不是 unit 決定的 ——
+#: 整季 gen0 只買了 3 隻 COW、13 個 WHEAT，老師是 14 隻動物、553 個 WHEAT。
+#: 「只模仿一半的 policy」就是這個意思。
+ENCODER_VERSION = 4
 
 
 # --------------------------------------------------------------------------
@@ -169,6 +192,211 @@ UNIT_OP_INDEX = {op: i for i, op in enumerate(UNIT_OPS)}
 #: （`PICKUP` 最常見 6，`PLACE` 最常見 1）。其他 op 用不到這個 head。
 QTY_CHOICES = tuple(range(1, 13))
 N_QTY = len(QTY_CHOICES)
+
+#: v3 的 target head：unit 這一段要走去哪一格。`board ** 2`，60 局 replay
+#: 全部是 10×10。寫死是為了讓換板子大小**炸掉**而不是無聲位移 ——
+#: `target_index` / `target_xy` 都會 assert。
+BOARD_SIZE = 10
+N_TARGET_CELLS = BOARD_SIZE * BOARD_SIZE
+
+
+def target_index(x, y, board):
+    """`(x, y) -> 0..N_TARGET_CELLS-1`。row-major，跟 `tiles[y][x]` 同一個順序。"""
+    if board * board != N_TARGET_CELLS:
+        raise AssertionError(
+            f"板子是 {board}×{board}，target head 是 {N_TARGET_CELLS} 格 —— "
+            "換板子大小要升 ENCODER_VERSION 並重訓，不要硬轉")
+    return int(y) * board + int(x)
+
+
+def target_xy(index, board):
+    """`target_index` 的反向。"""
+    if board * board != N_TARGET_CELLS:
+        raise AssertionError(
+            f"板子是 {board}×{board}，target head 是 {N_TARGET_CELLS} 格")
+    index = int(index)
+    return index % board, index // board
+
+
+# --------------------------------------------------------------------------
+# 市場動作（v4）
+# --------------------------------------------------------------------------
+
+#: 市場動作詞彙。順序寫死，跟 `UNIT_OPS` 同樣是 schema 的一部分。
+#:
+#: v4 之前這份表在 `harness/build_dataset.py`（只有訓練端要用）。現在比賽端
+#: 也要靠它把網路輸出轉回訂單，所以搬進來 —— **順序完全沒動**。
+MARKET_OPS = (
+    ("HIRE", None),
+    ("BUY_LAND", None),
+    *(("SELL", item) for item in PRODUCT_ORDER),
+    # 引擎只讓 WHEAT / FERTILIZER 用 BUY_PRODUCT（`engine-notes.md` §1）
+    ("BUY_PRODUCT", "WHEAT"),
+    ("BUY_PRODUCT", "FERTILIZER"),
+    *(("BUY_SEED", crop) for crop in CROP_ORDER),
+    *(("BUY_ANIMAL", animal) for animal in ANIMAL_ORDER),
+)
+N_MARKET_OPS = len(MARKET_OPS)
+MARKET_OP_INDEX = {key: i for i, key in enumerate(MARKET_OPS)}
+
+#: 市場訂單的數量桶。實測 60 局：91.8% 的數量 ≤ 12、99.9% ≤ 32、最大 79
+#: （`SELL WHEAT`）。小數量逐一給桶，大的用粗桶 —— 賣 48 跟賣 52 的差別
+#: 遠小於賣 4 跟賣 8。
+MARKET_QTY_BUCKETS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                      16, 20, 24, 32, 48, 80)
+N_MARKET_QTY = len(MARKET_QTY_BUCKETS)
+
+def market_qty_bucket(qty):
+    """數量 -> 桶編號。取**不超過**實際值的最大桶。
+
+    往下取而不是取最近的：賣少一點只是少賺，賣爆會把價格砸到地板
+    （`engine-notes.md` §6：MELON 的 `above_func = sq / 3.60`）。
+    """
+    qty = int(qty)
+    best = 0
+    for i, edge in enumerate(MARKET_QTY_BUCKETS):
+        if edge <= qty:
+            best = i
+    return best
+
+
+def market_qty_value(bucket):
+    """桶編號 -> 實際數量。"""
+    return MARKET_QTY_BUCKETS[int(bucket)]
+
+
+def encode_market_action(order):
+    """引擎的市場訂單 -> `(op_index, qty)`。認不得回 `None`。
+
+    `["HIRE"]` 這種沒帶數量的算 1 個。
+    """
+    if not isinstance(order, (list, tuple)) or not order:
+        return None
+    key = (order[0], order[1] if len(order) > 1 else None)
+    index = MARKET_OP_INDEX.get(key)
+    if index is None:
+        # `["HIRE", something]` 之類 —— 用不帶參數的形式再試一次
+        index = MARKET_OP_INDEX.get((order[0], None))
+    if index is None:
+        return None
+    try:
+        qty = int(order[2]) if len(order) > 2 else 1
+    except (TypeError, ValueError):
+        return None
+    return index, max(1, qty)
+
+
+def decode_market(op_index, qty):
+    """`(op_index, 數量) -> 引擎吃的訂單 list`。
+
+    ⚠️ 帶參數的 op 一定要把參數補上 —— 引擎對格式不對的訂單是**靜默忽略**，
+    跟 `decode_unit` 同一個坑。
+    """
+    op, item = MARKET_OPS[int(op_index)]
+    qty = max(1, int(qty))
+    if op in ("HIRE", "BUY_LAND"):
+        return [op]                      # 這兩個一筆就是一個，不帶數量
+    return [op, item, qty]
+
+
+def legal_market_mask(obs, config=None):
+    """回傳 `[N_MARKET_OPS]` 的 bool 陣列。
+
+    不變式跟 `legal_unit_mask` 同一條：**寧可放寬，絕不擋掉老師下過的訂單。**
+    `tests/test_market_labels.py` 拿 replay 的每一筆訂單驗，門檻同樣是 0.5%。
+
+    ## 🩸 為什麼「錢夠不夠」「shed 有沒有貨」都不在這裡
+
+    第一版把這兩條寫進 mask，結果擋掉老師 **23.1%** 的訂單（3,484 筆裡 804 筆，
+    `SELL FERTILIZER` 406 筆、`SELL WHEAT` 234 筆）。
+
+    因為**老師自己就會送出送不成的訂單** —— journal 2026-08-19 §5 早就量過：
+    頂端玩家整季送出約 1,460 筆 `FERTILIZER SELL`，`market.inventory` 顯示實際
+    只成交約 449 個，其餘因為 shed 沒貨被引擎中止。那是「有多少賣多少」的寫法，
+    不是 bug。
+
+    所以那些條件搬到 `clamp_market_qty`：數量夾到 0 的訂單在
+    `decode_market_orders` 會被丟掉，執行結果跟擋掉一樣，但 mask 保持誠實。
+
+    這裡只留**結構上不可能**的那一條：象限買完了就不能再買地。
+    """
+    farm = obs["farms"][int(obs["player"])]
+    mask = np.ones(N_MARKET_OPS, dtype=bool)
+    if len(farm["unlocked_quadrants"]) >= len(LAND_ORDER) + 1:
+        mask[MARKET_OP_INDEX[("BUY_LAND", None)]] = False
+    return mask
+
+
+def clamp_market_qty(op_index, qty, obs):
+    """把賣單的數量夾到 shed 實有量。夾到 0 的訂單呼叫端會丟掉。
+
+    ## 為什麼**不**夾「現金買不買得起」
+
+    引擎是**逐筆結算**的，而 `MARKET_OPS` 的順序讓 `SELL`（index 2 起）排在
+    `BUY_*`（index 11 起）前面 —— 賣單先進帳，後面的買單才有錢。用「送出當下
+    的現金」去夾買單，會夾掉本來會成功的訂單。買不起的訂單引擎自己會中止，
+    那是無害的。
+
+    ⚠️ 這裡也**不**夾「賣太多會砸盤」。網路一次倒 79 個 MELON 出去是策略問題
+    不是合法性問題（`engine-notes.md` §6：MELON 的 `above_func = sq / 3.60`）。
+    要擋要另外加價格門檻，先量 `tools/revenue.py` 的均價有沒有崩。
+    """
+    op, item = MARKET_OPS[int(op_index)]
+    qty = max(1, int(qty))
+    farm = obs["farms"][int(obs["player"])]
+    if op == "SELL":
+        return min(qty, obs["private"]["shed"].get(item, 0))
+    if op == "BUY_LAND":
+        return 1                          # 老師 42 次買地全部是一回合一塊
+    if op == "HIRE":
+        # 雇工價是**當天第 n 個**的 fib，所以「還能雇幾個」算得出來，
+        # 跟其他採購不一樣（那些的單價是固定的，見上面）。
+        return min(qty, _affordable_hires(
+            float(farm["money"]), int(farm.get("hires_today", 0)), obs))
+    return qty
+
+
+def _affordable_hires(money, hires_today, obs, mult=1):
+    """現金還雇得起幾個人。價格是當天第 n 個的 fib（`engine-notes.md` §7）。"""
+    n = 0
+    while n < 24:                         # 一天 24 回合，再多也沒意義
+        cost = _fib(hires_today + n + 1) * mult
+        if cost > money:
+            break
+        money -= cost
+        n += 1
+    return n
+
+
+def decode_market_orders(present_logits, qty_logits, obs, config=None,
+                         threshold=0.0):
+    """網路的兩個 market head -> 引擎吃的訂單清單。
+
+    `present_logits` 是 `[N_MARKET_OPS]` 的 logit（訓練用 BCE，所以門檻對應
+    sigmoid 0.5 就是 logit 0）；`qty_logits` 是 `[N_MARKET_OPS, N_MARKET_QTY]`。
+
+    訂單順序照 `MARKET_OPS` 的順序送出。**引擎是逐筆結算的**，所以順序會影響
+    「錢花完了後面就失敗」—— 賣單排在買單前面（`SELL` 在 `MARKET_OPS` 裡
+    index 2 起，`BUY_*` 在 11 起），剛好是先收錢再花錢。
+    """
+    mask = legal_market_mask(obs, config)
+    orders = []
+    for j in range(N_MARKET_OPS):
+        if not mask[j] or present_logits[j] <= threshold:
+            continue
+        qty = market_qty_value(int(np.argmax(qty_logits[j])))
+        qty = clamp_market_qty(j, qty, obs)
+        if qty <= 0:
+            continue
+        op = MARKET_OPS[j][0]
+        if op in ("HIRE", "BUY_LAND"):
+            # 🩸 這兩個不帶數量，要送 n 筆。實測老師 **57.6% 的雇工回合一次送
+            # 5 筆 HIRE**（最多 9 筆）—— hands 每天被清空，開工那一刻要一次
+            # 補滿。只送 1 筆的話每天上午都在慢慢補人，等於少掉半天的勞力。
+            orders.extend([decode_market(j, 1)] * qty)
+        else:
+            orders.append(decode_market(j, qty))
+    return orders
 
 
 # --------------------------------------------------------------------------
@@ -574,6 +802,22 @@ def legal_unit_mask(obs, config=None):
     `tests/test_contracts.py::test_mask_never_blocks_teacher_action` 拿 60 局
     replay 的每一個 unit-turn 驗這條 —— 有任何一筆被擋掉就是這裡寫錯了。
 
+    ## 同一天重複做的動作**要**擋（2026-08-20 補）
+
+    引擎對「今天已經澆過的格子再澆一次」是靜默 no-op。第一版沒擋，結果
+    `gen3_target` 送出的 852 次 `WATER` 裡有 **501 次（58.8%）** 落在已經澆過的
+    格子上，有效澆水只剩 351 次/局（老師 928 次）。作物連續兩天沒澆就變雜草，
+    整季作物格數卡在 6~20（老師約 60）。
+
+    加這五條**不違反上面的不變式** —— 拿 3 局 replay 的 13,466 個動作驗過，
+    老師的白費率是：
+
+        WATER 0.00%（5,569 筆）   FEED 0.00%（1,777）   CARE 0.00%（1,867）
+        COLLECT_FERTILIZER 0.00%（1,868）   HARVEST 0.08%（2,385 筆裡 2 筆）
+
+    它們是**漏掉**，不是刻意留給網路學的。（量過網路學不學得會：老師的局面上
+    白費率 1.02%，自己下場 9.2% —— 學到八成，但閉迴路放大 14 倍。）
+
     ## 這裡**沒有**檢查的事
 
     - 錢夠不夠（那是 market 的事，unit 動作不花錢）
@@ -631,13 +875,15 @@ def legal_unit_mask(obs, config=None):
             elif op in ("BUILD_COOP", "BUILD_PASTURE"):
                 mask[i, j] = tile is None
             elif op == "WATER":
-                mask[i, j] = kind == "PLANT"
+                # 「今天已經澆過了」也要擋 —— 見下面「同一天重複做」那一段。
+                mask[i, j] = kind == "PLANT" and not tile.get("watered_today")
             elif op == "HARVEST":
                 # ⚠️ 不只作物 —— 動物的 EGG / MILK / WOOL 也是 HARVEST 收的。
                 # 第一版只寫了 PLANT，replay 驗證時有 222 筆老師的 HARVEST 站在
                 # PASTURE 上被擋掉，才發現漏了這條。
-                mask[i, j] = kind == "PLANT" or bool(
-                    isinstance(tile, dict) and tile.get("animal"))
+                mask[i, j] = bool(
+                    (kind == "PLANT" or (isinstance(tile, dict) and tile.get("animal")))
+                    and tile.get("yield_units", 0) > 0)
             elif op == "FERTILIZE":
                 mask[i, j] = kind == "PLANT" and inv.get("FERTILIZER", 0) > 0
             elif op == "DIG":
@@ -645,14 +891,55 @@ def legal_unit_mask(obs, config=None):
                 mask[i, j] = kind in ("PLANT", "WEED") or (
                     kind in ("COOP", "PASTURE")
                     and not (isinstance(tile, dict) and tile.get("animal")))
-            elif op in ("CARE", "COLLECT_FERTILIZER"):
-                mask[i, j] = bool(isinstance(tile, dict) and tile.get("animal"))
+            elif op == "CARE":
+                mask[i, j] = bool(
+                    isinstance(tile, dict) and tile.get("animal")
+                    and not tile.get("cared_today"))
+            elif op == "COLLECT_FERTILIZER":
+                mask[i, j] = bool(
+                    isinstance(tile, dict) and tile.get("animal")
+                    and tile.get("fertilizer_available"))
             elif op == "FEED":
                 mask[i, j] = bool(
                     isinstance(tile, dict) and tile.get("animal")
+                    and not tile.get("fed_today")
                     and inv.get("WHEAT", 0) > 0)
 
     return mask
+
+
+def legal_target_mask(obs, config=None):
+    """v3 的 target head 遮罩，回傳 `[n_units, N_TARGET_CELLS]` 的 bool 陣列。
+
+    不變式跟 `legal_unit_mask` 同一條：**寧可放寬，絕不擋掉老師去過的格子。**
+    所以只擋一種格子 —— `LOCKED` 而且不是 shed 那四格。
+
+    - `LOCKED` 的格子**走得進去**（引擎只擋「對這格做事」，不擋移動，
+      見 `agents/gen0._task_action` 的註解），但沒有理由派 unit 去那裡
+    - shed 那四格是例外：引擎的 `DROP` / `PICKUP` / `PLACE` 在 `LOCKED` guard
+      **之前**處理（`engine-notes.md` §2），所以象限還沒買下來也能在那裡取放
+
+    ⚠️ 這裡**不看** unit 的 inventory 或格子上有什麼。「到了那裡能不能做那件事」
+    是到達之後用 `legal_unit_mask` 驗的，不是出發前。出發前就擋掉的話，
+    「先走過去、到了再說」這種老師常做的事會學不到。
+
+    每個 unit 拿到的遮罩其實一樣（只看盤面不看 unit），但仍然回傳
+    `[n_units, ...]`，讓呼叫端跟 `legal_unit_mask` 用同一個形狀。
+    """
+    player = int(obs["player"])
+    farm = obs["farms"][player]
+    tiles = farm["tiles"]
+    board = len(tiles)
+    sheds = set(_shed_tiles(board))
+
+    row = np.zeros(N_TARGET_CELLS, dtype=bool)
+    for y in range(board):
+        for x in range(board):
+            row[target_index(x, y, board)] = (
+                tiles[y][x] != "LOCKED" or (x, y) in sheds)
+
+    n_units = 1 + len(farm["hands"])
+    return np.broadcast_to(row, (n_units, N_TARGET_CELLS)).copy()
 
 
 # --------------------------------------------------------------------------
@@ -703,8 +990,14 @@ def encode_unit_action(action):
 
 __all__ = [
     "ENCODER_VERSION",
-    "encode", "encode_units", "legal_unit_mask",
+    "encode", "encode_units", "legal_unit_mask", "legal_target_mask",
     "decode_unit", "encode_unit_action",
+    "BOARD_SIZE", "N_TARGET_CELLS", "target_index", "target_xy",
+    "MARKET_OPS", "N_MARKET_OPS", "MARKET_OP_INDEX",
+    "MARKET_QTY_BUCKETS", "N_MARKET_QTY",
+    "market_qty_bucket", "market_qty_value",
+    "encode_market_action", "decode_market", "decode_market_orders",
+    "legal_market_mask", "clamp_market_qty",
     "SPATIAL_CHANNELS", "N_SPATIAL",
     "SCALAR_FIELDS", "N_SCALAR",
     "UNIT_FEATURES", "N_UNIT_FEATURES",

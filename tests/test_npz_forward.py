@@ -25,6 +25,7 @@ def _build(tmp_path, width=32, blocks=3):
     torch.manual_seed(0)
     model = KaggricultureNet(
         C.N_SPATIAL, C.N_SCALAR, C.N_UNIT_FEATURES, C.N_UNIT_OPS, C.N_QTY,
+        C.N_TARGET_CELLS, C.N_MARKET_OPS, C.N_MARKET_QTY,
         width=width, n_blocks=blocks)
     model.eval()
 
@@ -50,7 +51,7 @@ def test_numpy_forward_matches_torch(tmp_path):
     unit_feats = rng.standard_normal((n_units, C.N_UNIT_FEATURES)).astype(np.float32)
 
     with torch.no_grad():
-        t_op, t_qty, t_value = model(
+        t_op, t_qty, t_target, t_mk_present, t_mk_qty, t_value = model(
             torch.from_numpy(spatial)[None],
             torch.from_numpy(scalar)[None],
             torch.zeros(n_units, dtype=torch.long),
@@ -58,8 +59,15 @@ def test_numpy_forward_matches_torch(tmp_path):
             torch.from_numpy(unit_feats),
         )
 
-    n_op, n_qty, n_value = policy(spatial, scalar, positions, unit_feats)
+    (n_op, n_qty, n_target, n_mk_present, n_mk_qty, n_value) = policy(
+        spatial, scalar, positions, unit_feats)
 
+    assert np.allclose(t_target.numpy(), n_target, atol=1e-4), \
+        f"target 最大誤差 {np.abs(t_target.numpy() - n_target).max()}"
+    assert np.allclose(t_mk_present[0].numpy(), n_mk_present, atol=1e-4), \
+        f"market present 最大誤差 {np.abs(t_mk_present[0].numpy() - n_mk_present).max()}"
+    assert np.allclose(t_mk_qty[0].numpy(), n_mk_qty, atol=1e-4), \
+        f"market qty 最大誤差 {np.abs(t_mk_qty[0].numpy() - n_mk_qty).max()}"
     assert np.allclose(t_op.numpy(), n_op, atol=1e-4), \
         f"op 最大誤差 {np.abs(t_op.numpy() - n_op).max()}"
     assert np.allclose(t_qty.numpy(), n_qty, atol=1e-4), \
@@ -78,13 +86,17 @@ def test_argmax_agrees(tmp_path):
         unit_feats = rng.standard_normal((13, C.N_UNIT_FEATURES)).astype(np.float32)
 
         with torch.no_grad():
-            t_op, _, _ = model(
+            t_op, _, t_target, t_mk, _, _ = model(
                 torch.from_numpy(spatial)[None], torch.from_numpy(scalar)[None],
                 torch.zeros(13, dtype=torch.long),
                 torch.from_numpy(positions.astype(np.int64)),
                 torch.from_numpy(unit_feats))
-        n_op, _, _ = policy(spatial, scalar, positions, unit_feats)
+        n_op, _, n_target, n_mk, _, _ = policy(spatial, scalar, positions, unit_feats)
         assert (t_op.numpy().argmax(axis=1) == n_op.argmax(axis=1)).all()
+        # v3 的目標格也要一致 —— 選錯格子等於整段路都往錯的方向走
+        assert (t_target.numpy().argmax(axis=1) == n_target.argmax(axis=1)).all()
+        # v4 的市場是 multi-label，門檻是 logit 0（sigmoid 0.5），兩邊要同時過線
+        assert ((t_mk[0].numpy() > 0) == (n_mk > 0)).all()
 
 
 def test_exported_weights_reject_version_mismatch(tmp_path):

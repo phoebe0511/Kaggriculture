@@ -1,0 +1,26 @@
+{
+  "name": "gen4_market",
+  "entry": "agents.gen3_target:act",
+  "params": {
+    "n_structures": 14,
+    "dynamic_animals": false,
+    "animal": [
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "COW",
+      "SHEEP",
+      "SHEEP",
+      "SHEEP",
+      "SHEEP"
+    ],
+    "model_market": true
+  },
+  "note": "unit 與市場都走網路。2026-08-20 量到 gen0 的市場整季只買 3 隻 COW、13 個 WHEAT，老師是 14 隻動物、553 個 WHEAT —— unit 的動作是在老師那種農場上學的，放到 gen0 蓋出來的農場上就沒事可做（PASS 36%）。params 跟 gen3_target.json 逐鍵相同，只差 model_market。"
+}
