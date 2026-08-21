@@ -24,6 +24,27 @@ OUT = REPO_ROOT / "docs" / "eval-results.md"
 #: 需要備註才不會被誤讀的 run。key 是 run 目錄名。
 NOTES = {}
 
+#: `eval/runner.py` 是 2026-08-21 下午才開始把 `KAGGRI_WEIGHTS` 寫進
+#: `result.json`。在那之前的 run 只能靠時間戳對回 DAgger 的輪次 ——
+#: 依據是 `model/weights-e2e-round*.npz` 的 mtime 與當時的指令。
+LEGACY_WEIGHTS = {
+    "20260821-094515": "round2", "20260821-094844": "round2",
+    "20260821-100038": "round2", "20260821-100153": "round2",
+    "20260821-100306": "round2", "20260821-100410": "round2",
+    "20260821-100526": "round2",
+    "20260821-103534": "round3", "20260821-103633": "round3",
+    "20260821-142607": "round3", "20260821-145407": "round4",
+}
+
+
+def _weights_label(raw, run):
+    """權重檔的短名，例如 `round4`。認不出來就回 `—`。"""
+    path = raw.get("weights")
+    if path and path != "(未設)":
+        stem = Path(path).stem                     # weights-e2e-round4
+        return stem.split("-")[-1] or stem
+    return LEGACY_WEIGHTS.get(run.split("_")[0], "—")
+
 #: 只收這兩類：
 #:
 #: 1. **規則式**（`agents/gen0.py`）—— 它本來就是規則式，標示誠實。
@@ -98,6 +119,7 @@ def collect():
             "run": path.parent.name,
             "date": path.parent.name[:8],
             "a": name_a, "b": name_b,
+            "weights": _weights_label(raw, path.parent.name),
             "line": line,
             "games": len(results), "seeds": seeds,
             "w": s.get("wins"), "d": s.get("draws"), "l": s.get("losses"),
@@ -126,6 +148,9 @@ def render(rows):
         "  另一個大部分還行但偶爾整局崩掉拿 0。",
         "- 勝率和現金是兩件事。配對種子下，兩個實力接近的 agent 可能",
         "  「每局都輸一點」= 現金差 4%、勝率 0%。",
+        "- 🩸 **`e2e` 這個名字跨輪次不變，要看「權重」那一欄才知道是哪一輪。**",
+        "  2026-08-21 下午之後 `eval/runner.py` 會把 `KAGGRI_WEIGHTS` 寫進",
+        "  `result.json`；更早的 run 由 `LEGACY_WEIGHTS` 按時間戳對回去。",
         "",
         "## 🚫 哪些 run 不在表上，為什麼",
         "",
@@ -155,15 +180,16 @@ def render(rows):
         if not group:
             continue
         out += [f"## {line}", "",
-                "| 日期 | A | 對手 | 局數(種子) | 勝/和/負 | A 平均 | A min | A max"
+                "| 日期 | A | 權重 | 對手 | 局數(種子) | 勝/和/負 | A 平均 | A min | A max"
                 " | 對手平均 | 相對 | run |",
-                "|---|---|---|---|---|---|---|---|---|---|---|"]
+                "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for r in group:
             rel = (f"{r['mean_a'] / r['mean_b']:.0%}"
                    if r["mean_b"] else "—")
             seeds = f"({r['seeds']})" if r["seeds"] else ""
             out.append(
-                f"| {r['date']} | `{r['a']}` | `{r['b']}` | {r['games']}{seeds} "
+                f"| {r['date']} | `{r['a']}` | {r['weights']} | `{r['b']}` "
+                f"| {r['games']}{seeds} "
                 f"| {r['w']}/{r['d']}/{r['l']} | {r['mean_a']:,.0f} "
                 f"| {r['min_a']:,.0f} | {r['max_a']:,.0f} | {r['mean_b']:,.0f} "
                 f"| **{rel}** | `{r['run']}` |")

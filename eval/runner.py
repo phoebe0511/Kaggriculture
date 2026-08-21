@@ -895,6 +895,11 @@ def main(argv=None):
     payload["run_dir"] = str(run_dir)
     payload["argv"] = sys.argv[1:]
     payload["log_level"] = os.environ.get("KAGGRI_LOG_LEVEL", "(agent 預設)")
+    # 🩸 **哪一份權重上場，只有這個環境變數知道。** agent 名字（`e2e`）跨輪次
+    #    不變，所以少了這一筆，`docs/eval-results.md` 上兩列一模一樣的
+    #    `e2e vs gen1` 就分不出是 round3 還是 round4 —— 又要靠時間戳考古。
+    #    沒設的話 `agents/gen2_model.py` 會退回同目錄的 weights.npz，記成 (未設)。
+    payload["weights"] = os.environ.get("KAGGRI_WEIGHTS", "(未設)")
 
     # ⚠️ 先落地再印。跑完 240 局之後 print 掛掉（cp950 編不出 ⚪）整輪白跑過一次。
     targets = [run_dir / "result.json"]
