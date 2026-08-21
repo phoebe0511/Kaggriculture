@@ -23,16 +23,22 @@ top-k 涵蓋率夠高、value head 可靠。超過規則式要靠 search，不�
 全部還給 `gen0`。**search 只搜得到網路輸出的東西**，所以那條路上市場和配對
 永遠碰不到。這支的輸出涵蓋完整動作空間。
 
-## 市場
+## 市場也在網路裡（2026-08-21 起沒有退路）
 
-`model_market=False`（預設）走 `gen0._market`，只為了先隔離 unit 那一半。
+這支**完全不 import `agents/gen0.py`**。曾經有一個 `model_market` 開關可以把
+市場退回 `gen0._market`，拿掉了 —— 它會生出好看的假數字（同一份權重，市場走
+gen0 是 gen1 的 81.5%、走網路是 17.0%），而且 DAgger 應該從真正要出貨的
+policy 收狀態，不是從混合版。
 
-⚠️ **已知的不一致**：`gen0._market` 算訂單時會參考它自己排出來的 `unit_actions`
-（例如 PICKUP 了多少 WHEAT 就少賣多少），而我們事後把 unit 動作換掉了。
-所以市場決策是對「規則式會做什麼」最佳化的，不是對「網路實際做什麼」。
-2026-08-19 的逐件收入歸因顯示 WHEAT + FERTILIZER 佔總差距的 27%。
+⚠️ **市場是目前唯一的瓶頸。** 逐 op 的召回率（round2 權重、固定驗證集）：
 
-`model_market=True` 才是最終形態（動作空間完整）。
+    HIRE              1.000      BUY_SEED WHEAT       0.380
+    SELL FERTILIZER   0.961      BUY_SEED CARROT      0.250
+    BUY_ANIMAL SHEEP  0.941      BUY_SEED TOMATO      0.222
+    BUY_LAND          0.833      BUY_PRODUCT WHEAT    0.422   <- 飼料
+
+`BUY_SEED` 整組沒學會 -> 田是空的 -> unit 沒事幹就 PASS（26.6%，gen1 是 17.1%）。
+**調門檻治不了這個**（實測 -1.0 只讓現金 18,194 -> 19,138）。
 
 ## PLANT 的原子驗證
 
@@ -52,8 +58,6 @@ from pathlib import Path
 import numpy as np
 
 import contracts as C
-from agents.gen0 import act as gen0_act
-from agents.gen0 import DEFAULT_PARAMS as RULE_DEFAULTS
 # 🩸 模組層，不可以搬進 `_policy()` —— 理由見 `agents/gen0.py` 頂端那一段。
 # 這裡只是把類別 import 進來，**權重仍然是 lazy 的**（`NumpyPolicy(path)` 才讀檔）。
 from serving.npz_forward import NumpyPolicy
@@ -127,26 +131,24 @@ def _choose(op_logits, qty_logits, mask, obs):
 
 
 def act(obs, config=None, params=None):
-    """網路直接決定每個 unit 這一步做什麼。
+    """網路決定每個 unit 這一步做什麼，**以及所有市場訂單**。
 
-    `model_market`（預設 `False`）決定市場走誰：
+    這支不 import `agents/gen0.py`。曾經有一個 `model_market` 開關可以把市場
+    退回 `gen0._market`，2026-08-21 拿掉了，理由有兩個：
 
-    - `False`：`gen0._market`。**先隔離 unit 那一半**，一次只動一個變數。
-      ⚠️ 代價寫在模組 docstring 的「已知的不一致」：`gen0._market` 是對
-      「規則式會做什麼」最佳化的，而我們把 unit 動作換掉了。
-    - `True`：`contracts.decode_market_orders`。動作空間才完整 ——
-      離線 search 搜得到市場，這是 v5 的 demand map 給不了的。
+    1. **那個開關會生出好看的假數字。** 同一份 round2 權重，市場走 gen0 是
+       75,469（gen1 的 81.5%）、走網路是 18,194（17.0%）。前者被當成「端到端
+       網路的成績」報了一整天，但它有一半是規則式的功勞。
+    2. **DAgger 應該從真正要出貨的 policy 收狀態。** round1 / round2 的
+       rollout 都是混合版走出來的，那不是這支 agent 會遇到的分布。
 
-    `market_threshold` 是 present head 的 logit 門檻（預設 0，即 sigmoid 0.5）。
-    ⚠️ **這個門檻從來沒有被掃過。** `model/train.py` 記著 51.7% 的回合一筆訂單
-    都沒有 —— 稀疏正例配 BCE 配 0.5 門檻本來就會系統性少下單，而實測召回率
-    只有 0.72~0.79。「學不起來」和「門檻太高」還沒有被分開量過。
+    `market_threshold` 是 present head 的 logit 門檻（預設 0 = sigmoid 0.5）。
+    2026-08-21 在固定驗證集上掃過：門檻 0 每盤面下 0.35 筆訂單、真實是 0.43 筆，
+    -1.0 剛好對上（召回率 0.747 -> 0.834）。**但實測 -1.0 只讓現金從 18,194 變
+    19,138** —— 降門檻是齊頭式的，治不了 `BUY_SEED` 那組 0.22~0.62 的召回率。
     """
-    resolved = dict(RULE_DEFAULTS)
-    resolved.update(params or {})
-    resolved.pop("_replace_defaults", None)
-    model_market = bool(resolved.get("model_market", False))
-    market_threshold = float(resolved.get("market_threshold", 0.0))
+    params = params or {}
+    market_threshold = float(params.get("market_threshold", 0.0))
 
     policy = _policy()
     spatial, scalar = C.encode(obs, config)
@@ -154,17 +156,10 @@ def act(obs, config=None, params=None):
     (op_logits, qty_logits, _target,
      mk_present, mk_qty, _value, _demand) = policy(
         spatial, scalar, positions, unit_features)
-    mask = C.legal_unit_mask(obs, config)
 
-    units = _choose(op_logits, qty_logits, mask, obs)
-
-    if model_market:
-        market = C.decode_market_orders(
-            mk_present, mk_qty, obs, config, threshold=market_threshold)
-    else:
-        # 只為了拿市場而跑一次完整的規則式排程。浪費，但這一臂本來就是對照組。
-        market = gen0_act(obs, config, resolved)["market"]
-
+    units = _choose(op_logits, qty_logits, C.legal_unit_mask(obs, config), obs)
+    market = C.decode_market_orders(
+        mk_present, mk_qty, obs, config, threshold=market_threshold)
     return {"farmer": units[0], "hands": units[1:], "market": market}
 
 

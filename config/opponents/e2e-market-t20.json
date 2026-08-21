@@ -1,6 +1,0 @@
-{
-  "name": "e2e-market-t20",
-  "entry": "agents.gen2_model:act",
-  "params": { "model_market": true, "market_threshold": -2.0 },
-  "note": "market head 門檻掃描（logit，預設 0 = sigmoid 0.5）。離線量到門檻 0 時每盤面只下 0.35 筆訂單而真實是 0.43 筆，-2.0 時是 0.45 筆、召回率 0.747 -> 0.834。⚠️ 這是在**驗證集**（gen1 開車的 6 局）上量的，自己下場的分布不同。"
-}

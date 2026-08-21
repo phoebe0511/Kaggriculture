@@ -1,0 +1,8 @@
+{
+  "name": "e2e-t20",
+  "entry": "agents.gen2_model:act",
+  "params": {
+    "market_threshold": -2.0
+  },
+  "note": "market head 門檻掃描（logit，預設 0 = sigmoid 0.5）。離線量到門檻 0 時每盤面只下 0.35 筆訂單而真實是 0.43 筆，-1.0 時是 0.45 筆、召回率 0.747 -> 0.834。⚠️ 實測 -1.0 只讓現金 18,194 -> 19,138 —— 降門檻是齊頭式的，治不了 BUY_SEED 那組 0.22~0.62 的召回率。"
+}

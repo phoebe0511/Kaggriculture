@@ -1,6 +1,0 @@
-{
-  "name": "e2e-market",
-  "entry": "agents.gen2_model:act",
-  "params": { "model_market": true },
-  "note": "跟 `e2e` 同一份權重，唯一差別是市場走 market head 而不是 gen0._market。⚠️ `model_market` 不是 gen0 的參數，是 `agents/gen2_model.act` 的開關，所以這個覆寫不違反 `e2e.json` 那條「不可以加 params 覆寫」——那條講的是不要動 gen0 的策略參數（n_structures 之類），因為網路學的是 gen1 預設參數下的行為。這一臂存在的理由：**離線 search 只搜得到網路輸出的東西**，市場留在 gen0 的話 search 永遠碰不到它。要量的是「把市場收進網路要付多少代價」。"
-}

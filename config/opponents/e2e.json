@@ -1,5 +1,5 @@
 {
   "name": "e2e",
   "entry": "agents.gen2_model:act",
-  "note": "端到端網路：逐 unit 的當下動作全部由 op head 決定（44 個 UNIT_OPS），市場暫時走 gen0._market（model_market 預設 False）。2026-08-21 起這是 ① 那條線的量測入口。 ⚠️ **不可以加 params 覆寫。** 網路模仿的是 gen1 在**預設參數**下的行為（harness/rollout.py --expert gen1），這裡一旦覆寫，gen0._market 就是照另一組策略在下單，而 unit 是照 gen1 的習慣在動作，兩邊互相破壞。config/opponents/gen2_model.json 就是反例 —— 它的 n_structures:14 / dynamic_animals:false 是為了對齊**老師**的策略調的（2026-08-19 那一輪），拿來量 ① 會混進一個跟網路無關的變數。同樣的警告見 config/opponents/dagger.json。"
+  "note": "端到端網路：每個 unit 這一步做什麼（44 個 UNIT_OPS，含走路方向）**以及所有市場訂單**都由網路決定。這支不 import agents/gen0.py。 ⚠️ 2026-08-21 之前有一個 model_market 開關可以把市場退回 gen0._market，拿掉了 —— 同一份權重市場走 gen0 是 gen1 的 81.5%、走網路是 17.0%，前者被當成「端到端的成績」報過，那是假數字。而且 DAgger 應該從真正要出貨的 policy 收狀態，不是從混合版。 ⚠️ 不要加 gen0 的策略參數覆寫（n_structures 之類）—— 網路學的是 gen1 預設參數下的行為。market_threshold 是例外，那是這支自己的開關，掃描用 e2e-t10 / e2e-t20。"
 }
