@@ -145,7 +145,8 @@ def read_prices(paths, tag=None, player=0):
                     "log 裡沒有 prices 欄位 —— 要用 --log-level 2 以上跑才會記。")
             e = by_tag.setdefault(r.get("tag", ""),
                                   {"path": path, "pts": [], "sells": {},
-                                   "animals": {}})
+                                   "animals": {}, "players": set()})
+            e["players"].add(pid)
             if pid == player:
                 e["pts"].append((r["day"] + r["hour"] / 24.0, prices))
                 if r.get("animals") is not None and r.get("hour") == 0:
@@ -160,7 +161,7 @@ def read_prices(paths, tag=None, player=0):
                     side[o[1]][r["day"]] = side[o[1]].get(r["day"], 0) + o[2]
 
     if not by_tag:
-        raise SystemExit("log 裡沒有 player %d 的資料" % player)
+        raise SystemExit("log 裡一筆紀錄都沒有")
 
     if tag:
         hits = ([x for x in by_tag if x == tag]
@@ -181,6 +182,18 @@ def read_prices(paths, tag=None, player=0):
                   f"用 --tag 挑別局，--list 看全部。", file=sys.stderr)
 
     e = by_tag[chosen]
+    if not e["pts"]:
+        # ⚠️ 只有 `agents/gen0.py` 會寫 log，`agents/gen2_model.py` 一行都沒有。
+        # 所以 `--a e2e --b <gen0 系>` 的 run，檔案裡只有 player 1；預設的
+        # `--player 0` 會拿到空的 pts，接著在 `plot_combined` 的 `vals[-1]`
+        # 炸成 IndexError（離真正的原因很遠）。這裡先擋掉。
+        have = sorted(x for x in e["players"] if x is not None)
+        if not have:
+            raise SystemExit(f"{chosen} 的 log 裡沒有 player 欄位")
+        raise SystemExit(
+            f"{chosen} 的 log 裡沒有 player {player} 的紀錄"
+            f"（有的是 player {have}）。加 --player {have[0]} 再跑一次。\n"
+            "只有 agents/gen0.py 會寫 log，網路版不寫 —— 網路版那一邊本來就沒有資料。")
     e["pts"].sort(key=lambda q: q[0])
     days = [d for d, _ in e["pts"]]
     series = {item: [q[item] for _, q in e["pts"]] for item in PRODUCTS}
