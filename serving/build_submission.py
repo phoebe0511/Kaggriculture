@@ -62,7 +62,6 @@ FILE_MAP = {
     "main.py": "main.py",
     "contracts.py": "contracts.py",
     "agents/gen0.py": "gen0.py",
-    "agents/gen1.py": "gen1.py",
     "agents/gen2_model.py": "gen2_model.py",
     "agents/gen4_demand.py": "gen4_demand.py",
     "serving/npz_forward.py": "npz_forward.py",
@@ -80,7 +79,7 @@ FILES = tuple(FILE_MAP.values()) + (WEIGHTS_NAME,)
 #: 2026-08-20 在 repo 外的目錄用 `importlib.util.find_spec` 逐個確認過都是 None。
 #: ⚠️ 那是**本機**的證據，不是 Kaggle runtime 的。新增名字時要重新確認。
 VERIFIED_FREE_NAMES = (
-    "main", "contracts", "gen0", "gen1", "gen2_model", "gen4_demand",
+    "main", "contracts", "gen0", "gen2_model", "gen4_demand",
     "npz_forward", "action_validation",
 )
 

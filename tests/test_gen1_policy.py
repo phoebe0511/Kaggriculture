@@ -32,7 +32,7 @@ from agents.gen0 import (
     species_for_structure,
     structure_tiles,
 )
-from agents.gen1 import DEFAULT_PARAMS as GEN1_PARAMS, _resolve_params
+from agents.gen0 import DEFAULT_PARAMS as GEN1_PARAMS, _resolve_params
 
 
 def _plant(crop, planted_day, *, consecutive=0, yield_units=1, fertilized=-1):
@@ -275,14 +275,23 @@ def test_market_stock_accounts_for_same_turn_pickups():
 
 
 def test_ladder_wages_keep_land_crew_cap_through_final_day():
+    """這條測的是**工資**不會把人砍掉，不是季末減員排程。
+
+    所以要把 `late_crew_caps` 拿掉再測 —— 2026-08-21 gen1 併進 gen0 之後它進了
+    預設（`((2, 10), (1, 8))`），days_left=1 會被壓到 8，那是**另一條規則**，
+    由下面的 `test_optional_late_crew_schedule_uses_the_tightest_matching_cap`
+    負責。混在一起的話這條測到的就不是工資了。
+    """
     farm = {
         "unlocked_quadrants": ["NW", "NE", "SW"],
         "tiles": [[None] * 10 for _ in range(10)],
     }
+    params = dict(DEFAULT_PARAMS)
+    params.pop("late_crew_caps")
 
     assert planned_crew(
         farm,
-        DEFAULT_PARAMS,
+        params,
         {"farmHandCostMult": 1},
         {},
         days_left=1,
@@ -358,13 +367,20 @@ def test_wheat_reserve_disappears_during_liquidation():
 
 
 def test_animal_purchase_respects_committed_housing_capacity():
-    alive = {"COW": 4, "SHEEP": 4, "GOOSE": 1}
-    assert _animal_housing_room(DEFAULT_PARAMS, alive, {}, [{}]) == 0
+    """算的是 `n_structures - 已承諾的動物數`，所以 `n_structures` 要寫死。
 
-    alive = {"COW": 2}
-    shed = {"GOOSE": 1}
-    inventories = [{"SHEEP": 2}, {}]
-    assert _animal_housing_room(DEFAULT_PARAMS, alive, shed, inventories) == 4
+    下面兩組數字是照 9 格算的。2026-08-21 gen1 併進 gen0 之後預設變成 12，
+    綁在預設值上的話這條測試每次調參都要改一次數字 —— 那就不是在測算術了。
+    """
+    params = dict(DEFAULT_PARAMS, n_structures=9)
+
+    alive = {"COW": 4, "SHEEP": 4, "GOOSE": 1}          # 9 隻，剛好填滿
+    assert _animal_housing_room(params, alive, {}, [{}]) == 0
+
+    alive = {"COW": 2}                                   # 場上 2
+    shed = {"GOOSE": 1}                                  # 倉庫 1
+    inventories = [{"SHEEP": 2}, {}]                     # 手上 2 -> 共 5
+    assert _animal_housing_room(params, alive, shed, inventories) == 4
 
 
 def test_crop_must_have_time_to_reach_first_harvest():

@@ -23,7 +23,7 @@ import numpy as np
 
 import contracts as C
 from agents.gen0 import act as gen0_act
-from agents.gen1 import DEFAULT_PARAMS as GEN1_DEFAULTS
+from agents.gen0 import DEFAULT_PARAMS as RULE_DEFAULTS
 from agents.gen2_model import _policy
 
 #: 兩種建物共用同一個上限 —— 引擎的建物就是佔掉一格可種的地。
@@ -75,7 +75,7 @@ def _choose(op_logits, qty_logits, mask, obs, build_budget):
 
 
 def act(obs, config=None, params=None):
-    resolved = dict(GEN1_DEFAULTS)
+    resolved = dict(RULE_DEFAULTS)
     resolved.update(params or {})
     resolved.pop("_replace_defaults", None)
 

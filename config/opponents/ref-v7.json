@@ -1,6 +1,6 @@
 {
   "name": "ref-v7",
-  "entry": "agents.gen1:act",
+  "entry": "agents.gen0:act",
   "engine_version": "1.32.7",
   "source_base_commit": "working-tree-2026-08-18",
   "post_base_fixes": [

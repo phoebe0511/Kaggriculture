@@ -1,6 +1,0 @@
-{
-  "name": "gen0",
-  "entry": "agents.gen0:act",
-  "params": {},
-  "note": "第 0 代規則式 AI，用 agents/gen0.py 的預設參數。實測 vs starter 平均現金約 $25,000。"
-}

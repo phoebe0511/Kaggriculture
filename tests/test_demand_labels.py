@@ -21,7 +21,7 @@ import pytest
 from kaggle_environments import make
 
 import contracts as C
-from agents.gen1 import act as gen1_act
+from agents.gen0 import act as gen1_act
 from harness.rollout import demand_from_tasks, unpack_demand
 
 

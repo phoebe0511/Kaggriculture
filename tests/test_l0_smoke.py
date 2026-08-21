@@ -11,15 +11,15 @@ from kaggle_environments import make
 #
 # `baselines.json` 的三個期末現金是「規則式那條路沒有被改壞」的決定性檢查
 # （`docs/rules.md` §2.2 的 `assert final_cash == baseline[seed]`）。它要盯的是
-# `agents/gen0.py` + `agents/gen1.py`，而那條路是**完全確定性**的。
+# `agents/gen0.py`（2026-08-21 起 gen1 已併入），而那條路是**完全確定性**的。
 #
 # 2026-08-20 起 `main.py` 換成 `agents/gen4_demand.py`（帶網路），期末現金會
 # 隨權重改變 —— 綁在那上面的話，每換一次 checkpoint 這三個數字就要重寫一次，
-# 等於把這個保護拆掉。所以基準線改成直接指 `agents.gen1:act`，
+# 等於把這個保護拆掉。所以基準線改成直接指 `agents.gen0:act`，
 # **三個數字一個都沒動**。
 #
 # submission 那條路由 `test_submission_entry_*` 顧，它不比對現金。
-from agents.gen1 import act as rule_agent
+from agents.gen0 import act as rule_agent
 from serving.action_validation import (
     assert_legal_action,
     assert_observation_invariants,

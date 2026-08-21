@@ -1,8 +1,0 @@
-{
-  "name": "gen0-four-land",
-  "entry": "agents.gen0:act",
-  "note": "Gen0 實驗版：最多解鎖 4 個象限（NW、NE、SW、SE）；其餘參數沿用 DEFAULT_PARAMS。",
-  "params": {
-    "max_quadrants": 4
-  }
-}

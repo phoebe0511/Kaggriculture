@@ -1,6 +1,0 @@
-{
-  "name": "gen0-land-d0",
-  "entry": "agents.gen0:act",
-  "params": {"land_first_min_day": 0},
-  "note": "gen0 但第一塊地 day 0 就買。跟預設（day 3）比較用。"
-}

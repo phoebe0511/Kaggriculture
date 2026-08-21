@@ -4,7 +4,7 @@
  "opponents": [
   {
    "name": "sb-40",
-   "entry": "agents.gen1:act",
+   "entry": "agents.gen0:act",
    "params": {
     "basket": [
      "MELON",
@@ -48,7 +48,7 @@
   },
   {
    "name": "sb-50",
-   "entry": "agents.gen1:act",
+   "entry": "agents.gen0:act",
    "params": {
     "basket": [
      "MELON",
@@ -92,7 +92,7 @@
   },
   {
    "name": "sb-60",
-   "entry": "agents.gen1:act",
+   "entry": "agents.gen0:act",
    "params": {
     "basket": [
      "MELON",
@@ -136,7 +136,7 @@
   },
   {
    "name": "sb-70",
-   "entry": "agents.gen1:act",
+   "entry": "agents.gen0:act",
    "params": {
     "basket": [
      "MELON",

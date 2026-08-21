@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import contracts as C
 from agents.gen0 import act as gen0_act
-from agents.gen1 import DEFAULT_PARAMS as GEN1_DEFAULTS
+from agents.gen0 import DEFAULT_PARAMS as RULE_DEFAULTS
 from agents.gen2_model import _policy
 
 
@@ -64,7 +64,7 @@ def choose_demand(demand_logits, legal, threshold=0.0):
 
 
 def act(obs, config=None, params=None):
-    resolved = dict(GEN1_DEFAULTS)
+    resolved = dict(RULE_DEFAULTS)
     resolved.update(params or {})
     resolved.pop("_replace_defaults", None)
     model_market = bool(resolved.get("model_market", True))

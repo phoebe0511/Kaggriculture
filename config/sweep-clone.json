@@ -2,10 +2,10 @@
   "name": "sweep-clone",
   "note": "A = kawashigi（rating 3228，最強的那支）。**A 的得分率越低代表變體越好。**clone-v1 的診斷顯示 day 10 有 61 格可種但只種下 16 格、手上零種子 —— 瓶頸是種子供給不是產能上限。這組掃的是採購積極度。",
   "opponents": [
-    {"name": "main", "entry": "agents.gen1:act", "params": {},
+    {"name": "main", "entry": "agents.gen0:act", "params": {},
      "note": "現行主版，對照組。"},
 
-    {"name": "clone-v1", "entry": "agents.gen1:act",
+    {"name": "clone-v1", "entry": "agents.gen0:act",
      "params": {
        "n_structures": 14, "dynamic_animals": false,
        "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
@@ -15,7 +15,7 @@
        "max_quadrants": 3, "tiles_per_unit": 5, "max_hands": 12
      }},
 
-    {"name": "clone-seed6", "entry": "agents.gen1:act",
+    {"name": "clone-seed6", "entry": "agents.gen0:act",
      "params": {
        "n_structures": 14, "dynamic_animals": false,
        "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
@@ -26,7 +26,7 @@
        "seed_buffer_days": 6
      }},
 
-    {"name": "clone-seed6-cash1", "entry": "agents.gen1:act",
+    {"name": "clone-seed6-cash1", "entry": "agents.gen0:act",
      "params": {
        "n_structures": 14, "dynamic_animals": false,
        "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
@@ -38,7 +38,7 @@
      },
      "note": "現金底線從 3 天降到 1 天，讓錢更早進種子。"},
 
-    {"name": "clone-seed12-cash1", "entry": "agents.gen1:act",
+    {"name": "clone-seed12-cash1", "entry": "agents.gen0:act",
      "params": {
        "n_structures": 14, "dynamic_animals": false,
        "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
