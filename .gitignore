@@ -27,7 +27,10 @@ data/
 # 有 23 個這種檔被 commit 進來，.git 因此漲到 72 MB。
 *.pt
 *.npz
-model/ckpt-*/
+# 2026-08-21 起產物集中在這裡（`model/README.md`）。裡面的東西全部重跑得出來，
+# 保留下來的指標性權重放在 `model/` 底下 —— 但那幾份**也不進 git**，
+# 唯一進 git 的權重是 `submission/weights.npz`（見下面的放行清單）。
+model/artifacts/
 
 # --- 棋譜與 log ---
 replays/

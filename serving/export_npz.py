@@ -1,6 +1,7 @@
 """把訓練好的 torch checkpoint 轉成 `.npz`，給比賽端的 numpy 前向用。
 
-    python -m serving.export_npz --ckpt model/checkpoints/best.pt --out model/weights.npz
+    python -m serving.export_npz --ckpt model/artifacts/ckpt-e2e-round5/best.pt `
+           --out model/artifacts/weights-e2e-round6.npz
 
 ⚠️ 這支**會** import torch（它跑在開發側）。比賽端載入的是產出的 `.npz`，
 走 `serving/npz_forward.py`，那支不碰 torch。
@@ -65,8 +66,10 @@ def export(ckpt_path, out_path):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", default="model/checkpoints/best.pt")
-    ap.add_argument("--out", default="model/weights.npz")
+    ap.add_argument("--ckpt", default="model/artifacts/checkpoints/best.pt")
+    # 🩸 預設寫進 `model/artifacts/`，**不要**寫進 `model/` ——
+    #    `model/` 底下只放挑過的指標性權重（`model/README.md`）。
+    ap.add_argument("--out", default="model/artifacts/weights.npz")
     args = ap.parse_args(argv)
     export(args.ckpt, args.out)
     return 0

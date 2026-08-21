@@ -67,14 +67,14 @@ from serving.npz_forward import NumpyPolicy
 #:
 #: 沒設的話先找**跟這支檔案同一個目錄**的 `weights.npz` —— submission 是攤平的
 #: （`serving/build_submission.py`），權重就躺在旁邊，而且比賽端的工作目錄不是
-#: repo root，寫死 `model/weights.npz` 會找不到。
+#: repo root，寫死任何 `model/...` 的路徑都會找不到。
 #:
 #: ⚠️ 這裡可以用 `__file__`：`main.py` 是被 `exec()` 進去的、沒有 `__file__`，
 #: 但這支是正常 `import` 進來的模組，有。
 #:
 #: 找不到的話退回 repo 的 `submission/weights.npz` —— 那是 `build_submission`
 #: 剛打包進去的同一個檔案，所以開發側跑 `main.py` 跟上場跑的是同一份權重。
-#: **不要退回 `model/weights.npz`**：那支是 ENCODER_VERSION 2 的舊檔，
+#: **不要退回 `model/artifacts/weights.npz`**：那支是 ENCODER_VERSION 2 的舊檔，
 #: 載進來會在第一回合 SystemExit，而錯誤訊息看起來像是 contracts.py 的問題。
 #: 0 安靜 / 2 每回合一筆 / 3 再加上網路的候選動作與 logits。
 #:

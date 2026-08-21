@@ -54,7 +54,7 @@
 ## 對戰
 
 ```powershell
-$env:KAGGRI_WEIGHTS = "model/weights-e2e-round3.npz"
+$env:KAGGRI_WEIGHTS = "model/weights-e2e-round5.npz"
 
 # 端到端網路 vs 規則式（主要的判定）
 python -m eval.runner --a e2e --b gen1 --games 20 --workers 16
@@ -108,22 +108,26 @@ python -m tools.state_dist  temp/<run 目錄>    # 狀態分布，按天
 ## DAgger 一輪
 
 ```powershell
-$env:KAGGRI_WEIGHTS = "model/weights-e2e-round3.npz"
+$env:KAGGRI_WEIGHTS = "model/weights-e2e-round5.npz"
 
 # 1. 收資料：網路開車、規則式出答案
 python -m harness.rollout --policy e2e --expert gen1 `
-       --games 200 --workers 16 --out data/dagger/e2e-round4
+       --games 200 --workers 16 --out data/dagger/e2e-round6
 
 # 2. 訓練（aggregate 全部輪次）
 python -m model.train `
-       --data data/dagger/e2e-round0,data/dagger/e2e-round1,data/dagger/e2e-round2,data/dagger/e2e-round3,data/dagger/e2e-round4 `
+       --data data/dagger/e2e-round0,data/dagger/e2e-round1,data/dagger/e2e-round2,data/dagger/e2e-round3,data/dagger/e2e-round4,data/dagger/e2e-round5,data/dagger/e2e-round6 `
        --labels immediate --val-from data/dagger/e2e-round0 `
-       --out model/ckpt-e2e-round4 --epochs 8 --width 96 --blocks 6
+       --out model/artifacts/ckpt-e2e-round6 --epochs 8 --width 96 --blocks 6
 
 # 3. 匯出
-python -m serving.export_npz --ckpt model/ckpt-e2e-round4/best.pt `
-       --out model/weights-e2e-round4.npz
+python -m serving.export_npz --ckpt model/artifacts/ckpt-e2e-round6/best.pt `
+       --out model/artifacts/weights-e2e-round6.npz
 ```
+
+> 🩸 **產物寫進 `model/artifacts/`，不要寫進 `model/`。** `model/` 底下只放
+> 挑過的指標性權重（現在是 round0 / round2 / round5），`artifacts/` 整個
+> 可以刪掉重跑。規則寫在 `model/README.md`。
 
 > 🩸 **`--val-from` 一定要帶。** train/val 切分吃 `len(paths)`，每加一輪資料夾
 > 抽到的驗證集就換一批 —— round0/round1 的指標曾經因此看起來像退步

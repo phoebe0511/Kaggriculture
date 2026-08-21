@@ -327,7 +327,9 @@ def main(argv=None):
     ap.add_argument("--data", default="data/dataset",
                     help="npz 目錄，逗號分隔可以給多個。DAgger 的 Aggregation "
                          "就是把每一輪的資料併起來一起訓")
-    ap.add_argument("--out", default="model/checkpoints")
+    ap.add_argument("--out", default="model/artifacts/checkpoints",
+                    help="checkpoint 目錄。產物一律放 model/artifacts/ 底下 —— "
+                         "那個目錄整個可以刪掉重跑，見 model/README.md")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=2e-3)

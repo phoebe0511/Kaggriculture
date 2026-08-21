@@ -24,7 +24,7 @@ KAGGRI_LOG_LEVEL=0 python -m pytest -q
 KAGGRI_LOG_LEVEL=0 python -m eval.runner --a gen1 --b starter --games 20 --workers 16
 
 # 端到端網路（unit 動作與市場訂單全部走網路）
-KAGGRI_WEIGHTS=model/weights-e2e-round2.npz   python -m eval.runner --a e2e-restock20 --b gen1 --games 20 --workers 16
+KAGGRI_WEIGHTS=model/weights-e2e-round5.npz   python -m eval.runner --a e2e --b gen1 --games 20 --workers 16
 
 # 把所有跑過的分數整理成表
 python -m tools.eval_table
