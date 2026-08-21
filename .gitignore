@@ -53,9 +53,28 @@ desktop.ini
 
 # --- 不要忽略的（明確放行）---
 !tests/baselines.json
-# 🩸 唯一進 git 的權重：**要上場的那一份**。
+
+# 🩸 **要上場的那一份權重。**
 # `serving/build_submission.py` 會把選定的 `model/weights-*.npz` 複製成這個
-# 檔名，所以「submission 裡的那一份」就是出貨版本，其餘實驗權重不進版控。
+# 檔名，所以「submission 裡的那一份」就是出貨版本。
+# ⚠️ 現在這個檔**不存在** —— `main.py` 出貨的是規則式，`DEFAULT_WEIGHTS` 是
+#    `None`。換成網路版才會產生。
 !submission/weights.npz
+
+# 🩸 **指標性權重。** `model/` 底下那幾份，理由一份一份寫在 `model/README.md`。
+#
+# 為什麼要進 git：`data/` 也在忽略清單裡（396 MB 的 DAgger 資料），所以
+# **從 clone 出來的 repo 產不出任何一份權重** —— 硬碟掛掉就是真的沒了，
+# 不是「重跑 15 分鐘」。
+#
+# 為什麼不會再漲回 72 MB（2026-08-21 那次是 23 個檔被 `git add -A` 掃進來）：
+#
+#   1. 上面的 `*.npz` 仍然擋住所有東西，這裡是**逐檔**放行，不是萬用字元
+#   2. **一份權重進 git 之後就不再改那個檔** —— 新的一輪用新檔名
+#      （`weights-e2e-round6.npz`），binary 沒有 delta 壓縮，改一次等於多存一份
+#   3. 產物寫進 `model/artifacts/`，那整個目錄是擋掉的
+!model/weights-e2e-round0.npz
+!model/weights-e2e-round2.npz
+!model/weights-e2e-round5.npz
 
 
