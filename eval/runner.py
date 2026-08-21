@@ -608,6 +608,14 @@ def summarise(results, name_a, name_b):
         "mean_cash_a": mean(cash_a),
         "mean_cash_b": mean(cash_b),
         "mean_diff": mean(diffs),
+        # min / max 是平均值看不到的東西：兩個平均一樣的版本，可能一個是
+        # 「每局都差不多」、另一個是「大部分還行但偶爾整局崩掉拿 0」。
+        # 2026-08-21 的 DAgger round1 -> round2 就是靠 min 才看出差別
+        # （rollout 的期末現金 min 從 0 變成 17,802，中位只動了一點）。
+        "min_cash_a": min(cash_a) if cash_a else float("nan"),
+        "max_cash_a": max(cash_a) if cash_a else float("nan"),
+        "min_cash_b": min(cash_b) if cash_b else float("nan"),
+        "max_cash_b": max(cash_b) if cash_b else float("nan"),
         "mean_secs_per_game": mean(times),
         "land_a": _land_stats(land_a),
         "land_b": _land_stats(land_b),
@@ -702,6 +710,10 @@ def format_summary(s):
         f"  平均現金  {s['a']} {s['mean_cash_a']:,.0f}"
         f"   vs   {s['b']} {s['mean_cash_b']:,.0f}"
         f"   （差 {s['mean_diff']:+,.0f}）",
+        f"  現金範圍  {s['a']:<10} min {s['min_cash_a']:,.0f}"
+        f"   max {s['max_cash_a']:,.0f}",
+        f"  現金範圍  {s['b']:<10} min {s['min_cash_b']:,.0f}"
+        f"   max {s['max_cash_b']:,.0f}",
         f"  買地 {s['a']:<10} {_fmt_land(s['land_a'])}",
         f"  買地 {s['b']:<10} {_fmt_land(s['land_b'])}",
         f"  田況 {s['a']:<10} {_fmt_farm(s['farm_a'])}",
