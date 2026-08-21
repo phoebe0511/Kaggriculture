@@ -1,29 +1,57 @@
 {
   "name": "zoning",
-  "note": "分區指派。A 固定用 ref-v3（Gen1 三地凍結量尺），每個變體只跟它差一個參數。實作在 agents/gen0.py:757-780：unit 依 index 輪流認養一個象限（`quadrants[u % len(quadrants)]`），指派成本對跨象限的任務加上 zone_penalty。這段是 27adf4b 寫進去就沒開過的死碼——不在 DEFAULT_PARAMS、沒有任何 config 用它、沒量過。動機：單局 log 顯示 MOVE 佔 51.1% 的 unit-turn，是最大的單一支出。zone_penalty 省略時預設 = board = 10。",
+  "note": "分區指派。A 固定用 ref-v3（Gen1 三地凍結量尺），每個變體只跟它差一個參數。實作在 agents/gen0.py:757-780：unit 依 index 輪流認養一個象限（`quadrants[u % len(quadrants)]`），指派成本對跨象限的任務加上 zone_penalty。這段是 27adf4b 寫進去就沒開過的死碼——不在 DEFAULT_PARAMS、沒有任何 config 用它、沒量過。動機：單局 log 顯示 MOVE 佔 51.1% 的 unit-turn，是最大的單一支出。zone_penalty 省略時預設 = board = 10。 ⚠️ 2026-08-21 更新：(1) `agents/gen1.py` 併入 `agents/gen0.py`，`gen0.DEFAULT_PARAMS` 多了 gen1 的 21 項（n_structures 9->12、optimal_assignment False->True、tiles_per_unit、water_on_demand 等）。**這個 sweep 內部仍然可比**（所有變體共用同一組新預設），但**不能拿現在的數字跟 2026-08-16~19 那批比**。 (2) Gen0 線的 9 個對手已刪除（ref-v1 / ref-v2 / gen0 / 5 個 gen0-* / pq4）。固定 A 方請改用 `ref-v11`（唯一把 51 項參數完整展開的，不會隨預設值飄）。",
   "opponents": [
-    {"name": "zone-off", "entry": "agents.gen0:act",
-     "note": "對照組：跟 ref-v3 完全一樣。應該打成 ~50%——打不成的話代表 ref-v3 已經跟現在的 DEFAULT_PARAMS 漂開了，先查這個再看其他變體。",
-     "params": {}},
-
-    {"name": "zone-p3", "entry": "agents.gen0:act",
-     "note": "弱懲罰。跨象限要多走 3 格才划不來——象限內沒事做時仍會跨出去。",
-     "params": {"quadrant_zoning": true, "zone_penalty": 3}},
-
-    {"name": "zone-p6", "entry": "agents.gen0:act",
-     "params": {"quadrant_zoning": true, "zone_penalty": 6}},
-
-    {"name": "zone-p10", "entry": "agents.gen0:act",
-     "note": "程式碼的預設值（board=10）。棋盤內最遠的曼哈頓距離約 18，所以這已經算強約束。",
-     "params": {"quadrant_zoning": true, "zone_penalty": 10}},
-
-    {"name": "zone-p2", "entry": "agents.gen0:act",
-     "note": "最弱的懲罰。原本這格是 p20（近乎硬性分區），但 seed 0 實測 p20 跟 p10 的期末現金一模一樣（兩局都是 67,048 / 59,938）——懲罰一旦超過棋盤最大距離就飽和了，多跑是浪費。改成往低端補解析度。",
-     "params": {"quadrant_zoning": true, "zone_penalty": 2}},
-
-    {"name": "zone-plant-only-p10", "entry": "agents.gen0:act",
-     "note": "只對 PLANT / DIG 分區，WATER·FEED·HARVEST 這些每日照顧仍然派給最近的 unit。假設是『長期歸屬』要分區、『當下最近』不要被綁住。",
-     "params": {"quadrant_zoning": true, "zone_penalty": 10,
-                "zone_planting_only": true}}
+    {
+      "name": "zone-off",
+      "entry": "agents.gen0:act",
+      "note": "對照組：跟 ref-v3 完全一樣。應該打成 ~50%——打不成的話代表 ref-v3 已經跟現在的 DEFAULT_PARAMS 漂開了，先查這個再看其他變體。",
+      "params": {}
+    },
+    {
+      "name": "zone-p3",
+      "entry": "agents.gen0:act",
+      "note": "弱懲罰。跨象限要多走 3 格才划不來——象限內沒事做時仍會跨出去。",
+      "params": {
+        "quadrant_zoning": true,
+        "zone_penalty": 3
+      }
+    },
+    {
+      "name": "zone-p6",
+      "entry": "agents.gen0:act",
+      "params": {
+        "quadrant_zoning": true,
+        "zone_penalty": 6
+      }
+    },
+    {
+      "name": "zone-p10",
+      "entry": "agents.gen0:act",
+      "note": "程式碼的預設值（board=10）。棋盤內最遠的曼哈頓距離約 18，所以這已經算強約束。",
+      "params": {
+        "quadrant_zoning": true,
+        "zone_penalty": 10
+      }
+    },
+    {
+      "name": "zone-p2",
+      "entry": "agents.gen0:act",
+      "note": "最弱的懲罰。原本這格是 p20（近乎硬性分區），但 seed 0 實測 p20 跟 p10 的期末現金一模一樣（兩局都是 67,048 / 59,938）——懲罰一旦超過棋盤最大距離就飽和了，多跑是浪費。改成往低端補解析度。",
+      "params": {
+        "quadrant_zoning": true,
+        "zone_penalty": 2
+      }
+    },
+    {
+      "name": "zone-plant-only-p10",
+      "entry": "agents.gen0:act",
+      "note": "只對 PLANT / DIG 分區，WATER·FEED·HARVEST 這些每日照顧仍然派給最近的 unit。假設是『長期歸屬』要分區、『當下最近』不要被綁住。",
+      "params": {
+        "quadrant_zoning": true,
+        "zone_penalty": 10,
+        "zone_planting_only": true
+      }
+    }
   ]
 }

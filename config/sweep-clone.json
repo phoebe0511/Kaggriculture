@@ -1,52 +1,158 @@
 {
   "name": "sweep-clone",
-  "note": "A = kawashigi（rating 3228，最強的那支）。**A 的得分率越低代表變體越好。**clone-v1 的診斷顯示 day 10 有 61 格可種但只種下 16 格、手上零種子 —— 瓶頸是種子供給不是產能上限。這組掃的是採購積極度。",
+  "note": "A = kawashigi（rating 3228，最強的那支）。**A 的得分率越低代表變體越好。**clone-v1 的診斷顯示 day 10 有 61 格可種但只種下 16 格、手上零種子 —— 瓶頸是種子供給不是產能上限。這組掃的是採購積極度。 ⚠️ 2026-08-21 更新：(1) `agents/gen1.py` 併入 `agents/gen0.py`，`gen0.DEFAULT_PARAMS` 多了 gen1 的 21 項（n_structures 9->12、optimal_assignment False->True、tiles_per_unit、water_on_demand 等）。**這個 sweep 內部仍然可比**（所有變體共用同一組新預設），但**不能拿現在的數字跟 2026-08-16~19 那批比**。 (2) Gen0 線的 9 個對手已刪除（ref-v1 / ref-v2 / gen0 / 5 個 gen0-* / pq4）。固定 A 方請改用 `ref-v11`（唯一把 51 項參數完整展開的，不會隨預設值飄）。",
   "opponents": [
-    {"name": "main", "entry": "agents.gen0:act", "params": {},
-     "note": "現行主版，對照組。"},
-
-    {"name": "clone-v1", "entry": "agents.gen0:act",
-     "params": {
-       "n_structures": 14, "dynamic_animals": false,
-       "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
-                  "SHEEP","SHEEP","SHEEP","SHEEP"],
-       "dynamic_basket": false,
-       "basket": ["STRAWBERRY","STRAWBERRY","STRAWBERRY","WHEAT","WHEAT"],
-       "max_quadrants": 3, "tiles_per_unit": 5, "max_hands": 12
-     }},
-
-    {"name": "clone-seed6", "entry": "agents.gen0:act",
-     "params": {
-       "n_structures": 14, "dynamic_animals": false,
-       "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
-                  "SHEEP","SHEEP","SHEEP","SHEEP"],
-       "dynamic_basket": false,
-       "basket": ["STRAWBERRY","STRAWBERRY","STRAWBERRY","WHEAT","WHEAT"],
-       "max_quadrants": 3, "tiles_per_unit": 5, "max_hands": 12,
-       "seed_buffer_days": 6
-     }},
-
-    {"name": "clone-seed6-cash1", "entry": "agents.gen0:act",
-     "params": {
-       "n_structures": 14, "dynamic_animals": false,
-       "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
-                  "SHEEP","SHEEP","SHEEP","SHEEP"],
-       "dynamic_basket": false,
-       "basket": ["STRAWBERRY","STRAWBERRY","STRAWBERRY","WHEAT","WHEAT"],
-       "max_quadrants": 3, "tiles_per_unit": 5, "max_hands": 12,
-       "seed_buffer_days": 6, "cash_reserve_days": 1
-     },
-     "note": "現金底線從 3 天降到 1 天，讓錢更早進種子。"},
-
-    {"name": "clone-seed12-cash1", "entry": "agents.gen0:act",
-     "params": {
-       "n_structures": 14, "dynamic_animals": false,
-       "animal": ["COW","COW","COW","COW","COW","COW","COW","COW","COW","COW",
-                  "SHEEP","SHEEP","SHEEP","SHEEP"],
-       "dynamic_basket": false,
-       "basket": ["STRAWBERRY","STRAWBERRY","STRAWBERRY","WHEAT","WHEAT"],
-       "max_quadrants": 3, "tiles_per_unit": 5, "max_hands": 12,
-       "seed_buffer_days": 12, "cash_reserve_days": 1
-     }}
+    {
+      "name": "main",
+      "entry": "agents.gen0:act",
+      "params": {},
+      "note": "現行主版，對照組。"
+    },
+    {
+      "name": "clone-v1",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14,
+        "dynamic_animals": false,
+        "animal": [
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP"
+        ],
+        "dynamic_basket": false,
+        "basket": [
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "WHEAT",
+          "WHEAT"
+        ],
+        "max_quadrants": 3,
+        "tiles_per_unit": 5,
+        "max_hands": 12
+      }
+    },
+    {
+      "name": "clone-seed6",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14,
+        "dynamic_animals": false,
+        "animal": [
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP"
+        ],
+        "dynamic_basket": false,
+        "basket": [
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "WHEAT",
+          "WHEAT"
+        ],
+        "max_quadrants": 3,
+        "tiles_per_unit": 5,
+        "max_hands": 12,
+        "seed_buffer_days": 6
+      }
+    },
+    {
+      "name": "clone-seed6-cash1",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14,
+        "dynamic_animals": false,
+        "animal": [
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP"
+        ],
+        "dynamic_basket": false,
+        "basket": [
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "WHEAT",
+          "WHEAT"
+        ],
+        "max_quadrants": 3,
+        "tiles_per_unit": 5,
+        "max_hands": 12,
+        "seed_buffer_days": 6,
+        "cash_reserve_days": 1
+      },
+      "note": "現金底線從 3 天降到 1 天，讓錢更早進種子。"
+    },
+    {
+      "name": "clone-seed12-cash1",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14,
+        "dynamic_animals": false,
+        "animal": [
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "COW",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP",
+          "SHEEP"
+        ],
+        "dynamic_basket": false,
+        "basket": [
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "STRAWBERRY",
+          "WHEAT",
+          "WHEAT"
+        ],
+        "max_quadrants": 3,
+        "tiles_per_unit": 5,
+        "max_hands": 12,
+        "seed_buffer_days": 12,
+        "cash_reserve_days": 1
+      }
+    }
   ]
 }

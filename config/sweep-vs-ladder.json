@@ -1,32 +1,72 @@
 {
   "name": "sweep-vs-ladder",
-  "note": "A = ladder-top-a（真實 ladder 重播），B = 各變體。**分數是從 A 的角度看的，A 的得分率越低代表那個變體越好。**候選來自 2026-08-19 對 ladder-top-a 的 10 seed 逐件收入歸因：MILK -22,575 / STRAWBERRY -17,941 / WHEAT -10,122 / FERTILIZER -6,273 / MELON -3,033。",
+  "note": "A = ladder-top-a（真實 ladder 重播），B = 各變體。**分數是從 A 的角度看的，A 的得分率越低代表那個變體越好。**候選來自 2026-08-19 對 ladder-top-a 的 10 seed 逐件收入歸因：MILK -22,575 / STRAWBERRY -17,941 / WHEAT -10,122 / FERTILIZER -6,273 / MELON -3,033。 ⚠️ 2026-08-21 更新：(1) `agents/gen1.py` 併入 `agents/gen0.py`，`gen0.DEFAULT_PARAMS` 多了 gen1 的 21 項（n_structures 9->12、optimal_assignment False->True、tiles_per_unit、water_on_demand 等）。**這個 sweep 內部仍然可比**（所有變體共用同一組新預設），但**不能拿現在的數字跟 2026-08-16~19 那批比**。 (2) Gen0 線的 9 個對手已刪除（ref-v1 / ref-v2 / gen0 / 5 個 gen0-* / pq4）。固定 A 方請改用 `ref-v11`（唯一把 51 項參數完整展開的，不會隨預設值飄）。",
   "opponents": [
-    {"name": "base", "entry": "agents.gen0:act", "params": {},
-     "note": "對照組 = 現行主版。確認旋鈕接線正確，也給其他變體一個基準。"},
-
-    {"name": "animal-share-0.75", "entry": "agents.gen0:act",
-     "params": {"max_animal_share": 0.75},
-     "note": "現值 0.5 讓單一物種最多佔 6/12 格；對手是 10 COW / 14 格 = 0.71。這條結構上禁止了對手的配置。"},
-    {"name": "struct-14", "entry": "agents.gen0:act",
-     "params": {"n_structures": 14},
-     "note": "對手 14 格。journal 08-18 說 12 格擊敗 13/14/15，但那是對 ref-v7 量的。"},
-    {"name": "struct-14-share-0.75", "entry": "agents.gen0:act",
-     "params": {"n_structures": 14, "max_animal_share": 0.75},
-     "note": "兩者一起 —— 14 格 × 0.75 = 10 隻，剛好是對手的 COW 數。"},
-
-    {"name": "fert-roi-0", "entry": "agents.gen0:act",
-     "params": {"fertilizer_roi_margin": 0.0},
-     "note": "草莓：兩邊都買 42 顆種子，他們收 293 個、我們 194 個。施肥每次產出 +2，差距對得上「他們幾乎全程施肥」。08-18 加的 ROI 門檻對 ref-v7 是 +$3,311，對真對手可能是反的。"},
-    {"name": "fert-one-time", "entry": "agents.gen0:act",
-     "params": {"fertilize_one_time": true},
-     "note": "one-time 作物也施肥。"},
-    {"name": "fert-both", "entry": "agents.gen0:act",
-     "params": {"fertilizer_roi_margin": 0.0, "fertilize_one_time": true},
-     "note": "兩條一起放開。"},
-
-    {"name": "melon-1.5", "entry": "agents.gen0:act",
-     "params": {"crop_oversupply": {"MELON": 1.5}},
-     "note": "我們賣 111 個均價 $126.7，他們賣 72 個均價 $237.8 —— 多賣 39 個總收入反而少 $3,033。現值 4.0。"}
+    {
+      "name": "base",
+      "entry": "agents.gen0:act",
+      "params": {},
+      "note": "對照組 = 現行主版。確認旋鈕接線正確，也給其他變體一個基準。"
+    },
+    {
+      "name": "animal-share-0.75",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_animal_share": 0.75
+      },
+      "note": "現值 0.5 讓單一物種最多佔 6/12 格；對手是 10 COW / 14 格 = 0.71。這條結構上禁止了對手的配置。"
+    },
+    {
+      "name": "struct-14",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14
+      },
+      "note": "對手 14 格。journal 08-18 說 12 格擊敗 13/14/15，但那是對 ref-v7 量的。"
+    },
+    {
+      "name": "struct-14-share-0.75",
+      "entry": "agents.gen0:act",
+      "params": {
+        "n_structures": 14,
+        "max_animal_share": 0.75
+      },
+      "note": "兩者一起 —— 14 格 × 0.75 = 10 隻，剛好是對手的 COW 數。"
+    },
+    {
+      "name": "fert-roi-0",
+      "entry": "agents.gen0:act",
+      "params": {
+        "fertilizer_roi_margin": 0.0
+      },
+      "note": "草莓：兩邊都買 42 顆種子，他們收 293 個、我們 194 個。施肥每次產出 +2，差距對得上「他們幾乎全程施肥」。08-18 加的 ROI 門檻對 ref-v7 是 +$3,311，對真對手可能是反的。"
+    },
+    {
+      "name": "fert-one-time",
+      "entry": "agents.gen0:act",
+      "params": {
+        "fertilize_one_time": true
+      },
+      "note": "one-time 作物也施肥。"
+    },
+    {
+      "name": "fert-both",
+      "entry": "agents.gen0:act",
+      "params": {
+        "fertilizer_roi_margin": 0.0,
+        "fertilize_one_time": true
+      },
+      "note": "兩條一起放開。"
+    },
+    {
+      "name": "melon-1.5",
+      "entry": "agents.gen0:act",
+      "params": {
+        "crop_oversupply": {
+          "MELON": 1.5
+        }
+      },
+      "note": "我們賣 111 個均價 $126.7，他們賣 72 個均價 $237.8 —— 多賣 39 個總收入反而少 $3,033。現值 4.0。"
+    }
   ]
 }

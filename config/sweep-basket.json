@@ -1,18 +1,61 @@
 {
   "name": "basket-sweep",
-  "note": "動態 basket（依當局開出來的 shop 決定種什麼）vs 各種固定的 basket。shop 是抽取有放回的，實測 CARROT 的日消耗量在不同 seed 之間從 1.0 到 18.0。",
+  "note": "動態 basket（依當局開出來的 shop 決定種什麼）vs 各種固定的 basket。shop 是抽取有放回的，實測 CARROT 的日消耗量在不同 seed 之間從 1.0 到 18.0。 ⚠️ 2026-08-21 更新：(1) `agents/gen1.py` 併入 `agents/gen0.py`，`gen0.DEFAULT_PARAMS` 多了 gen1 的 21 項（n_structures 9->12、optimal_assignment False->True、tiles_per_unit、water_on_demand 等）。**這個 sweep 內部仍然可比**（所有變體共用同一組新預設），但**不能拿現在的數字跟 2026-08-16~19 那批比**。 (2) Gen0 線的 9 個對手已刪除（ref-v1 / ref-v2 / gen0 / 5 個 gen0-* / pq4）。固定 A 方請改用 `ref-v11`（唯一把 51 項參數完整展開的，不會隨預設值飄）。",
   "opponents": [
-    {"name": "static-3", "entry": "agents.gen0:act",
-     "params": {"dynamic_basket": false,
-                "basket": ["MELON", "CARROT", "CARROT", "WHEAT", "WHEAT"]}},
-    {"name": "static-5", "entry": "agents.gen0:act",
-     "params": {"dynamic_basket": false,
-                "basket": ["MELON", "CARROT", "TOMATO", "STRAWBERRY", "WHEAT"]}},
-    {"name": "static-wheat", "entry": "agents.gen0:act",
-     "params": {"dynamic_basket": false, "basket": ["WHEAT"]}},
-    {"name": "static-melon", "entry": "agents.gen0:act",
-     "params": {"dynamic_basket": false, "basket": ["MELON"]}},
-    {"name": "dynamic", "entry": "agents.gen0:act",
-     "params": {"dynamic_basket": true}}
+    {
+      "name": "static-3",
+      "entry": "agents.gen0:act",
+      "params": {
+        "dynamic_basket": false,
+        "basket": [
+          "MELON",
+          "CARROT",
+          "CARROT",
+          "WHEAT",
+          "WHEAT"
+        ]
+      }
+    },
+    {
+      "name": "static-5",
+      "entry": "agents.gen0:act",
+      "params": {
+        "dynamic_basket": false,
+        "basket": [
+          "MELON",
+          "CARROT",
+          "TOMATO",
+          "STRAWBERRY",
+          "WHEAT"
+        ]
+      }
+    },
+    {
+      "name": "static-wheat",
+      "entry": "agents.gen0:act",
+      "params": {
+        "dynamic_basket": false,
+        "basket": [
+          "WHEAT"
+        ]
+      }
+    },
+    {
+      "name": "static-melon",
+      "entry": "agents.gen0:act",
+      "params": {
+        "dynamic_basket": false,
+        "basket": [
+          "MELON"
+        ]
+      }
+    },
+    {
+      "name": "dynamic",
+      "entry": "agents.gen0:act",
+      "params": {
+        "dynamic_basket": true
+      }
+    }
   ]
 }

@@ -1,12 +1,48 @@
 {
   "name": "hire-sweep",
-  "note": "雇工人數掃描。inline 定義，不用開一堆檔。用法：python -m eval.runner --a gen0 --ladder config/sweep-hire.json",
+  "note": "雇工人數掃描。inline 定義，不用開一堆檔。用法：python -m eval.runner --a gen0 --ladder config/sweep-hire.json ⚠️ 2026-08-21 更新：(1) `agents/gen1.py` 併入 `agents/gen0.py`，`gen0.DEFAULT_PARAMS` 多了 gen1 的 21 項（n_structures 9->12、optimal_assignment False->True、tiles_per_unit、water_on_demand 等）。**這個 sweep 內部仍然可比**（所有變體共用同一組新預設），但**不能拿現在的數字跟 2026-08-16~19 那批比**。 (2) Gen0 線的 9 個對手已刪除（ref-v1 / ref-v2 / gen0 / 5 個 gen0-* / pq4）。固定 A 方請改用 `ref-v11`（唯一把 51 項參數完整展開的，不會隨預設值飄）。",
   "opponents": [
-    {"name": "hire-0",  "entry": "agents.gen0:act", "params": {"max_hands": 0}},
-    {"name": "hire-2",  "entry": "agents.gen0:act", "params": {"max_hands": 2}},
-    {"name": "hire-4",  "entry": "agents.gen0:act", "params": {"max_hands": 4}},
-    {"name": "hire-8",  "entry": "agents.gen0:act", "params": {"max_hands": 8}},
-    {"name": "hire-12", "entry": "agents.gen0:act", "params": {"max_hands": 12}},
-    {"name": "hire-16", "entry": "agents.gen0:act", "params": {"max_hands": 16}}
+    {
+      "name": "hire-0",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 0
+      }
+    },
+    {
+      "name": "hire-2",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 2
+      }
+    },
+    {
+      "name": "hire-4",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 4
+      }
+    },
+    {
+      "name": "hire-8",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 8
+      }
+    },
+    {
+      "name": "hire-12",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 12
+      }
+    },
+    {
+      "name": "hire-16",
+      "entry": "agents.gen0:act",
+      "params": {
+        "max_hands": 16
+      }
+    }
   ]
 }
