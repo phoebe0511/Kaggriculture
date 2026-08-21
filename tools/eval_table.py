@@ -22,29 +22,33 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT = REPO_ROOT / "docs" / "eval-results.md"
 
 #: 需要備註才不會被誤讀的 run。key 是 run 目錄名。
-NOTES = {
-    "20260821-091513_gen2_model_vs_gen1":
-        "⚠️ config 錯配：這是 ① 的權重，但走 `gen2_model.json`（參數是為模仿"
-        "**老師**調的：n_structures 14、寫死 COW/SHEEP）。對齊版見下面的 `e2e` 那列。",
-    "20260820-131642_dagger0_vs_ladder-top-a":
-        "round 0 是 BC 不是 DAgger（policy == expert），拿 $0 是預期內的。",
-}
+NOTES = {}
 
-#: 哪一條技術路線。`temp/` 只留 agent 名字，對應關係在這裡。
+#: 只收這兩類：
+#:
+#: 1. **規則式**（`agents/gen0.py`）—— 它本來就是規則式，標示誠實。
+#: 2. **市場真的在網路裡的端到端 run**（`e2e-market*` / `e2e-restock*`）。
+#:
+#: 其餘一律不進表，理由是**它們的市場走 `gen0._market`，分數有一半是規則式的
+#: 功勞，但列在表上會被讀成網路的成績**。2026-08-21 實測同一份權重：
+#: 市場走 gen0 是 gen1 的 81.5%、走網路是 17.0%（調完逐 op 門檻是 42.0%）。
+#: 被排除的包含 v5 那整條線（`gen4_*` / `submission`）、v2/v3/v4，
+#: 以及 2026-08-21 上午拿掉 `model_market` 開關之前的 `e2e` / `gen2_model`。
+#:
+#: ⚠️ 排除不等於那些 run 不存在 —— DAgger 的曲線記在
+#: `docs/memory/journal/2026-08-21.md` §8 / §9，那裡有完整脈絡。
 LINES = {
-    "規則式": ("main", "main:agent", "gen1", "agents.gen1:act", "agents.gen0:act"),
-    "v2 端到端（模仿老師）": ("gen2", "gen2_model", "gen2_capped"),
-    "v3/v4 逐 unit target": ("gen3_target", "gen4_market", "dagger", "dagger0"),
-    "v5 逐格 demand": ("gen4_demand", "gen4_rulemarket", "submission"),
-    "① 端到端（模仿規則式）": ("e2e",),
+    "規則式（agents/gen0.py）": ("main", "main:agent", "gen1",
+                                 "agents.gen1:act", "agents.gen0:act"),
 }
 
 
 def _line_of(name):
-    for line, members in LINES.items():
-        if name in members:
-            return line
-    return "其他"
+    if name in LINES["規則式（agents/gen0.py）"]:
+        return "規則式（agents/gen0.py）"
+    if name.startswith("e2e-market") or name.startswith("e2e-restock"):
+        return "① 端到端（市場也在網路裡）"
+    return None                      # 不進表
 
 
 def collect():
@@ -72,11 +76,14 @@ def collect():
         name_a, name_b = s.get("a"), s.get("b")
         if not name_a or not name_b:
             continue
+        line = _line_of(name_a)
+        if line is None:
+            continue
         rows.append({
             "run": path.parent.name,
             "date": path.parent.name[:8],
             "a": name_a, "b": name_b,
-            "line": _line_of(name_a),
+            "line": line,
             "games": len(results), "seeds": seeds,
             "w": s.get("wins"), "d": s.get("draws"), "l": s.get("losses"),
             "mean_a": statistics.mean(cash_a), "min_a": min(cash_a), "max_a": max(cash_a),
@@ -105,8 +112,30 @@ def render(rows):
         "- 勝率和現金是兩件事。配對種子下，兩個實力接近的 agent 可能",
         "  「每局都輸一點」= 現金差 4%、勝率 0%。",
         "",
+        "## 🚫 哪些 run 不在表上，為什麼",
+        "",
+        "**只收兩類：規則式本人，以及市場真的在網路裡的端到端 run。**",
+        "",
+        "其餘一律排除，因為**它們的市場走 `gen0._market`** —— 分數有一半是",
+        "規則式的功勞，列在表上會被讀成網路的成績。2026-08-21 實測同一份權重：",
+        "",
+        "| 市場走誰 | 相對規則式 |",
+        "|---|---|",
+        "| `gen0._market`（混合版） | 81.5% |",
+        "| market head（預設門檻） | 17.0% |",
+        "| market head（逐 op 門檻 -2.0） | 42.0% |",
+        "",
+        "被排除的有：v5 那整條線（`gen4_*` / `submission`）、v2/v3/v4，",
+        "以及 2026-08-21 上午拿掉 `model_market` 開關之前的 `e2e` / `gen2_model`。",
+        "",
+        "⚠️ 排除不等於那些 run 不存在 —— DAgger 的曲線記在",
+        "`memory/journal/2026-08-21.md` §8 / §9，那裡有完整脈絡。",
+        "",
+        "⚠️ 表裡的 `agents.gen1:act` / `main:agent` 是當時的 entry 字串。",
+        "`agents/gen1.py` 已於 2026-08-21 併入 `agents/gen0.py`，兩者是同一份程式碼。",
+        "",
     ]
-    for line in list(LINES) + ["其他"]:
+    for line in ("規則式（agents/gen0.py）", "① 端到端（市場也在網路裡）"):
         group = [r for r in rows if r["line"] == line]
         if not group:
             continue

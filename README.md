@@ -20,11 +20,14 @@ python -m pip install -r requirements-dev.txt
 # L0 smoke（3 個固定種子，目標 60 秒內）
 KAGGRI_LOG_LEVEL=0 python -m pytest -q
 
-# 主版本本機評估（Gen1 + 嚴格 action validator）
-KAGGRI_LOG_LEVEL=0 python -m eval.runner --a main:agent --b starter --games 20
+# 規則式基準（agents/gen0.py，gen1 已於 2026-08-21 併入）
+KAGGRI_LOG_LEVEL=0 python -m eval.runner --a gen1 --b starter --games 20 --workers 16
 
-# 四地候選；不影響 main.py
-KAGGRI_LOG_LEVEL=0 python -m eval.runner --a gen1-four-land --b starter --games 20
+# 端到端網路（unit 動作與市場訂單全部走網路）
+KAGGRI_WEIGHTS=model/weights-e2e-round2.npz   python -m eval.runner --a e2e-restock20 --b gen1 --games 20 --workers 16
+
+# 把所有跑過的分數整理成表
+python -m tools.eval_table
 
 # 產生 submission/submission.tar.gz
 KAGGRI_LOG_LEVEL=0 python -m serving.build_submission --tar
@@ -32,26 +35,34 @@ KAGGRI_LOG_LEVEL=0 python -m serving.build_submission --tar
 # 完成 `kaggle auth login` 後提交
 kaggle competitions submit kaggriculture \
   -f submission/submission.tar.gz \
-  -m "Gen1 active-tiles on-demand-water"
+  -m "規則式 gen0（榜上版本）"
 ```
 
-## 目前基準（engine 1.32.7）
+⚠️ **`--workers` 上限 16。** `cpu_count()` 是 28，但 `harness/rollout.py` 的預設
+`cpu_count - 2 = 26` 會吃掉整台機器。每個指令都要明寫。
 
-`main.py` = Gen1 第二輪三地版：`tiles_per_unit=4`、12 格動物建物，加入肥料
-貨幣 ROI、季末 10→8 人縮編、同優先序任務的全域最短配對、白天精準回倉，
-並禁止在每天最後一小時播下必定立即變成雜草的新苗。
+## 目前狀態（engine 1.32.7）
 
-- 對 starter：30 個 paired seeds／60 局全勝，平均現金 `$120,841`。
-- 對第一輪凍結版 ref-v7：60 局全勝，平均 `$94,551 vs $78,720`，差 `+$15,831`。
-- 凍結 ladder：10 個對手 × 5 paired seeds，共 100 局全勝。
-- 對 starter 的動作分布：MOVE `56.4%`／生產 `26.5%`／PASS `17.0%`；
-  全季管理中土地 `63.0%`，雜草率 `2.2%`。
-- 條件式四地版仍保留在 `config/opponents/gen1-four-land.json`；13～15 格動物建物
-  重掃也全數輸給 12 格，因此都沒有升主版。
+**分數的權威記錄在 [`docs/eval-results.md`](docs/eval-results.md)**（由
+`python -m tools.eval_table` 從 `temp/*/result.json` 產生，不要手抄）。
 
-⚠️ **已知的失敗模式：品項過度集中。** 格數變多會讓 `_plan_basket` /
-`_plan_animals` 把配額集中到少數品項，同時放掉當局稀缺、單價高的品項。
-seed 41003 對 starter 從 `$86,263` 掉到 `$49,892`，逐件重建收入後的歸因是：
+方法路線是 Expert Iteration：規則式暖身 → 訓練網路 → **網路 + search** → 再訓練。
+現在在「訓練網路」那一步的尾聲，`search/` 還沒開始寫。
+
+| | 對 `ladder-top-a` | 對規則式 |
+|---|---|---|
+| 規則式 `agents/gen0.py`（榜上這一版） | 56~58% | — |
+| 端到端網路 `agents/gen2_model.py` | 未量 | 42% |
+
+> 🚫 **不要把「退回規則式」或「把某一段還給 gen0」當成結論。**
+> 模仿架構的天花板就是被模仿的對象，而規則式對 ladder 頂端只有 56~58%。
+> 要超過它只能靠 search。`agents/gen1.py` 已經不存在（併進 `agents/gen0.py`）。
+
+### 規則式那條路的已知失敗模式：品項過度集中
+
+格數變多會讓 `_plan_basket` / `_plan_animals` 把配額集中到少數品項，同時放掉
+當局稀缺、單價高的品項。seed 41003 對 starter 從 `$86,263` 掉到 `$49,892`，
+逐件重建收入後的歸因是：
 
 | item | t3 量 → t4 量 | 收入差 |
 |---|---|---|
@@ -63,4 +74,4 @@ seed 41003 對 starter 從 `$86,263` 掉到 `$49,892`，逐件重建收入後的
 
 **MELON 是清白的** —— 期末價 `$43 → $10` 只是 `above_func=sq` 在那個位置太陡的
 快照假象，收入其實還多了 $713。真正的洞是 STRAWBERRY 減種、MILK 自我灌爆、
-WOOL 整個消失。`max_crop_share` / `max_animal_share` 待跟 `tiles_per_unit` 一起重掃。
+WOOL 整個消失。

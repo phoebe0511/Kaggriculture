@@ -125,29 +125,56 @@ contracts.py                             → 凍結
 
 ## 現在的狀態
 
-🟡 **Phase 1 進行中**（最後更新 2026-08-16）。
+🟢 **Phase 2 進行中**（最後更新 2026-08-21）。
+
+### 路線
+
+`docs/CLAUDE.md` 的方法路線（Expert Iteration）沒有改：
+**規則式暖身 → 訓練網路 → 網路 + search → 再訓練**。
+
+現在在「訓練網路」那一步的尾聲。網路是**端到端**的
+（`agents/gen2_model.py`）：每個 unit 這一步做什麼（44 個 `UNIT_OPS`，
+含走路方向）以及所有市場訂單都由網路決定，**不 import `agents/gen0.py`**。
+
+> 🚫 **不要提議「退回規則式」或「把某一段還給 gen0」當作結論。**
+> 那條路已經走過兩輪並量到天花板：模仿架構的上限就是被模仿的對象，
+> 而規則式對 ladder 頂端只有 56~58%。要超過它只能靠 search。
+> 詳見 `docs/memory/journal/2026-08-21.md` §1。
+>
+> `agents/gen1.py` **已經不存在**（2026-08-21 併進 `agents/gen0.py`）——
+> 它本來就只是「gen0 + 一組調過的參數」。任何說「改用 gen1」的結論都是過期的。
 
 ### 已經有的
 
 - 引擎規則讀完了，寫在 `docs/games/engine-notes.md`（含行號）與 `docs/games/op-flows.md`。
   `unknowns.md` #1~#9 全部結案。**⚠️ T00 仍待第二人獨立讀完再對答案。**
 - 引擎固定 `kaggle-environments==1.32.7`。升級引擎要重核 `engine-notes.md` 並重跑 L0。
-- `main.py` = Gen1 三地版（`agents/gen1.py` 疊在 `agents/gen0.py` 核心上）
-  + `serving/action_validation.py` 每個動作嚴格驗證。
-- 凍結量尺：`ref-v2`（Gen0）、`ref-v3`（Gen1 t3）、`ref-v4`（Gen1 t4 = 現行預設）。
-  **params 完整展開，不指向 `DEFAULT_PARAMS`** —— 對手池指向預設值的話，
-  每次調預設就等於換了量尺。改了預設就新增一版，不要改舊的。
-- L0 = `pytest`（9 項，約 10 秒）；baseline 在 `tests/baselines.json`。
-- 成績：30 seeds 對 starter 平均 `$86,306`；80 局 paired 對 ref-v3 勝率 `76.3%`。
+- **規則式**：`agents/gen0.py`（gen1 已併入，`DEFAULT_PARAMS` 51 個 key）。
+  榜上 7 萬+，本機對 `ladder-top-a` 是 56~58%。
+- **Phase 2 全線都在**：`contracts.py`（`ENCODER_VERSION` 5）、`model/`、
+  `harness/`（rollout + build_dataset）、`serving/`（npz 前向、export、打包）、
+  `eval/runner.py`、`tools/`（`action_dist` / `state_dist` / `eval_table`）。
+- L0 = `pytest`（81 項，約 45 秒）；baseline 在 `tests/baselines.json`
+  （盯的是規則式那條路，`agents.gen0:act`）。
+- 分數記錄：`docs/eval-results.md`（`python -m tools.eval_table` 重新產生）。
 
 ### 還沒有的
 
-**Phase 2 那條線一行都還沒寫**：`encoding/`、`model/`、`harness/`、`contracts.py`
-都不存在。`architecture.md` 的模組清單是**計畫，不是現況**——別照著它找檔案。
+**`search/` 一行都還沒寫。** 這是路線圖上「網路 + search」那一步，也是唯一
+能超過規則式的東西。forward model 直接用引擎本身（離線跑，沒有 `actTimeout`
+限制，也沒有「呼叫引擎私有函式導致換版本每回合 TypeError」的風險）。
 
 ### 現在的工程重點
 
-路徑規劃（MOVE 仍佔 52%、土地利用率只有 61%）與對戰產線吞吐。
+market head 的校準。`BUY_SEED` 的 AUC 有 0.965~0.992（排序幾乎完美）但正例
+只佔 3.2%，sigmoid 0.5 只召回得到 0.25~0.38 —— 現在靠逐 op 門檻補償
+（`agents/gen2_model.RESTOCK_OPS`），正解是訓練時加 class weight。
+
+### ⚠️ 凍結量尺的保護沒有真的裝上
+
+`ref-v3`…`ref-v11` 各有 19 個 key **沒有展開**，會 fall through 到
+`gen0.DEFAULT_PARAMS`。改那些預設值 = 所有凍結尺同時位移，而且不會報錯。
+（`ref-v11` 是唯一完整展開 51 項的。）Gen0 線的 9 個對手已於 2026-08-21 刪除。
 
 ### 兩條還在生效的警告
 

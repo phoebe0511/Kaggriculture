@@ -162,18 +162,26 @@ Leaderboard = skill rating（多局累積）
 
 ## 7. 目前狀態
 
-🟡 **Phase 1 進行中。**
+🟢 **Phase 2 進行中**（最後更新 2026-08-21）。
 
-- 第一輪引擎閱讀已完成；目前本機與 L0 固定使用 `kaggle-environments 1.32.7`。
-- Gen1 三地版已升為 submission 主入口：按需澆水，並按 unit 產能限制 active tiles
-  （`tiles_per_unit=4`，上限 52 格 / 可種 69 格）。
-- 平行 eval runner 會輸出土地利用率與 MOVE／生產／PASS 比例；`ref-v2`、`ref-v3`、
-  `ref-v4` 與 L0 baseline 已凍結。
-- 30-seed 對 starter 平均現金 `$86,273`；80 局 paired 對 ref-v3 勝率 76.3%。
-- 已知失敗模式：格數變多會讓作物／動物配額**過度集中**，放掉當局稀缺的高價品項
-  （見 `README.md` 的逐項收入歸因）。`max_crop_share` / `max_animal_share` 待重掃。
-- `species_for_structure` 的 fallback 已改成照 plan 配額挑，不再是字母序
-  （90 局配對 `+$1,108`，符號檢定 p=0.0075）。
-- 條件式四地版已實作，但 30-seed 平均 `$78,831`，暫不取代三地主版。
-- T00 仍待第二人獨立閱讀後交叉確認。
-- 下一個工程重點是路徑規劃與對戰產線吞吐。
+**分數的權威記錄在 [`eval-results.md`](eval-results.md)** —— 由
+`python -m tools.eval_table` 從 `temp/*/result.json` 產生，不要手抄。
+每日交接寫在 `memory/journal/`。
+
+- 引擎固定 `kaggle-environments 1.32.7`。
+- **規則式是 `agents/gen0.py`。** `agents/gen1.py` 已於 2026-08-21 併入 ——
+  它本來就只是「gen0 + 一組調過的參數」，那層間接沒有帶來任何行為差異。
+  Gen0 線的 9 個對手（`ref-v1`/`ref-v2`/`gen0`/5 個消融/`pq4`）一併刪除。
+- **端到端網路是 `agents/gen2_model.py`**：每個 unit 這一步做什麼
+  （44 個 `UNIT_OPS`，含走路方向）以及所有市場訂單都由網路決定，
+  **不 import `agents/gen0.py`**。DAgger 的 expert 是規則式。
+- kill switch：`tools/action_dist.py`（動作分布）。
+  ⚠️ `tools/state_dist.py` 的基準是**老師**的逐日 p5，而規則式自己也過不了
+  （動物 day 1、作物 day 6、現金 day 14）—— 對現在這條線沒有判定力。
+- 已知失敗模式：market head 的 `BUY_SEED` 正例只佔 3.2%，AUC 有 0.965~0.992
+  但 sigmoid 0.5 只召回 0.25~0.38。現在靠逐 op 門檻補償
+  （`agents/gen2_model.RESTOCK_OPS`），正解是訓練時加 class weight。
+
+> 🚫 **不要把「退回規則式」或「把某一段還給 gen0」當成結論。**
+> 模仿架構的天花板就是被模仿的對象，而規則式對 ladder 頂端只有 56~58%。
+> 要超過它只能靠 search（`search/` 還沒開始寫）。
