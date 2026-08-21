@@ -332,6 +332,9 @@ def main(argv=None):
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--val-episodes", type=int, default=6)
+    ap.add_argument("--val-from", default=None,
+                    help="把驗證集釘在這個資料夾（DAgger 跨輪比較必用，"
+                         "否則加一輪資料就換一張考卷）")
     ap.add_argument("--train-episodes", type=int, default=0,
                     help="只用前 N 局訓練（驗證集不變）。0 = 全部。"
                          "拿來畫 data-scaling 曲線：曲線平了就代表加資料沒用，"
@@ -371,10 +374,30 @@ def main(argv=None):
         raise SystemExit(f"{args.data} 只有 {len(paths)} 局，不夠切驗證集")
 
     # 按局切。同一局相鄰回合的盤面幾乎一樣，按樣本切會讓驗證集虛高。
+    #
+    # 🩸 `--val-from` 存在的理由：下面那個 `permutation` 是固定 seed，但它吃
+    # `len(paths)` —— **DAgger 每加一輪資料夾，抽到的驗證集就換一批**，於是
+    # round 之間的 op / top-k / value 全部不可比。2026-08-21 round0 -> round1
+    # 就踩到了：top3 0.9889 -> 0.9830 看起來像退步，但連 dummy 都從 0.1865
+    # 變成 0.1992（驗證集混進了網路自己走出來的爛盤面），根本是兩張考卷。
+    #
+    # 給 `--val-from data/dagger/e2e-round0` 就把驗證集永遠釘在那個資料夾，
+    # 後面每一輪都考同一份。這跟下面 `--train-episodes` 那句「驗證集不動，
+    # 只砍訓練集」是同一個道理，只是那個保護沒延伸到「加資料夾」。
     rng = np.random.default_rng(0)
-    order = rng.permutation(len(paths))
-    val_paths = [paths[i] for i in order[:args.val_episodes]]
-    train_paths = [paths[i] for i in order[args.val_episodes:]]
+    if args.val_from:
+        pool = sorted(glob.glob(os.path.join(args.val_from, "*.npz")))
+        if len(pool) <= args.val_episodes:
+            raise SystemExit(f"{args.val_from} 只有 {len(pool)} 局，不夠切驗證集")
+        picked = rng.permutation(len(pool))[:args.val_episodes]
+        val_paths = [pool[i] for i in picked]
+        held = {os.path.normcase(os.path.abspath(v)) for v in val_paths}
+        train_paths = [q for q in paths
+                       if os.path.normcase(os.path.abspath(q)) not in held]
+    else:
+        order = rng.permutation(len(paths))
+        val_paths = [paths[i] for i in order[:args.val_episodes]]
+        train_paths = [paths[i] for i in order[args.val_episodes:]]
     if args.train_episodes:
         # 驗證集不動，只砍訓練集 —— 不然不同資料量之間的數字不能比
         train_paths = train_paths[:args.train_episodes]
