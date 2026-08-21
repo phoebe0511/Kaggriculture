@@ -51,6 +51,7 @@ policy 收狀態，不是從混合版。
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -75,6 +76,13 @@ from serving.npz_forward import NumpyPolicy
 #: 剛打包進去的同一個檔案，所以開發側跑 `main.py` 跟上場跑的是同一份權重。
 #: **不要退回 `model/weights.npz`**：那支是 ENCODER_VERSION 2 的舊檔，
 #: 載進來會在第一回合 SystemExit，而錯誤訊息看起來像是 contracts.py 的問題。
+#: 0 安靜 / 2 每回合一筆 / 3 再加上網路的候選動作與 logits。
+#:
+#: ⚠️ **import 時讀一次**，跟 `agents/gen0.py:66` 一樣 —— `main.py` 靠的就是
+#: 這個（先設 `KAGGRI_LOG_LEVEL=0` 再 import）。`eval/runner.py` 是在開 worker
+#: 之前設環境變數，子行程 import 時才讀得到。
+LOG_LEVEL = int(os.environ.get("KAGGRI_LOG_LEVEL", "3"))
+
 _HERE = Path(__file__).resolve().parent
 WEIGHTS_PATH = os.environ.get(
     "KAGGRI_WEIGHTS",
@@ -175,6 +183,145 @@ def market_thresholds(base=0.0, restock=None):
     return th
 
 
+_LOG_FH = None
+_LOG_FH_PATH = None
+
+
+def _log_sink():
+    """回傳要寫進去的 file object。
+
+    跟 `agents/gen0.py` 同一套做法（那邊有完整說明），這裡刻意**複製而不是
+    import** —— 這支的設計前提是完全不依賴 `agents/gen0.py`，而
+    `serving/build_submission.py` 打包時是把檔案攤平的，多一條 import
+    就多一個要進 `FILE_MAP` 的檔案。
+    """
+    global _LOG_FH, _LOG_FH_PATH
+    path = os.environ.get("KAGGRI_LOG_FILE")
+    if not path:
+        import sys
+        return sys.stderr
+    if path != _LOG_FH_PATH:
+        if _LOG_FH is not None:
+            _LOG_FH.close()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        _LOG_FH = open(path, "a", encoding="utf-8")
+        _LOG_FH_PATH = path
+    return _LOG_FH
+
+
+def close_log():
+    """關掉 log 的 file handle。
+
+    `eval/runner.py` 跑完一局要把 `.jsonl` 改名（把期末現金加進檔名），
+    Windows 不讓你改一個開著的檔 —— 不關的話 `PermissionError`。
+    """
+    global _LOG_FH, _LOG_FH_PATH
+    if _LOG_FH is not None:
+        try:
+            _LOG_FH.close()
+        except OSError:
+            pass
+    _LOG_FH = None
+    _LOG_FH_PATH = None
+
+
+def _board_counts(tiles):
+    """一次數完整片田。回傳 `(animals, empty_structs, crops, weeds, tiles_open)`。
+
+    ⚠️ `crops` 是**真的種下去的格數**（`kind == "PLANT"`），跟
+    `agents/gen0.py` 記在 `budget["active_crop_count"]` 的那個數字**不一樣**
+    —— 後者是規則式「打算種幾格」的計畫值。這支沒有計畫值可記，而且
+    `tools/state_dist.py` 的老師基準用的是 `contracts.SCALAR_FIELDS`
+    的 `n_crop_tiles`，那也是實際格數。所以這裡對齊的是老師那一邊。
+    """
+    animals, empty_structs, crops, weeds, open_tiles = {}, {}, 0, 0, 0
+    for row in tiles:
+        for tile in row:
+            if tile == "LOCKED":
+                continue
+            open_tiles += 1
+            if not isinstance(tile, dict):
+                continue
+            kind = tile.get("kind")
+            if kind == "PLANT":
+                crops += 1
+            elif kind == "WEED":
+                weeds += 1
+            elif kind in ("COOP", "PASTURE"):
+                if tile.get("animal"):
+                    animals[tile["animal"]] = animals.get(tile["animal"], 0) + 1
+                else:
+                    empty_structs[kind] = empty_structs.get(kind, 0) + 1
+    return animals, empty_structs, crops, weeds, open_tiles
+
+
+def _top_ops(op_logits, mask, i, k=3):
+    """第 i 個 unit 分數最高的 k 個**合法** op，附 logit。"""
+    scores = np.where(mask[i], op_logits[i], -np.inf)
+    out = []
+    for j in np.argsort(-scores)[:k]:
+        if not np.isfinite(scores[j]):
+            break
+        op, item = C.UNIT_OPS[j]
+        out.append([op, item, round(float(op_logits[i, j]), 3)])
+    return out
+
+
+def _log(obs, action, op_logits, mask, mk_present, thresholds, value):
+    """一回合一筆 JSON。
+
+    欄位跟 `agents/gen0._log` 對齊到 `tools/plot_prices.py` 和
+    `tools/state_dist.py` 讀得到的程度；規則式才有的
+    `budget` / `task_counts` / `top5` / `assigned` 換成網路這邊對應的東西
+    （`units` 的候選動作、`market_logits`）。
+    """
+    farm = obs["farms"][obs["player"]]
+    private = obs["private"]
+    animals, empty_structs, crops, weeds, tiles_open = _board_counts(farm["tiles"])
+    rec = {
+        # 多局的 log 合併之後靠 tag 分辨是哪一局哪一邊。引擎會把 seed 從
+        # observation 抹掉，所以只能由 runner 從外面塞進來。
+        "tag": os.environ.get("KAGGRI_LOG_TAG", ""),
+        "player": obs["player"],
+        "t": obs["day"] * 24 + obs["hour"],
+        "day": obs["day"],
+        "hour": obs["hour"],
+        "cash": farm["money"],
+        "crew": len(farm["hands"]),
+        "quadrants": list(farm["unlocked_quadrants"]),
+        "tiles_open": tiles_open,
+        "animals": animals,
+        "empty_structs": empty_structs,
+        "crops": crops,
+        "weeds": weeds,
+        # value head 預測的期末分數（正規化後）。這是 search 要用的那顆頭，
+        # 值得逐回合留著跟真實結果對。
+        "value": round(float(np.ravel(value)[0]), 4),
+        "prices": dict(obs["market"]["prices"]),
+        "seeds": {k: v for k, v in private["seeds"].items() if v},
+        "shed": {k: v for k, v in private["shed"].items() if v},
+        "carry": [{k: v for k, v in inv.items() if v}
+                  for inv in private["inventories"]],
+        "action": action,
+    }
+    if LOG_LEVEL >= 3:
+        # 「網路本來想做什麼」——被 `legal_unit_mask` 遮掉、或被 PLANT 種子
+        # 上限擋掉的時候，送出去的動作跟第一名不同，只看 action 看不出來。
+        rec["units"] = [_top_ops(op_logits, mask, i)
+                        for i in range(op_logits.shape[0])]
+        # 市場只記**接近門檻**的那些（logit > 門檻 - 2），全部 21 個太吵。
+        near = []
+        for j, (op, item) in enumerate(C.MARKET_OPS):
+            logit = float(mk_present[j])
+            if logit > thresholds[j] - 2.0:
+                near.append([op, item, round(logit, 3),
+                             round(float(thresholds[j]), 2)])
+        rec["market_logits"] = near
+    fh = _log_sink()
+    fh.write(json.dumps(rec, default=str, ensure_ascii=False) + "\n")
+    fh.flush()
+
+
 def act(obs, config=None, params=None):
     """網路決定每個 unit 這一步做什麼，**以及所有市場訂單**。
 
@@ -204,13 +351,17 @@ def act(obs, config=None, params=None):
     spatial, scalar = C.encode(obs, config)
     positions, unit_features = C.encode_units(obs, config)
     (op_logits, qty_logits, _target,
-     mk_present, mk_qty, _value, _demand) = policy(
+     mk_present, mk_qty, value, _demand) = policy(
         spatial, scalar, positions, unit_features)
 
-    units = _choose(op_logits, qty_logits, C.legal_unit_mask(obs, config), obs)
+    mask = C.legal_unit_mask(obs, config)
+    units = _choose(op_logits, qty_logits, mask, obs)
     market = C.decode_market_orders(
         mk_present, mk_qty, obs, config, threshold=thresholds)
-    return {"farmer": units[0], "hands": units[1:], "market": market}
+    action = {"farmer": units[0], "hands": units[1:], "market": market}
+    if LOG_LEVEL >= 2:
+        _log(obs, action, op_logits, mask, mk_present, thresholds, value)
+    return action
 
 
 def agent(obs, config):

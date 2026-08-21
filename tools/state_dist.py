@@ -6,7 +6,7 @@
 
 `tools/action_dist.py` 量的是「動作像不像老師」。這支量的是**局面**像不像 ——
 而 behavior cloning 真正會死的地方是後者：訓練時每一步的輸入都是老師走出來的
-局面，上場時是自己前 t−1 步走出來的。一旦掉出訓練資料的範圍，網路的輸出就
+局面，上場時是自己前 t−1 步走出來的。一旦離開訓練資料的範圍，網路的輸出就
 沒有任何資料背書，而且會自我強化。
 
 ## 為什麼要按天比
@@ -20,12 +20,12 @@
      10        11 / 12         1        1,778        423      9.3%
      14        14 / 14         0       17,242      1,109      0.0%
 
-**第一個掉出去的是動物（day 6），那時候現金還完全正常。** 這種先後順序只有
+**第一個跌破的是動物（day 6），那時候現金還完全正常。** 這種先後順序只有
 按天比才看得到，而它直接指出要修的是市場那一半（動物是買的，不是 unit 決定的）。
 
 ## 紅線
 
-動物 / 作物 / 現金三項，**掉出老師 p5 的第一天都要 ≥ day 14**（半個賽季）。
+動物 / 作物 / 現金三項，**第一次跌破老師 p5 的那天都要 ≥ day 14**（半個賽季）。
 
 紅線是判定門檻，不是統計檢定。要比較兩個版本的強弱仍然要看 `eval.runner`
 的勝率與信賴區間。
@@ -57,7 +57,7 @@ FIELDS = (
     ("現金", "money", 100_000.0),
 )
 
-#: 撐到這一天之前掉出老師的 p5 就算紅。半個賽季。
+#: 在這一天之前跌破老師的 p5 就算紅。半個賽季。
 SURVIVE_UNTIL_DAY = 14
 
 
@@ -96,19 +96,53 @@ def ours_by_day(run_dir):
 
     name = json.loads((run_dir / "result.json").read_text(encoding="utf-8")) \
         .get("a", {}).get("name", "A")
+    # 檔名是 `seed0000_{A 的名字}_vs_{B 的名字}[_a<現金>_b<現金>]`，所以
+    # 「A 的名字排在 _vs_ 前面」的那些檔，A 一定是 **player 0**。
     mine = [p for p in logs if Path(p).stem.split("_vs_")[0].endswith(name)]
+    if not mine:
+        mine, expect = logs[:1], None       # 認不出來就只讀一個檔、不篩
+    else:
+        expect = 0
     per_day = {}
-    for path in mine or logs[:1]:
+    seen_players = set()
+    for path in mine:
         for line in open(path, encoding="utf-8"):
             row = json.loads(line)
+            seen_players.add(row.get("player"))
+            # 🩸 **一定要篩 player。** 2026-08-21 之前只有 `agents/gen0.py`
+            #    會寫 log，一個檔裡剛好只有一邊，所以沒篩也對；
+            #    `agents/gen2_model.py` 開始寫之後，同一個檔裡兩邊都有 ——
+            #    不篩的話這張表是「我方和對手的平均」，而且不會報錯。
+            if expect is not None and row.get("player") != expect:
+                continue
             if row.get("hour") != 12:
                 continue
+            # 🩸 **作物那一欄要用實際種下去的格數**（`crops`），不是
+            #    `agents/gen0.py` 記的 `budget["active_crop_count"]` —— 後者是
+            #    規則式「打算種幾格」的計畫值。老師那一邊用的是
+            #    `contracts.SCALAR_FIELDS` 的 `n_crop_tiles`（實際格數），
+            #    拿計畫值去比是兩種東西。
+            #    `crops` 是 2026-08-21 才加的，舊 log 沒有 -> 退回計畫值，
+            #    但那些數字**不能跟新的比**。
             budget = row.get("budget") or {}
+            crops = row.get("crops")
+            if crops is None:
+                crops = budget.get("active_crop_count", 0)
             per_day.setdefault(row["day"], []).append((
                 sum((row.get("animals") or {}).values()),
-                budget.get("active_crop_count", 0),
+                crops,
                 row.get("cash", 0.0),
             ))
+    if not per_day:
+        # 🩸 **不能回空的**：`report()` 會印一張空表格然後蓋綠燈說
+        #    「三項都撐過 day 14」—— 假的合格比錯的數字更糟。
+        #    最常見的原因是這個 run 跑在 2026-08-21 之前，那時候
+        #    `agents/gen2_model.py` 還不寫 log，檔案裡只有對手那一邊。
+        raise SystemExit(
+            f"{run_dir} 的 log 裡沒有 player {expect}（A = {name}）的資料，"
+            f"有的是 player {sorted(p for p in seen_players if p is not None)}。\n"
+            "2026-08-21 之前 agents/gen2_model.py 不寫 log —— 那些 run 的檔案裡"
+            "只有規則式那一邊，量不到網路版。重跑一次 eval.runner 才有。")
     return {d: np.mean(v, axis=0) for d, v in per_day.items()}, name
 
 
@@ -139,14 +173,14 @@ def report(run_dir, teacher):
             line += f" | {p5:>9,.0f}{mid:>8,.0f}{mine:>9,.0f}{pct:>7.1f}%{flag}"
         print(line)
 
-    print("\n  掉出老師 p5 的第一天（* 標的那些）：")
+    print("\n  第一次跌破老師 p5 的那天（* 標的那些）：")
     failures = []
     for label, _, _ in FIELDS:
         day = first_below[label]
-        text = "沒掉出去" if day is None else f"day {day}"
+        text = "沒跌破過" if day is None else f"day {day}"
         print(f"    {label:<6}{text}")
         if day is not None and day < SURVIVE_UNTIL_DAY:
-            failures.append(f"{label} 在 day {day} 就掉出 p5")
+            failures.append(f"{label} day {day} 就跌破老師 p5")
 
     if failures:
         print(f"\n  ❌ 沒撐到 day {SURVIVE_UNTIL_DAY}：")

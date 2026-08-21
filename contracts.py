@@ -97,7 +97,7 @@ from kaggle_environments.envs.kaggriculture.kaggriculture import (
 #: serving 會炸在缺 key 上。
 #:
 #: v3 的實測：unit 動作已經像老師了（target 準確率 0.8716、MOVE 36.9%），但
-#: 期末現金只有 2,405 對 140,210。按天比對狀態分布發現 **day 6 動物就掉出老師
+#: 期末現金只有 2,405 對 140,210。按天比對狀態分布發現 **day 6 動物就跌破老師
 #: 的 p5**（我們 1 隻、老師 p5 是 6 隻），而動物是市場買的不是 unit 決定的 ——
 #: 整季 gen0 只買了 3 隻 COW、13 個 WHEAT，老師是 14 隻動物、553 個 WHEAT。
 #: 「只模仿一半的 policy」就是這個意思。

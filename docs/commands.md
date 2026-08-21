@@ -77,7 +77,11 @@ python -m eval.runner --a e2e --ladder config/sweep-hire.json --games 20 --worke
 
 - `temp/<時間>_<A>_vs_<B>/summary.txt` —— 勝負、平均與 **min/max** 現金、買地、田況、動作分布
 - `logs/*.jsonl`（要 `--log-level 2`）—— 一局一個檔，檔名帶期末現金：
-  `seed0000_e2e_vs_gen1_a71035_b93538.jsonl`
+  `seed0000_e2e_vs_gen1_a71035_b93538.jsonl`。
+  **一個檔裡兩邊都有**，用 `player` 欄位分（A 是 player 0）。
+  `--log-level 3` 會再記 `agents/gen2_model.py` 每個 unit 的前三名候選動作
+  與 logits —— 動作被 `legal_unit_mask` 或 PLANT 種子上限改掉時，
+  光看 `action` 看不出網路本來想做什麼。
 - `python -m tools.eval_table` —— 把所有 run 整理進 `docs/eval-results.md`
 
 ---
@@ -92,6 +96,12 @@ python -m tools.state_dist  temp/<run 目錄>    # 狀態分布，按天
 > ⚠️ **`state_dist` 對現在這條線沒有判定力。** 它的基準是**老師**的逐日 p5，
 > 而規則式自己也過不了（動物 day 1、作物 day 6、現金 day 14）——
 > ① 跟它的 expert 逐項相同是模仿到位，不是失敗。要有判定力得換成規則式的分布。
+
+> 🩸 **2026-08-21 之前的 e2e run 用不了 `state_dist`。** 那時候
+> `agents/gen2_model.py` 不寫 log，檔案裡只有規則式那一邊 ——
+> 而 `state_dist` 沒篩 player，於是把**對手的**數字印成「我們」。
+> 現在兩邊都寫 log、也篩 player 了；讀到舊 run 會直接報錯而不是給錯的數字。
+> 要看網路版的狀態分布得**重跑一次** `eval.runner --log-level 2`。
 
 ---
 

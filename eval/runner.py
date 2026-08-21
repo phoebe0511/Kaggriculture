@@ -261,11 +261,17 @@ def _play(job):
     # 🩸 現金加在**最後面**，因為 `tools/state_dist.py:99` 是用
     #    `stem.split("_vs_")[0].endswith(name)` 認 A 是誰 —— 加在前面會壞掉。
     if log_dir:
-        try:
-            from agents.gen0 import close_log
-            close_log()
-        except Exception:                       # noqa: BLE001 —— 改名失敗不該拖垮整批
-            pass
+        # 🩸 **每一支會寫 log 的 agent 都要關。** 兩邊各自有自己的 handle，
+        #    漏掉一支的話那一局就改名失敗（Windows PermissionError），
+        #    檔名少了現金而且不會報錯。用 `sys.modules` 掃是為了只關真的
+        #    被載進來的那幾支 —— import 沒用到的 agent 會白白付載入成本。
+        for mod in list(sys.modules.values()):
+            closer = getattr(mod, "close_log", None)
+            if callable(closer) and getattr(mod, "__name__", "").startswith("agents."):
+                try:
+                    closer()
+                except Exception:               # noqa: BLE001 —— 不該拖垮整批
+                    pass
         try:
             src = Path(log_dir) / f"{tag}.jsonl"
             if src.is_file():

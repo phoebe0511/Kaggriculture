@@ -2518,6 +2518,15 @@ def _log(obs, farm, private, tasks, assigned, action):
         # 錢不夠的話引擎會靜默 return，成功和失敗看起來一樣。
         "quadrants": list(farm["unlocked_quadrants"]),
         "tiles_open": sum(1 for row in farm["tiles"] for t in row if t != "LOCKED"),
+        # 🩸 **實際種下去的格數**，跟下面 `budget["active_crop_count"]` 不一樣
+        # —— 那個是「打算種幾格」的計畫值。`tools/state_dist.py` 的老師基準是
+        # `contracts.SCALAR_FIELDS` 的 `n_crop_tiles`（實際格數），要對得上
+        # 得用這個。2026-08-21 補，在那之前 state_dist 的作物那一欄比的是
+        # 計畫值 vs 實際值，兩種東西。
+        "crops": sum(1 for row in farm["tiles"] for t in row
+                     if isinstance(t, dict) and t.get("kind") == "PLANT"),
+        "weeds": sum(1 for row in farm["tiles"] for t in row
+                     if isinstance(t, dict) and t.get("kind") == "WEED"),
         # 活著的動物、以及空著的建物。動物會餓死、建物種類蓋下去綁死，
         # 光看買入訂單看不出實際養了什麼。
         "animals": _count_animals(farm["tiles"]),
