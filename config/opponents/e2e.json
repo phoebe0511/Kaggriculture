@@ -1,0 +1,5 @@
+{
+  "name": "e2e",
+  "entry": "agents.gen2_model:act",
+  "note": "端到端網路：逐 unit 的當下動作全部由 op head 決定（44 個 UNIT_OPS），市場暫時走 gen0._market（model_market 預設 False）。2026-08-21 起這是 ① 那條線的量測入口。 ⚠️ **不可以加 params 覆寫。** 網路模仿的是 gen1 在**預設參數**下的行為（harness/rollout.py --expert gen1），這裡一旦覆寫，gen0._market 就是照另一組策略在下單，而 unit 是照 gen1 的習慣在動作，兩邊互相破壞。config/opponents/gen2_model.json 就是反例 —— 它的 n_structures:14 / dynamic_animals:false 是為了對齊**老師**的策略調的（2026-08-19 那一輪），拿來量 ① 會混進一個跟網路無關的變數。同樣的警告見 config/opponents/dagger.json。"
+}

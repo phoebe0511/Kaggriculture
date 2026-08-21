@@ -1,20 +1,38 @@
-"""第 2 代：unit 排程交給網路，市場沿用規則式。
+"""端到端：網路直接決定每個 unit 這一步做什麼（44 個 `UNIT_OPS` 之一）。
 
-網路模仿的是 rating 2979~3229 的真實 ladder 玩家（60 局 replay、842,151 個
-unit-turn）。**不是模仿我們自己的 Gen1** —— 2026-08-19 量到 Gen1 對他們
-6 勝 154 負，模仿一個在輸的老師沒有意義。
+## 🔄 2026-08-21：模仿對象從 ladder 老師換成我們自己的規則式
 
-## 只換 unit，市場不換
+原本這支是模仿 rating 2979~3229 的真實 ladder 玩家（60 局 replay、842,151 個
+unit-turn），而 docstring 舊版寫著「**不是**模仿我們自己的 Gen1 —— 2026-08-19
+量到 Gen1 對他們 6 勝 154 負，模仿一個在輸的老師沒有意義」。
 
-`act()` 先呼叫 `gen0.act()` 拿一份完整的規則式動作，然後把 `farmer` / `hands`
-換成網路的輸出，`market` 原封不動。
+**那個判斷被後來的量測推翻了**，理由是「模仿得到誰」比「誰比較強」更關鍵：
+
+- 老師是 **60 份固定 replay，問不到新局面**。網路一走偏就沒有標籤可學，
+  實測開局 73 步的腳本只跟得完 22%（journal 2026-08-20 §7）
+- 規則式是 **queryable expert** —— 每回合從當下盤面重算，網路把盤面走爛之後
+  它仍然答得出「這裡該做什麼」。那正是 DAgger 需要而 replay 給不了的
+
+代價是天花板變成規則式（榜上 7 萬+，本機配對 92,860）。**這一步的目的不是
+贏過它**，是產出離線 search 用得動的 policy prior —— 完整動作空間、
+top-k 涵蓋率夠高、value head 可靠。超過規則式要靠 search，不是靠模仿。
+
+## 為什麼是端到端，而不是 v5 的 demand map
+
+`agents/gen4_demand.py` 只讓網路輸出「哪一格要做什麼」，配對 / 走路 / 市場
+全部還給 `gen0`。**search 只搜得到網路輸出的東西**，所以那條路上市場和配對
+永遠碰不到。這支的輸出涵蓋完整動作空間。
+
+## 市場
+
+`model_market=False`（預設）走 `gen0._market`，只為了先隔離 unit 那一半。
 
 ⚠️ **已知的不一致**：`gen0._market` 算訂單時會參考它自己排出來的 `unit_actions`
 （例如 PICKUP 了多少 WHEAT 就少賣多少），而我們事後把 unit 動作換掉了。
 所以市場決策是對「規則式會做什麼」最佳化的，不是對「網路實際做什麼」。
+2026-08-19 的逐件收入歸因顯示 WHEAT + FERTILIZER 佔總差距的 27%。
 
-代價量得出來：2026-08-19 的逐件收入歸因顯示 WHEAT + FERTILIZER 佔總差距的
-27%，而那兩項主要是市場行為。所以這一版的上限大約是補掉 73% 的差距。
+`model_market=True` 才是最終形態（動作空間完整）。
 
 ## PLANT 的原子驗證
 
@@ -109,24 +127,45 @@ def _choose(op_logits, qty_logits, mask, obs):
 
 
 def act(obs, config=None, params=None):
+    """網路直接決定每個 unit 這一步做什麼。
+
+    `model_market`（預設 `False`）決定市場走誰：
+
+    - `False`：`gen0._market`。**先隔離 unit 那一半**，一次只動一個變數。
+      ⚠️ 代價寫在模組 docstring 的「已知的不一致」：`gen0._market` 是對
+      「規則式會做什麼」最佳化的，而我們把 unit 動作換掉了。
+    - `True`：`contracts.decode_market_orders`。動作空間才完整 ——
+      離線 search 搜得到市場，這是 v5 的 demand map 給不了的。
+
+    `market_threshold` 是 present head 的 logit 門檻（預設 0，即 sigmoid 0.5）。
+    ⚠️ **這個門檻從來沒有被掃過。** `model/train.py` 記著 51.7% 的回合一筆訂單
+    都沒有 —— 稀疏正例配 BCE 配 0.5 門檻本來就會系統性少下單，而實測召回率
+    只有 0.72~0.79。「學不起來」和「門檻太高」還沒有被分開量過。
+    """
     resolved = dict(RULE_DEFAULTS)
     resolved.update(params or {})
     resolved.pop("_replace_defaults", None)
-
-    # 市場、雇工、買地全部沿用規則式的決定
-    base = gen0_act(obs, config, resolved)
+    model_market = bool(resolved.get("model_market", False))
+    market_threshold = float(resolved.get("market_threshold", 0.0))
 
     policy = _policy()
     spatial, scalar = C.encode(obs, config)
     positions, unit_features = C.encode_units(obs, config)
-    # ⚠️ v3 起 policy 多回傳一個 target head。這一版用不到它 —— 它的權重是
-    # ENCODER_VERSION 2，`_policy()` 的版本檢查會先擋下來（見上面）。
-    op_logits, qty_logits, _target, _value = policy(
+    (op_logits, qty_logits, _target,
+     mk_present, mk_qty, _value, _demand) = policy(
         spatial, scalar, positions, unit_features)
     mask = C.legal_unit_mask(obs, config)
 
     units = _choose(op_logits, qty_logits, mask, obs)
-    return {"farmer": units[0], "hands": units[1:], "market": base["market"]}
+
+    if model_market:
+        market = C.decode_market_orders(
+            mk_present, mk_qty, obs, config, threshold=market_threshold)
+    else:
+        # 只為了拿市場而跑一次完整的規則式排程。浪費，但這一臂本來就是對照組。
+        market = gen0_act(obs, config, resolved)["market"]
+
+    return {"farmer": units[0], "hands": units[1:], "market": market}
 
 
 def agent(obs, config):

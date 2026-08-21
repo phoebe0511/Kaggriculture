@@ -25,7 +25,7 @@
 v2 拿到 val op 0.9396（dummy 0.1609）、逐類別召回率 0.98 以上，實戰 0 勝 12 負
 （journal 2026-08-19 §7d）。真正的驗收是自己打一局比對動作分布：
 
-    python -m eval.runner --a gen3_target --b ladder-top-a --games 2
+    python -m eval.runner --a gen2_model --b gen1 --games 40 --workers 16
     python -m tools.action_dist temp/<run 目錄>
 
 ## 下面這條仍然有效：贏不過 dummy 就是編碼漏資訊
@@ -213,6 +213,7 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
     """
     model.eval()
     n_correct = n_total = 0
+    op_topk = {3: 0, 5: 0}
     qty_correct = qty_total = 0
     tgt_correct = tgt_total = tgt_dummy = 0
     mk_tp = mk_fp = mk_fn = 0
@@ -259,8 +260,20 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
             has_op = batch["unit_op"] >= 0
             if has_op.any():
                 pred = op_logits[has_op].argmax(dim=1)
-                n_correct += (pred == batch["unit_op"][has_op]).sum().item()
+                truth_op = batch["unit_op"][has_op]
+                n_correct += (pred == truth_op).sum().item()
                 n_total += int(has_op.sum().item())
+                # top-k 涵蓋率：正確動作有沒有落在前 k 名裡。
+                #
+                # 🩸 **這是 prior 的驗收指標，argmax 準確率不是。** 離線 search
+                # 拿 top-k 當候選集合再用 value head 挑，所以「正確答案在候選裡」
+                # 才是它要的；第一名對不對由 search 自己決定。這個 repo 已經量過
+                # 三次「準確率不預測實戰」（journal 08-19 §7d、08-20 §7、§11），
+                # 不要再拿 op_acc 當門檻。
+                topk = op_logits[has_op].topk(5, dim=1).indices
+                hit = topk == truth_op[:, None]
+                for k in (3, 5):
+                    op_topk[k] += int(hit[:, :k].any(dim=1).sum().item())
 
             has_qty = batch["unit_qty"] >= 0
             if has_qty.any():
@@ -291,6 +304,8 @@ def evaluate(model, dataset, device, batch_size, limit_batches=0):
     demand_dummy, _, _ = _f1(dm_all_tp, dm_all_fp, dm_all_fn)
     return {
         "op_acc": n_correct / max(1, n_total),
+        "op_top3": op_topk[3] / max(1, n_total),
+        "op_top5": op_topk[5] / max(1, n_total),
         "qty_acc": qty_correct / max(1, qty_total),
         "target_acc": tgt_correct / max(1, tgt_total),
         "target_dummy": tgt_dummy / max(1, tgt_total),
@@ -409,7 +424,9 @@ def main(argv=None):
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     best = -1.0
-    best_stats = {"op_acc": 0.0, "target_acc": 0.0, "target_dummy": 0.0,
+    best_stats = {"op_acc": 0.0, "op_top3": 0.0, "op_top5": 0.0,
+                  "value_rmse": 0.0, "market_recall": 0.0,
+                  "target_acc": 0.0, "target_dummy": 0.0,
                   "market_f1": 0.0}
 
     for epoch in range(1, args.epochs + 1):
@@ -468,7 +485,8 @@ def main(argv=None):
               f"demand F1 {stats['demand_f1']:.4f} "
               f"(d {stats['demand_dummy']:.4f}, "
               f"P {stats['demand_precision']:.2f} R {stats['demand_recall']:.2f})  "
-              f"op {stats['op_acc']:.4f} (d {dummy_acc:.4f})  "
+              f"op {stats['op_acc']:.4f} (d {dummy_acc:.4f}, "
+              f"top3 {stats['op_top3']:.4f} top5 {stats['op_top5']:.4f})  "
               f"qty {stats['qty_acc']:.4f} (d {dummy_qty_acc:.4f})  "
               f"target {stats['target_acc']:.4f} (d {stats['target_dummy']:.4f})  "
               f"market F1 {stats['market_f1']:.4f}"
@@ -482,9 +500,15 @@ def main(argv=None):
         # 沒人照顧、什麼都買不到。v5 起 demand 是 unit 那一半的主要訊號，
         # 所以它跟 op / market 同權重進來；target head 仍然訓，但不再計分
         # —— 它已經不決定 unit 去哪裡了（`agents/gen4_demand.py`）。
-        score = stats["op_acc"]
+        #
+        # 2026-08-21：`--labels immediate` 也要把 market 算進來。原本它
+        # `score = op_acc` 而已，market head 完全不計分 —— 那正是上面這段
+        # 註解在警告的情況。端到端那條路（`agents/gen2_model.py`）的動作空間
+        # 包含市場訂單，選一個「每個 unit 都動得漂亮但整季不下單」的
+        # checkpoint 沒有意義。
+        score = stats["op_acc"] + stats["market_f1"]
         if args.labels == "target":
-            score += stats["demand_f1"] + stats["market_f1"]
+            score += stats["demand_f1"]
         if score > best:
             best, best_stats = score, stats
             torch.save({
@@ -493,12 +517,30 @@ def main(argv=None):
                 "width": args.width,
                 "blocks": args.blocks,
                 "labels": args.labels,
+                # 🩸 存 argv。沒有它就只能靠 rollout 的檔名考古反推當初怎麼跑的
+                # —— 2026-08-21 重建 v5-round1 的指令時就卡在這裡，`--expert`
+                # 和 `--data` 完全沒有痕跡，只能標成 UNVERIFIED。
+                "argv": list(sys.argv[1:]) if argv is None else list(argv),
+                "data": args.data,
                 "val_op_acc": stats["op_acc"],
+                "val_op_top3": stats["op_top3"],
+                "val_op_top5": stats["op_top5"],
+                "val_value_rmse": stats["value_rmse"],
+                "val_market_recall": stats["market_recall"],
                 "val_target_acc": stats["target_acc"],
                 "val_market_f1": stats["market_f1"],
                 "val_demand_f1": stats["demand_f1"],
             }, out_dir / "best.pt")
 
+    # prior 的驗收看 top-k 和 value，不是 argmax —— 理由見 evaluate() 裡那段。
+    # 離線 search 拿 top-k 當候選、用 value head 挑，所以「正確答案在候選裡」
+    # 才是它要的指標；第一名對不對由 search 自己決定。
+    print(f"\n[prior] op top3 {best_stats['op_top3']:.4f}  "
+          f"top5 {best_stats['op_top5']:.4f}  "
+          f"(argmax {best_stats['op_acc']:.4f})   "
+          f"value RMSE {best_stats['value_rmse']:.4f} "
+          f"(dummy {dummy_value_rmse:.4f})   "
+          f"market recall {best_stats['market_recall']:.4f}")
     print(f"\n存下來的 checkpoint：demand F1 {best_stats['demand_f1']:.4f}"
           f"（dummy {best_stats['demand_dummy']:.4f} —— 所有合法的格子都做）"
           f"  op {best_stats['op_acc']:.4f}（dummy {dummy_acc:.4f}）"
@@ -518,7 +560,7 @@ def main(argv=None):
               "先看 harness.build_dataset 的標籤對不對")
     # journal 2026-08-19 §7d：v2 拿到 op 0.94 / dummy 0.16，實戰仍然 0 勝 12 負。
     print("\n上面的數字**不是** kill switch。驗收要自己打一局比對動作分布：")
-    print("  python -m eval.runner --a gen3_target --b ladder-top-a --games 2")
+    print("  python -m eval.runner --a gen2_model --b gen1 --games 40 --workers 16")
     print("  python -m tools.action_dist temp/<run 目錄>")
     return 0
 
