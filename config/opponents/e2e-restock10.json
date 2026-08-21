@@ -1,0 +1,8 @@
+{
+  "name": "e2e-restock10",
+  "entry": "agents.gen2_model:act",
+  "params": {
+    "market_threshold_restock": -1.0
+  },
+  "note": "只把 BUY_SEED / BUY_PRODUCT 的門檻放寬到 -1.0，SELL 與 BUY_LAND / BUY_ANIMAL 維持 0。依據：2026-08-21 量到 BUY_SEED 的 AUC 是 0.965~0.992（排序幾乎完美）但 sigmoid 0.5 只召回 0.25~0.38 —— 正例只佔 3.2%，是類別不平衡造成的門檻問題。齊頭式降門檻沒用（-1.0 只讓現金 18,194 -> 19,138），因為連 SELL 一起放寬，而賣錯是要付代價的。"
+}

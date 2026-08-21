@@ -418,14 +418,28 @@ def decode_market_orders(present_logits, qty_logits, obs, config=None,
     `present_logits` 是 `[N_MARKET_OPS]` 的 logit（訓練用 BCE，所以門檻對應
     sigmoid 0.5 就是 logit 0）；`qty_logits` 是 `[N_MARKET_OPS, N_MARKET_QTY]`。
 
+    `threshold` 可以是純量，也可以是 `[N_MARKET_OPS]` —— **逐 op 分開設**。
+    理由是兩邊的錯誤成本差很多：
+
+    - 少買一次種子 -> 整片田空著好幾天（2026-08-21 實測期末作物 3.6 對 14.0）
+    - 多買一顆種子 -> 花 $10~$100
+    - 賣錯東西 -> 直接虧價差
+
+    而且 `BUY_SEED` 的正例只佔 3.2%，AUC 有 0.965~0.992（排序幾乎完美）但
+    sigmoid 0.5 只召回得到 0.25~0.38 —— 那是類別不平衡造成的門檻問題，
+    不是沒學會。齊頭式降門檻沒用（實測 -1.0 只讓現金 18,194 -> 19,138），
+    因為它連 `SELL` 一起放寬。
+
     訂單順序照 `MARKET_OPS` 的順序送出。**引擎是逐筆結算的**，所以順序會影響
     「錢花完了後面就失敗」—— 賣單排在買單前面（`SELL` 在 `MARKET_OPS` 裡
     index 2 起，`BUY_*` 在 11 起），剛好是先收錢再花錢。
     """
     mask = legal_market_mask(obs, config)
+    th = np.broadcast_to(np.asarray(threshold, dtype=np.float64),
+                         (N_MARKET_OPS,))
     orders = []
     for j in range(N_MARKET_OPS):
-        if not mask[j] or present_logits[j] <= threshold:
+        if not mask[j] or present_logits[j] <= th[j]:
             continue
         qty = market_qty_value(int(np.argmax(qty_logits[j])))
         qty = clamp_market_qty(j, qty, obs)

@@ -130,6 +130,27 @@ def _choose(op_logits, qty_logits, mask, obs):
     return chosen
 
 
+#: 「補貨型」買單的 op index —— `BUY_SEED` ×5 與 `BUY_PRODUCT` ×2。
+#:
+#: 它們跟其他 op 的**錯誤成本不對稱**：少買一次種子/飼料，整片田空著好幾天
+#: （2026-08-21 實測期末作物 3.6 對 gen1 的 14.0，PASS 衝到 26.6%）；多買一份
+#: 只花 $10~$100。所以這幾個該用比較鬆的門檻。
+#:
+#: **`BUY_LAND` 和 `BUY_ANIMAL` 不在裡面** —— 大額支出，而且它們的召回率本來
+#: 就有 0.83~0.94，放寬只會亂買。
+RESTOCK_OPS = tuple(
+    j for j, (op, _item) in enumerate(C.MARKET_OPS)
+    if op in ("BUY_SEED", "BUY_PRODUCT"))
+
+
+def market_thresholds(base=0.0, restock=None):
+    """`[N_MARKET_OPS]` 的逐 op 門檻。`restock` 沒給就整排都是 `base`。"""
+    th = np.full(C.N_MARKET_OPS, float(base))
+    if restock is not None:
+        th[list(RESTOCK_OPS)] = float(restock)
+    return th
+
+
 def act(obs, config=None, params=None):
     """網路決定每個 unit 這一步做什麼，**以及所有市場訂單**。
 
@@ -142,13 +163,17 @@ def act(obs, config=None, params=None):
     2. **DAgger 應該從真正要出貨的 policy 收狀態。** round1 / round2 的
        rollout 都是混合版走出來的，那不是這支 agent 會遇到的分布。
 
-    `market_threshold` 是 present head 的 logit 門檻（預設 0 = sigmoid 0.5）。
+    `market_threshold` 是 present head 的 logit 門檻（預設 0 = sigmoid 0.5）；
+    `market_threshold_restock` 只套用在 `BUY_SEED` / `BUY_PRODUCT`（見
+    `RESTOCK_OPS`）。
     2026-08-21 在固定驗證集上掃過：門檻 0 每盤面下 0.35 筆訂單、真實是 0.43 筆，
     -1.0 剛好對上（召回率 0.747 -> 0.834）。**但實測 -1.0 只讓現金從 18,194 變
     19,138** —— 降門檻是齊頭式的，治不了 `BUY_SEED` 那組 0.22~0.62 的召回率。
     """
     params = params or {}
-    market_threshold = float(params.get("market_threshold", 0.0))
+    thresholds = market_thresholds(
+        params.get("market_threshold", 0.0),
+        params.get("market_threshold_restock"))
 
     policy = _policy()
     spatial, scalar = C.encode(obs, config)
@@ -159,7 +184,7 @@ def act(obs, config=None, params=None):
 
     units = _choose(op_logits, qty_logits, C.legal_unit_mask(obs, config), obs)
     market = C.decode_market_orders(
-        mk_present, mk_qty, obs, config, threshold=market_threshold)
+        mk_present, mk_qty, obs, config, threshold=thresholds)
     return {"farmer": units[0], "hands": units[1:], "market": market}
 
 
