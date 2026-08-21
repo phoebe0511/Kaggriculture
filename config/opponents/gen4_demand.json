@@ -1,9 +1,0 @@
-{
-  "name": "gen4_demand",
-  "entry": "agents.gen4_demand:act",
-  "params": {
-    "model_market": true,
-    "demand_threshold": 0.0
-  },
-  "note": "v5：網路只出逐格需求（contracts.TASK_OPS 的 11 個 op × 100 格），配對走 gen0._minimum_cost_assignment、走路走 gen0.step_toward。跟 gen3_target 的差別是那一版逐 unit 猜目標格（DAgger 三輪停在 0.6301，0.63^12 = 0.4%）。⚠️ 權重要 ENCODER_VERSION 5，用 KAGGRI_WEIGHTS 指過去。"
-}

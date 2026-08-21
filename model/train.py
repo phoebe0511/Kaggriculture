@@ -345,6 +345,10 @@ def main(argv=None):
     ap.add_argument("--value-weight", type=float, default=0.5)
     ap.add_argument("--market-weight", type=float, default=1.0,
                     help="market present 的 BCE 權重")
+    ap.add_argument("--market-pos-weight", type=float, default=1.0,
+                    help="market present 正例的 loss 倍數（BCE 的 pos_weight）。"
+                         "正例只佔 3.2%%，預設 1.0 會讓 sigmoid 0.5 系統性少下單。"
+                         "1.0 = 維持現狀")
     ap.add_argument("--market-qty-weight", type=float, default=0.3)
     ap.add_argument("--target-weight", type=float, default=1.0,
                     help="target head 的 loss 權重。v3 的主要學習訊號，跟 op "
@@ -476,8 +480,23 @@ def main(argv=None):
 
             # market：present 是 multi-label（一回合可以同時下好幾筆），
             # 數量只在有下單的 op 上算。
-            loss = loss + args.market_weight * F.binary_cross_entropy_with_logits(
-                mk_present, batch["market_present"])
+            # `pos_weight` 讓正例的 loss 乘上一個倍數，等於把 sigmoid 0.5 的
+            # 操作點往「敢下單」那邊推。
+            #
+            # 🩸 為什麼需要它：market present 的正例只佔 **3.2%**。2026-08-21
+            # 量到 `BUY_SEED` 的 AUC 是 0.965~0.992（排序幾乎完美），但門檻 0
+            # 只召回得到 0.25~0.38 —— 那是類別不平衡造成的操作點偏移，不是
+            # 沒學會。現在靠推論時的逐 op 門檻補償
+            # （`agents/gen2_model.RESTOCK_OPS`），但那個峰值很尖：
+            # -1.5 是 32.4%、-2.0 是 42.0%、-2.5 是 30.6%、-3.0 崩到 6.6%。
+            # 用旋鈕補償一個沒校準好的 head 不是解，這裡才是。
+            #
+            # 預設 1.0 = 完全不變，開了才會動到既有行為。
+            mk_loss = F.binary_cross_entropy_with_logits(
+                mk_present, batch["market_present"],
+                pos_weight=(None if args.market_pos_weight == 1.0 else
+                            torch.tensor(args.market_pos_weight, device=device)))
+            loss = loss + args.market_weight * mk_loss
             has_mk = batch["market_qty"] >= 0
             if has_mk.any():
                 loss = loss + args.market_qty_weight * F.cross_entropy(

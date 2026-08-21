@@ -1,35 +1,31 @@
 """Kaggle submission 入口。
 
-## 現在送出的是 v5 的網路版（`agents/gen4_demand.py`）
+## 現在送出的是規則式（`agents/gen0.py`）
 
-網路只決定**哪一格要做什麼**（`contracts.TASK_OPS` 的 11 個 op × 100 格）；
-派誰去、怎麼走、市場下什麼單全部走 `agents/gen0.py` 的既有程式碼。
+**這是目前最強的版本**，榜上 7 萬+。網路那條路（`agents/gen2_model.py`）
+2026-08-21 量到是規則式的 76%，還沒到可以換上去的程度。
 
-⚠️ **`model_market` 明寫 `False`。** `gen4_demand.act` 的預設是 `True`，
-而那是**比較差**的那一臂 —— 2026-08-20 實測同一份權重、同樣 4 個 seed
-對 ladder-top-a：
+> 換上去的條件寫在 `docs/memory/journal/2026-08-21.md`：
+> ① 要先在 `eval.runner` 打贏門檻。在那之前榜上維持規則式。
+> `tests/test_l0_smoke.py::test_submission_entry_survives_a_whole_game`
+> 斷言 `reward > 50_000`，那條線就是守這件事的。
 
-    model_market: False   $69,140     PASS 17.7%   期末作物 14.2/75.0
-    model_market: True    $27,965     PASS 47.5%   期末作物  4.1/56.2
-
-market head 的召回率只有 0.79，少下的訂單裡有種子和雇工，所以田是空的、
-人是少的，unit 沒事幹就 PASS。市場那一半修好之前不要開。
-
-⚠️ 權重是 `weights.npz`，跟這支攤平在同一個目錄（`serving/build_submission.py`）。
-`ENCODER_VERSION` 對不上的話 `agents/gen2_model._policy()` 會直接 `SystemExit`
-—— 那是刻意的，載到不同 schema 的權重只會無聲地打得很爛。
+⚠️ **不要因為「網路版比較新」就換上去。** 2026-08-20 曾經把 main.py 換成
+v5 的 `gen4_demand` + `model_market: False`，那個組合的市場其實還是
+`gen0._market` —— 分數有一半是規則式的功勞，而它仍然比純規則式低 4.4%。
+那條線已於 2026-08-21 刪除。
 """
 
 import os
 
-# agents.gen0（由 gen1 / gen4 共用核心）在 import 時讀取此值，所以必須先設定。
+# agents.gen0 在 import 時讀取此值，所以必須先設定。
 os.environ["KAGGRI_LOG_LEVEL"] = "0"
 
-from agents.gen4_demand import act  # noqa: E402
+from agents.gen0 import act  # noqa: E402
 
 
 def agent(obs, config):
-    return act(obs, config, {"model_market": False})
+    return act(obs, config)
 
 
 # 這裡**故意不呼叫** `serving.action_validation.assert_legal_action`。

@@ -58,28 +58,32 @@ OUTPUT = SUBMISSION_DIR / "submission.tar.gz"
 # `model/train.py` / `model/net.py` 也不在裡面 —— 那兩支 import torch，
 # 而 submission **不准 import torch**（`docs/CLAUDE.md`）。比賽端走
 # `npz_forward.py` 的純 numpy 前向。
+#: ⚠️ **這份清單跟著 `main.py` 走。** 2026-08-21 起 `main.py` 是規則式
+#: （`agents/gen0.py`），所以只要兩支檔案、**不需要權重**。
+#:
+#: 要換成網路版（`agents/gen2_model.py`）的話，這裡要加回
+#: `contracts.py` + `serving/npz_forward.py` + `agents/gen2_model.py`，
+#: 並且用 `--weights` 指定要打包的 `.npz`。
 FILE_MAP = {
     "main.py": "main.py",
-    "contracts.py": "contracts.py",
     "agents/gen0.py": "gen0.py",
-    "agents/gen2_model.py": "gen2_model.py",
-    "agents/gen4_demand.py": "gen4_demand.py",
-    "serving/npz_forward.py": "npz_forward.py",
 }
 
 #: 權重。二進位，不做 import 改寫，檔名固定成 `weights.npz` ——
 #: `agents/gen2_model.py` 沒有 `KAGGRI_WEIGHTS` 時就找自己旁邊這一個。
+#:
+#: `None` = 這一版不帶權重（規則式）。`--weights` 可以覆寫。
 WEIGHTS_NAME = "weights.npz"
-DEFAULT_WEIGHTS = "model/weights-v5-round1.npz"
+DEFAULT_WEIGHTS = None
 
-FILES = tuple(FILE_MAP.values()) + (WEIGHTS_NAME,)
+FILES = tuple(FILE_MAP.values()) + ((WEIGHTS_NAME,) if DEFAULT_WEIGHTS else ())
 
 #: 攤平之後這些名字會變成 top-level 模組，撞到 Kaggle 載入環境裡既有的同名
 #: 模組就會抓錯（docstring 上面那段 lux_ai_s3 `agents.py` 的事）。
 #: 2026-08-20 在 repo 外的目錄用 `importlib.util.find_spec` 逐個確認過都是 None。
 #: ⚠️ 那是**本機**的證據，不是 Kaggle runtime 的。新增名字時要重新確認。
 VERIFIED_FREE_NAMES = (
-    "main", "contracts", "gen0", "gen2_model", "gen4_demand",
+    "main", "contracts", "gen0", "gen2_model",
     "npz_forward", "action_validation",
 )
 
@@ -145,8 +149,8 @@ def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
     for relative in FILE_MAP:
         if not (REPO_ROOT / relative).is_file():
             raise FileNotFoundError(REPO_ROOT / relative)
-    weights_src = REPO_ROOT / weights
-    if not weights_src.is_file():
+    weights_src = (REPO_ROOT / weights) if weights else None
+    if weights_src is not None and not weights_src.is_file():
         raise FileNotFoundError(f"{weights_src}（先跑 serving.export_npz）")
 
     if dest.exists():
@@ -162,9 +166,11 @@ def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
         copied.append((relative, flat, target.stat().st_size, rewrites, digest))
 
     # 權重是二進位，原樣複製 —— 不能走 `_flatten`（它會用 utf-8 讀）。
-    shutil.copyfile(weights_src, dest / WEIGHTS_NAME)
-    copied.append((weights, WEIGHTS_NAME, (dest / WEIGHTS_NAME).stat().st_size, 0,
-                   hashlib.sha256((dest / WEIGHTS_NAME).read_bytes()).hexdigest()[:12]))
+    if weights_src is not None:
+        shutil.copyfile(weights_src, dest / WEIGHTS_NAME)
+        copied.append((weights, WEIGHTS_NAME, (dest / WEIGHTS_NAME).stat().st_size, 0,
+                       hashlib.sha256(
+                           (dest / WEIGHTS_NAME).read_bytes()).hexdigest()[:12]))
 
     total = sum(size for _, _, size, _, _ in copied)
     try:

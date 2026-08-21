@@ -102,6 +102,30 @@ def _policy():
     return _POLICY
 
 
+def require_labels(policy, want):
+    """權重的 op head 語意必須對得上，不然整局 PASS 拿 0 分而且不報錯。
+
+    🩸 2026-08-21 踩到：`--a e2e` 沒設 `KAGGRI_WEIGHTS`，退回去載
+    `submission/weights.npz`（v5，`labels: target`）。`ENCODER_VERSION` 都是 5
+    所以版本檢查放行了，但 `target` 的 op head 預測的是「段落終點動作」——
+    永遠不會輸出 MOVE。實測 MOVE 0.0%、PASS 80.8%、期末現金 0，**零錯誤訊息**。
+
+    - `immediate`：op head 是「這個 unit 這一步做什麼」-> `agents/gen2_model.py`
+    - `target`：op head 是「走到終點要做什麼」-> `agents/gen3_target.py`、
+      `agents/gen4_demand.py`
+    """
+    got = policy.labels
+    if got == want:
+        return
+    if got is None:
+        raise SystemExit(
+            f"{WEIGHTS_PATH} 沒有 `labels` 欄位（2026-08-21 之前匯出的）。"
+            f"重跑 `python -m serving.export_npz` 就會補上。")
+    raise SystemExit(
+        f"{WEIGHTS_PATH} 的 op head 是 `{got}`，這支要 `{want}` —— "
+        f"載錯的話整局 PASS 拿 0 分而且不會報錯。換權重或換 agent。")
+
+
 def _choose(op_logits, qty_logits, mask, obs):
     """挑動作：先遮掉不合法的，再處理 PLANT 的跨 unit 種子上限。"""
     scores = np.where(mask, op_logits, -np.inf)
@@ -176,6 +200,7 @@ def act(obs, config=None, params=None):
         params.get("market_threshold_restock"))
 
     policy = _policy()
+    require_labels(policy, "immediate")
     spatial, scalar = C.encode(obs, config)
     positions, unit_features = C.encode_units(obs, config)
     (op_logits, qty_logits, _target,

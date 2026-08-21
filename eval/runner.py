@@ -255,6 +255,25 @@ def _play(job):
 
     rewards = [s.reward for s in env.state]
     statuses = [s.status for s in env.state]
+
+    # log 檔名補上期末現金 —— 不然要挑「哪一局崩掉了」得逐檔開來看。
+    # 🩸 一定要先 `close_log()`：handle 開著的話 Windows 直接 PermissionError。
+    # 🩸 現金加在**最後面**，因為 `tools/state_dist.py:99` 是用
+    #    `stem.split("_vs_")[0].endswith(name)` 認 A 是誰 —— 加在前面會壞掉。
+    if log_dir:
+        try:
+            from agents.gen0 import close_log
+            close_log()
+        except Exception:                       # noqa: BLE001 —— 改名失敗不該拖垮整批
+            pass
+        try:
+            src = Path(log_dir) / f"{tag}.jsonl"
+            if src.is_file():
+                cash0, cash1 = (int(r or 0) for r in rewards)
+                src.rename(src.with_name(
+                    f"{tag}_a{cash0}_b{cash1}.jsonl"))
+        except OSError:
+            pass
     b_slot = 1 - a_slot
     land = _land_history(env)
     farms = _farm_history(env)
@@ -758,6 +777,9 @@ def format_ladder(summaries, name_a="A"):
         ("得分率", 8, ">"),
         ("95% CI", 14, ">"),
         (a + " 現金", 13, ">"),
+        # min~max：平均值藏住「偶爾整局崩掉」。兩個平均一樣的版本，可能一個
+        # 每局都差不多、另一個大部分還行但偶爾拿 0。
+        (a + " 範圍", 19, ">"),
         ("對手現金", 12, ">"),
         ("差", 11, ">"),
         (a + " 塊數", 13, ">"),
@@ -777,6 +799,7 @@ def format_ladder(summaries, name_a="A"):
             f"{s['score_rate']:.1%}",
             "[{:.0%}, {:.0%}]".format(lo, hi),
             f"{s['mean_cash_a']:,.0f}",
+            f"{s['min_cash_a']:,.0f}~{s['max_cash_a']:,.0f}",
             f"{s['mean_cash_b']:,.0f}",
             f"{s['mean_diff']:+,.0f}",
             _plots_cell(la),

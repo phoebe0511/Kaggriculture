@@ -43,10 +43,18 @@ LINES = {
 }
 
 
-def _line_of(name):
+#: `agents/gen2_model.py` 拿掉 `model_market` 開關的時間點。
+#:
+#: 🩸 **在這之前的 `e2e` 跑的是混合版**（市場走 `gen0._market`），之後才是
+#: 真正的全網路。名字一樣、意義不同，所以只能用時間切 —— 用名字切的話
+#: 會把改動之後的 `e2e` 誤擋在表外。
+E2E_MARKET_CUTOFF = "20260821-0945"
+
+
+def _line_of(name, run):
     if name in LINES["規則式（agents/gen0.py）"]:
         return "規則式（agents/gen0.py）"
-    if name.startswith("e2e-market") or name.startswith("e2e-restock"):
+    if name.startswith("e2e") and run >= E2E_MARKET_CUTOFF:
         return "① 端到端（市場也在網路裡）"
     return None                      # 不進表
 
@@ -62,6 +70,13 @@ def collect():
         results = raw.get("results") or []
         cash_a = [g["cash_a"] for g in results if "cash_a" in g]
         cash_b = [g["cash_b"] for g in results if "cash_b" in g]
+        # A 每一局都是 0 = 載入失敗或 agent 每回合拋錯，不是量測結果。
+        # 實例：20260821-103900 忘了設 KAGGRI_WEIGHTS，載到 v5 的權重
+        # （labels: target），op head 永遠不輸出 MOVE -> 整局 PASS 拿 0。
+        # 那次之後補了 `agents/gen2_model.require_labels()`，同樣的錯會直接
+        # SystemExit 而不是靜靜地產出一個 0 分的 run。
+        if cash_a and max(cash_a) == 0:
+            continue
         if not cash_a or not s.get("games"):
             # 整批作廢的 run。`summary["games"]` 是**沒作廢**的局數，
             # 而 `results` 仍然有 6 筆現金 0 的紀錄 —— 只看 cash_a 濾不掉。
@@ -76,7 +91,7 @@ def collect():
         name_a, name_b = s.get("a"), s.get("b")
         if not name_a or not name_b:
             continue
-        line = _line_of(name_a)
+        line = _line_of(name_a, path.parent.name)
         if line is None:
             continue
         rows.append({

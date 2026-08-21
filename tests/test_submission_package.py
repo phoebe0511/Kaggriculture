@@ -70,15 +70,45 @@ def test_flattened_names_do_not_shadow_anything_importable():
             f"{name!r} 在 site-packages 有同名模組：{origin}"
 
 
-def test_weights_are_packed_and_match_the_current_encoder_version(tmp_path):
-    """權重的 schema 版本跟 contracts.py 對不上 = 上場第一回合 SystemExit。"""
+def test_packaged_weights_match_what_the_packaged_agent_needs(tmp_path):
+    """打包的權重必須跟 `contracts.py` 和 agent 的 op head 語意都對得上。
+
+    ⚠️ 這條**不斷言「一定要有權重」** —— 2026-08-21 起 `main.py` 是規則式
+    （`agents/gen0.py`），那一版本來就不帶權重。斷言的是兩個真正的不變式：
+
+    1. **有打包權重的話**，`encoder_version` 要對得上 `contracts.py`
+       —— 不然 agent 第一回合 `SystemExit`。
+    2. **有打包 `gen2_model.py` 的話，就一定要有權重。** 沒有的話它會退回去
+       找 `submission/weights.npz`，那可能是別版的、也可能不存在。
+
+    🩸 `labels` 那個欄位是 2026-08-21 補的。在那之前 npz 只存
+    `encoder_version` 和 `width`，所以把 `labels: target` 的權重餵給
+    `gen2_model`（它要 `immediate`）會**整局 PASS 拿 0 分而且完全不報錯**
+    —— 實測 MOVE 0.0%、PASS 80.8%、期末現金 0。
+    """
     np = pytest.importorskip("numpy")
     import contracts as C
 
     dest = copy_files(tmp_path / "submission")
+    packed = {f.name for f in dest.iterdir()}
+
+    if "gen2_model.py" in packed:
+        assert WEIGHTS_NAME in packed, (
+            "打包了 gen2_model.py 卻沒有權重 —— 它會退回去找 "
+            "submission/weights.npz，那可能是別版的")
+
+    if WEIGHTS_NAME not in packed:
+        return                          # 規則式版本，不變式是空的
+
     with np.load(dest / WEIGHTS_NAME) as data:
         assert int(data["encoder_version"][0]) == C.ENCODER_VERSION
-        assert "demand_out.weight" in data.files, "沒有 v5 的 demand head"
+        assert "labels" in data.files, (
+            "這份 npz 沒有 labels 欄位（2026-08-21 之前匯出的）—— "
+            "重跑 python -m serving.export_npz")
+        if "gen2_model.py" in packed:
+            assert str(data["labels"][0]) == "immediate", (
+                "gen2_model 的 op head 要 immediate（當下這一步）；"
+                "target 的權重載進去會整局 PASS 而且不報錯")
 
 
 def test_no_lazy_imports_of_packaged_modules(tmp_path):

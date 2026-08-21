@@ -1,8 +1,0 @@
-{
-  "name": "dagger",
-  "entry": "agents.gen3_target:act",
-  "params": {
-    "model_market": true
-  },
-  "note": "DAgger 產出的網路。⚠️ 這裡**不可以**加 n_structures / animal 那些覆寫 —— 網路學的是 gen1 預設參數下的行為，覆寫會讓 gen0 的 fallback 跟訓練分布不一致，量到的就不是「網路重現 expert 的程度」。跑哪一輪由 KAGGRI_WEIGHTS 決定（model/weights-dagger<N>.npz）。"
-}

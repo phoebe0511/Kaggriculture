@@ -11,7 +11,6 @@ KAGGRI_WEIGHTS=model/weights-v5-round0.npz python -m eval.runner \
 KAGGRI_WEIGHTS=model/weights-e2e-round2.npz \
   python -m eval.runner --a e2e-restock20 --b gen1 --games 20 --workers 16
 
-KAGGRI_WEIGHTS=model/weights-e2e-round2.npz \
-  python -m eval.runner --a e2e-restock20 --ladder config/sweep-hire --games 20 --workers 5
+$env:KAGGRI_WEIGHTS="model/weights-e2e-round2.npz"; python -m eval.runner --a e2e-restock20 --ladder config/sweep-hire --games 20 --workers 5
 
   PYTHONIOENCODING=utf-8 timeout 600 python -m eval.runner --a gen1 --ladder config/sweep-hire.json --games 2 --workers 12 2>&1 | tail -20

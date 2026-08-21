@@ -74,12 +74,14 @@ class NumpyPolicy:
     def __init__(self, path):
         data = np.load(path)
         self.w = {k: data[k].astype(np.float32) for k in data.files
-                  if data[k].dtype != np.int32 or k.endswith("_")}
+                  if data[k].dtype.kind == "f"}
         self.meta = {k: int(data[k][0]) for k in ("encoder_version", "width", "blocks")
                      if k in data.files}
         self.width = self.meta["width"]
         self.blocks = self.meta["blocks"]
         self.encoder_version = self.meta["encoder_version"]
+        # 舊的 npz 沒有這個欄位 -> None。呼叫端要當成「不知道」而不是「沒問題」。
+        self.labels = (str(data["labels"][0]) if "labels" in data.files else None)
 
     def trunk(self, spatial, scalar):
         w = self.w

@@ -37,6 +37,12 @@ def export(ckpt_path, out_path):
               for k, v in ckpt["state_dict"].items()}
     arrays["encoder_version"] = np.asarray([C.ENCODER_VERSION], dtype=np.int32)
     arrays["width"] = np.asarray([int(ckpt["width"])], dtype=np.int32)
+    # 🩸 `labels` 一定要存。它決定 op head 預測的是「當下這一步」(immediate)
+    # 還是「段落終點動作」(target) —— 兩者的 ENCODER_VERSION 一樣，所以版本
+    # 檢查放行，但把 target 的權重餵給 `agents/gen2_model.py` 會**整局 PASS
+    # 拿 0 分而且完全不報錯**（2026-08-21 踩到：MOVE 0.0%、PASS 80.8%）。
+    arrays["labels"] = np.asarray(
+        [str(ckpt.get("labels", "target"))], dtype="U16")
     arrays["blocks"] = np.asarray([int(ckpt["blocks"])], dtype=np.int32)
 
     out_path = Path(out_path)

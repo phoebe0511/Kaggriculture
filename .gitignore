@@ -22,6 +22,12 @@ htmlcov/
 checkpoints/
 runs/
 data/
+# 🩸 上面那三行擋不掉實際的產物 —— checkpoint 叫 `model/ckpt-*/best.pt`
+# （不是 `.ckpt`、也不在 `checkpoints/`），權重是 `.npz`。2026-08-21 之前
+# 有 23 個這種檔被 commit 進來，.git 因此漲到 72 MB。
+*.pt
+*.npz
+model/ckpt-*/
 
 # --- 棋譜與 log ---
 replays/
@@ -44,5 +50,9 @@ desktop.ini
 
 # --- 不要忽略的（明確放行）---
 !tests/baselines.json
+# 🩸 唯一進 git 的權重：**要上場的那一份**。
+# `serving/build_submission.py` 會把選定的 `model/weights-*.npz` 複製成這個
+# 檔名，所以「submission 裡的那一份」就是出貨版本，其餘實驗權重不進版控。
+!submission/weights.npz
 
 

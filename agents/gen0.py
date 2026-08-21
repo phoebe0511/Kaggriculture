@@ -2459,6 +2459,23 @@ def _log_sink():
     return _LOG_FH
 
 
+def close_log():
+    """關掉 log 的 file handle。
+
+    `eval/runner.py` 跑完一局之後要把 `.jsonl` **改名**（把期末現金加進檔名），
+    而 Windows 不讓你改一個開著的檔 —— 不關的話 `PermissionError`。
+    `_log_sink()` 下次會自己重開。
+    """
+    global _LOG_FH, _LOG_FH_PATH
+    if _LOG_FH is not None:
+        try:
+            _LOG_FH.close()
+        except OSError:
+            pass
+    _LOG_FH = None
+    _LOG_FH_PATH = None
+
+
 def _count_animals(tiles):
     """活著的動物，按species數。"""
     out = {}
