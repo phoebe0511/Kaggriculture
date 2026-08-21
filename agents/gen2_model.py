@@ -30,15 +30,39 @@ top-k 涵蓋率夠高、value head 可靠。超過規則式要靠 search，不�
 gen0 是 gen1 的 81.5%、走網路是 17.0%），而且 DAgger 應該從真正要出貨的
 policy 收狀態，不是從混合版。
 
-⚠️ **市場是目前唯一的瓶頸。** 逐 op 的召回率（round2 權重、固定驗證集）：
+## 市場現在差多少（round5，2026-08-21 量的）
 
-    HIRE              1.000      BUY_SEED WHEAT       0.380
-    SELL FERTILIZER   0.961      BUY_SEED CARROT      0.250
-    BUY_ANIMAL SHEEP  0.941      BUY_SEED TOMATO      0.222
-    BUY_LAND          0.833      BUY_PRODUCT WHEAT    0.422   <- 飼料
+🩸 **不要再用「market recall」判斷這個 head 的好壞。** 那個指標在這裡是壞的：
+標籤是「expert 在**這一個回合**看到這個盤面會不會下單」，而 `gen0._market`
+每回合重算 —— 種子還是 0 它就再說一次。網路只要慢一步，同一筆需求會在後面
+好幾個回合又點亮，分母被灌大。
 
-`BUY_SEED` 整組沒學會 -> 田是空的 -> unit 沒事幹就 PASS（26.6%，gen1 是 17.1%）。
-**調門檻治不了這個**（實測 -1.0 只讓現金 18,194 -> 19,138）。
+實測（round5 對 gen1 的對戰 log，8 局，一局送出的訂單數）：
+
+    HIRE        288.9 / 287.5      BUY_PRODUCT   15.1 / 13.0
+    SELL        106.8 / 102.5      BUY_ANIMAL     9.6 /  7.8
+    BUY_SEED     87.1 / 105.6      BUY_LAND       2.1 /  2.0
+    ------------------------------------------------------
+    合計        509.6 / 518.4      （左 = 網路，右 = gen1）
+
+**訂單量幾乎一樣**，唯一實質落差是 `BUY_SEED` 少 17.5%。而同一份權重在
+「網路自己走出來的盤面」上的 per-turn recall 只有 0.3767 —— 那個數字是假象。
+
+下游後果對得上：同一局逐日比兩邊的田，day 0~9 完全相同，**day 12 第二塊地
+開下去之後作物差 15%**（day 15 是 36.8 對 43.2），一路到期末。動物、工人、
+雜草全部追平，差的只有種下去的格數。
+
+⚠️ **調門檻會讓事情大幅變壞，已經實測過。**
+`tools/market_calibrate.py` 逐 op 算 F1 最佳切點，recall 0.368 -> 0.654，
+但每盤面下單從 0.457 衝到 1.397（是 gen1 自己那 0.440 的三倍），
+期末現金 80,436 -> 47,478，min cash 0（破產），雜草率 2.4% -> 7.3%。
+beta=2 更糟。**多買不是免費的。**
+
+## 對 search 來說這個 head 是堪用的
+
+逐 op 的 AUC 在網路自己的盤面上是 **0.847~0.999**（排序幾乎完美），
+只是正例的 logit 中位數多半在 0 以下。search 的候選是**取 top-k 不是過門檻**，
+所以它拿到的排序是對的。門檻只影響「現在這支不帶 search 的 agent」。
 
 ## PLANT 的原子驗證
 
@@ -175,11 +199,28 @@ RESTOCK_OPS = tuple(
     if op in ("BUY_SEED", "BUY_PRODUCT"))
 
 
-def market_thresholds(base=0.0, restock=None):
-    """`[N_MARKET_OPS]` 的逐 op 門檻。`restock` 沒給就整排都是 `base`。"""
+def market_thresholds(base=0.0, restock=None, per_op=None):
+    """`[N_MARKET_OPS]` 的逐 op 門檻。
+
+    三層，後面的蓋掉前面的：
+
+    1. `base` —— 整排一個值（`market_threshold`）
+    2. `restock` —— 只蓋 `BUY_SEED` / `BUY_PRODUCT`（`market_threshold_restock`）
+    3. `per_op` —— 完整的 `[N_MARKET_OPS]`（`market_threshold_ops`）
+
+    第 3 層是 `tools/market_calibrate.py` 從資料算出來的，優先於前兩層 ——
+    前兩層是手轉的旋鈕，留著是為了讓舊的 config 還能跑。
+    """
     th = np.full(C.N_MARKET_OPS, float(base))
     if restock is not None:
         th[list(RESTOCK_OPS)] = float(restock)
+    if per_op is not None:
+        per_op = np.asarray(per_op, dtype=np.float64)
+        if per_op.shape != (C.N_MARKET_OPS,):
+            raise SystemExit(
+                f"market_threshold_ops 要有 {C.N_MARKET_OPS} 個值，"
+                f"給了 {per_op.shape} —— 重跑 tools.market_calibrate")
+        th = per_op
     return th
 
 
@@ -344,7 +385,8 @@ def act(obs, config=None, params=None):
     params = params or {}
     thresholds = market_thresholds(
         params.get("market_threshold", 0.0),
-        params.get("market_threshold_restock"))
+        params.get("market_threshold_restock"),
+        params.get("market_threshold_ops"))
 
     policy = _policy()
     require_labels(policy, "immediate")
