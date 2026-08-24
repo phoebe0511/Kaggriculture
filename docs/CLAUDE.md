@@ -125,7 +125,7 @@ contracts.py                             → 凍結
 
 ## 現在的狀態
 
-🟢 **Phase 2 進行中**（最後更新 2026-08-21）。
+🟢 **Phase 2 進行中**（最後更新 2026-08-24）。
 
 ### 路線
 
@@ -138,8 +138,9 @@ contracts.py                             → 凍結
 
 > 🚫 **不要提議「退回規則式」或「把某一段還給 gen0」當作結論。**
 > 那條路已經走過兩輪並量到天花板：模仿架構的上限就是被模仿的對象，
-> 而規則式對 ladder 頂端只有 56~58%。要超過它只能靠 search。
-> 詳見 `docs/memory/journal/2026-08-21.md` §1。
+> 而規則式對 ladder 頂端只有 56~58%（2026-08-24 用 100 局配對重量：
+> `gen1` 對 `ladder-top-a` 是 **56.8%**，64,030 vs 112,719）。
+> 要超過它只能靠 search。詳見 `docs/memory/journal/2026-08-21.md` §1。
 >
 > `agents/gen1.py` **已經不存在**（2026-08-21 併進 `agents/gen0.py`）——
 > 它本來就只是「gen0 + 一組調過的參數」。任何說「改用 gen1」的結論都是過期的。
@@ -157,6 +158,13 @@ contracts.py                             → 凍結
 - L0 = `pytest`（81 項，約 45 秒）；baseline 在 `tests/baselines.json`
   （盯的是規則式那條路，`agents.gen0:act`）。
 - 分數記錄：`docs/eval-results.md`（`python -m tools.eval_table` 重新產生）。
+- **權重**：`model/weights-e2e-round6.npz` 是目前最好的（`--epochs 24
+  --width 128 --blocks 8`，1,599,159 參數，對 `gen1` 現金比 93%）。
+  指標性權重的去留規則寫在 `model/README.md`。
+- **打包好的網路版**：`submission/e2e-round6/`（`submission/main.py` 仍是
+  規則式，沒有動）。要測打包好的東西只能用 `config/opponents/*.json` 的
+  `builtin`（`--a e2e-round6-sub` / `--a submission`）——
+  直接給 `.py` 路徑會走 `__import__` 然後 `ModuleNotFoundError`。
 
 ### 還沒有的
 
@@ -164,11 +172,43 @@ contracts.py                             → 凍結
 能超過規則式的東西。forward model 直接用引擎本身（離線跑，沒有 `actTimeout`
 限制，也沒有「呼叫引擎私有函式導致換版本每回合 TypeError」的風險）。
 
+2026-08-24 量到三件事，把它的形式收窄了（細節見當天 journal §5/§6/§7）：
+
+1. **線上即時搜尋不可行。** `actTimeout = 1` 秒（8 個真實 episode config
+   與本機預設全部一樣）。一步 rollout 約 10.4 ms，換最便宜的 `gen0.act`
+   當 rollout policy 也要 4.2 ms —— horizon 24 只夠 10 次 simulation。
+2. **不能用 value head 剪枝。** `tools/value_probe.py` 用 round6 權重重跑，
+   H=1/8/24 三個 horizon 全部還是比不搜差。每個候選都得真的打到底。
+3. **搜「某一回合的動作」上限只有 2.4%。** oracle 兩代幾乎沒變
+   （round5 +2.62%、round6 +2.42%），而對 `ladder-top-a` 的缺口是 45%。
+   ⚠️ 這不表示 search 沒用，是表示**搜尋的對象可能要換**（從單回合動作
+   換成整套策略）。那個決定還沒做，需要人判斷，不要自己推進。
+
 ### 現在的工程重點
 
-market head 的校準。`BUY_SEED` 的 AUC 有 0.965~0.992（排序幾乎完美）但正例
-只佔 3.2%，sigmoid 0.5 只召回得到 0.25~0.38 —— 現在靠逐 op 門檻補償
-（`agents/gen2_model.RESTOCK_OPS`），正解是訓練時加 class weight。
+**模仿這條路已經接近它的天花板，瓶頸不在網路。**
+
+    round6 對 gen1 的現金比          93%    模仿得夠像了
+    gen1 對 ladder-top-a 的現金比    56.8%  被模仿的對象只有這樣
+    round6 對 ladder-top-a           50.7%
+
+就算 round7 模仿到完美，終點是 gen1 的成績。而 2026-08-24 實測 +200 局
+DAgger 資料的效果是 **p=0.599（判不出差別）**，訓練曲線也從欠訓練變成
+overfit（loss 掉 7.7%、驗證 `op` 只升 0.3 個百分點）。**加資料和加大模型
+都已經到頂。**
+
+真正的差距在整條軌跡的策略：day 6 時 `ladder-top-a` 手上有約 $1,762，
+`gen0` 只有 $958。但**單點介入修不了**——2026-08-24 把 `land_first_min_day`
+從 3 改成 0（讓它 day 0 就買地），結果是 **0/60 全輸、−58%**。參數之間
+互相咬合。
+
+> **market head 的校準：訓練指標上已經不是問題，但沒有端到端驗證過。**
+> round6 的 market recall（驗證集）是 **0.9345**。先前寫在這裡的
+> 0.25~0.38 有兩個混在一起的東西：舊架構（96/6）的實際召回率，以及
+> 2026-08-21 §15 澄清過的「0.3767 是量測假象」（量錯對象）。
+> ⚠️ **沒有測過**拿掉 `agents/gen2_model.RESTOCK_OPS` 的逐 op 門檻補償
+> 會不會變差 —— 訓練指標好不等於實戰可以拿掉那層補償。要下這個結論
+> 得跑一次 A/B。
 
 ### ⚠️ 凍結量尺的保護沒有真的裝上
 

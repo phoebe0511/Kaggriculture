@@ -1,0 +1,8 @@
+{
+  "name": "gen1-land0",
+  "entry": "agents.gen0:act",
+  "note": "2026-08-24 前期資金實驗：land_first_min_day 3 -> 0，讓 day 0 就能用開局的 spendable($2,521) 買第一塊地。實測 gen0 買地穩定在 day 9.0，被兩個條件輪流擋住 —— day 0-2 是 land_first_min_day，day 3-8 是 spendable < $1,000（day 0 把 $1,160 押在 STRAWBERRY/MELON 這種 day 10 才首收的作物上）。ladder-top-a 是 day 6 買、當時手上約 $1,762。⚠️ 只有 0 有意義：day 1/2 的 spendable 是 301/123，改成 1 或 2 完全沒有效果。",
+  "params": {
+    "land_first_min_day": 0
+  }
+}

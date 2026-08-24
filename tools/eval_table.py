@@ -22,7 +22,30 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT = REPO_ROOT / "docs" / "eval-results.md"
 
 #: 需要備註才不會被誤讀的 run。key 是 run 目錄名。
-NOTES = {}
+NOTES = {
+    # --- 2026-08-24 的 ladder replay 判定 ---
+    "20260824-172326_e2e-round6-sub_vs_ladder-top-a":
+        "100 局配對的判定。對同組 seed 的 gen1（下一列）配對差 −5,778、"
+        "中位 −6,600、34/100 局較好、Wilcoxon p=0.00021 —— round6 對真實對手"
+        "顯著比榜上現行的規則式差。這是網路版第一次對非 gen0/gen1 血統的對手量測。",
+    "20260824-172742_gen1_vs_ladder-top-a":
+        "上一列的對照組，同一組 seed。",
+    "20260824-172011_e2e-round6-sub_vs_ladder-top-a":
+        "20 局版本，p=0.123 判不出來（MDE 8,332 > 實測差 5,185）。要看 100 局那筆。",
+    "20260824-172201_gen1_vs_ladder-top-a":
+        "20 局版本的對照組。",
+
+    # --- 不是判定的 run，別當成量測結果讀 ---
+    "20260824-155407_e2e-round6-sub_vs_gen1":
+        "打包驗證用的 4 局，確認 submission/e2e-round6/ 跑得動、載到自帶的 "
+        "weights.npz。局數太少，不是判定。",
+    "20260824-155554_e2e-round6-sub_vs_gen1":
+        "同上，驗證 config/opponents/e2e-round6-sub.json 的相對路徑。",
+    "20260824-170601_e2e-round6-sub_vs_gen1":
+        "驗證 docs/commands.md 的指令跑得動，2 局，不是判定。",
+    "20260824-172606_gen1_vs_ladder-top-a":
+        "撈 gen0 的 budget 欄位用的 2 局 log run（--log-level 2），不是判定。",
+}
 
 #: `eval/runner.py` 是 2026-08-21 下午才開始把 `KAGGRI_WEIGHTS` 寫進
 #: `result.json`。在那之前的 run 只能靠時間戳對回 DAgger 的輪次 ——
