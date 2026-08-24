@@ -9,7 +9,9 @@
 |---|---|
 | **`--workers` 上限 16** | `cpu_count()` 是 28，但 `harness/rollout.py:300` 的預設是 `cpu_count - 2 = 26`，會吃掉整台機器。**每個指令都要明寫。** |
 | **`--games N` 是 N 個配對種子** | 實際跑 **2N 局**（`build_jobs(swap=True)` 每個 seed 正反各一次）。 |
-| **`KAGGRI_WEIGHTS` 沒設會退回 `submission/weights.npz`** | 那可能是別版的。2026-08-21 之前載到語意不符的權重會**整局 PASS 拿 0 分且零錯誤訊息**；現在 npz 存了 `labels`，對不上會直接 `SystemExit`。 |
+| **`KAGGRI_WEIGHTS` 沒設會退回 agent 檔案旁邊的 `weights.npz`** | 順序是 `agents/weights.npz` -> `submission/weights.npz`（兩個現在都不存在，所以 `--a e2e` 沒設就會載入失敗）。2026-08-21 之前載到語意不符的權重會**整局 PASS 拿 0 分且零錯誤訊息**；現在 npz 存了 `labels`，對不上會直接 `SystemExit`。 |
+| **`KAGGRI_WEIGHTS` 有設會蓋過打包好的權重** | 測 `--a e2e-round6-sub` 這種自帶 `weights.npz` 的東西時，**一定要先清掉**（`Remove-Item Env:KAGGRI_WEIGHTS`），否則量到的不是要出貨的那份。而且 `result.json` 的 `weights` 欄位這時只記 `"(未設)"`，事後翻 run 目錄考古看不出實際載了什麼。 |
+| **檔名打錯不會報錯** | 2026-08-24 把 `round6` 打成 `wound6`，結果是整張表 `nan`、0/0/0，判定欄照樣印「❌ 確實較弱」。跑完先看局數對不對。 |
 
 ---
 
@@ -20,12 +22,13 @@
 ```
 --a e2e                     對手池的名字 -> config/opponents/e2e.json
 --a agents.gen0:act         module:function，直接指函式，不經 config
---a submission/main.py      檔案路徑，走 kaggle_environments 的 file-path 載入
+--a submission              對手池的名字，但那個 JSON 裡是 "builtin": "<.py 路徑>"
+                            -> 走 kaggle_environments 的 file-path 載入
                             （跟 Kaggle 上場同一條路，是唯一測得到攤平後
                              import 的方式）
 ```
 
-名字怎麼變成程式碼：
+名字怎麼變成程式碼，兩條分支：
 
 ```
 --a e2e
@@ -34,7 +37,24 @@
         params: 無                        <- 不覆寫任何參數
               └─> agents/gen2_model.py 的 act()
                     └─> 權重讀 KAGGRI_WEIGHTS
+
+--a submission
+  └─> config/opponents/submission.json
+        builtin: submission/main.py       <- build_agent 直接把字串交給 env.run
+              └─> kaggle_environments 的 exec + sys.path.append(exec_dir)
+                    └─> 攤平後的 `from gen0 import` 才找得到同目錄的檔案
 ```
+
+> 🩸 **不要直接把 `.py` 路徑丟給 `--a`。** `--a submission/main.py` 走的是
+> `load_spec` 的 `.py` 分支 —— 那條把路徑轉成 module path 再 `__import__`，
+> **不是** file-path 載入。攤平後的檔案沒有 package 前綴，於是：
+>
+>     ⚠️ seed 0: ModuleNotFoundError: No module named 'gen0'
+>     局數 0   ⚠️ 作廢 2 局   ...   判定 ❌ 確實較弱
+>
+> 2026-08-24 實測。**注意最後那行**——0 局跑完照樣印「確實較弱」，
+> 跟載錯權重那類靜默失敗是同一個模式（見下面「跑之前先確認」第三格）。
+> 要測打包好的東西，一律經 `config/opponents/*.json` 的 `builtin`。
 
 ### 對手池裡有什麼
 
@@ -48,6 +68,12 @@
 | `ref-v3` … `ref-v11` | 凍結量尺，都是規則式、參數寫死 |
 | `ladder-top-a` / `ladder-top-b` | 真實 ladder 對局重播 |
 | `starter` / `random` / `pass` | 引擎內建 |
+| `submission` | **打包好的那一份**：`submission/main.py`（現在是規則式 gen0）。走 `builtin` |
+| `e2e-round6-sub` | **打包好的網路版**：`submission/e2e-round6/main.py` + 自帶 round6 權重。走 `builtin` |
+
+> ⚠️ `submission` 和 `e2e-round6-sub` 量到的是**磁碟上打包好的檔案**，不是
+> `agents/` 的原始碼。改了 agent 沒重新打包的話，這裡跑的還是舊版 ——
+> 那正是我們要它測的事。
 
 ---
 
@@ -64,6 +90,15 @@ python -m eval.runner --a e2e --b ladder-top-a --games 10 --workers 16
 
 # 一次打一整排對手（--ladder 吃一個 sweep 檔）
 python -m eval.runner --a e2e --ladder config/sweep-hire.json --games 20 --workers 5
+```
+
+測**打包好的**那一份（自帶權重，所以要先把環境變數清掉）：
+
+```powershell
+Remove-Item Env:KAGGRI_WEIGHTS -ErrorAction SilentlyContinue
+
+python -m eval.runner --a e2e-round6-sub --b gen1 --games 20 --workers 16
+python -m eval.runner --a e2e-round6-sub --ladder .\config\sweep-hire.json --games 20 --workers 8
 ```
 
 > ⚠️ `--ladder config/sweep-hire.json` 是拿 A 去打「不同 `max_hands` 的規則式」。
@@ -118,7 +153,7 @@ python -m harness.rollout --policy e2e --expert gen1 `
 python -m model.train `
        --data data/dagger/e2e-round0,data/dagger/e2e-round1,data/dagger/e2e-round2,data/dagger/e2e-round3,data/dagger/e2e-round4,data/dagger/e2e-round5,data/dagger/e2e-round6 `
        --labels immediate --val-from data/dagger/e2e-round0 `
-       --out model/artifacts/ckpt-e2e-round6 --epochs 8 --width 96 --blocks 6
+       --out model/artifacts/ckpt-e2e-round6 --epochs 24 --width 128 --blocks 8
 
 # 3. 匯出
 python -m serving.export_npz --ckpt model/artifacts/ckpt-e2e-round6/best.pt `
@@ -139,10 +174,25 @@ python -m serving.export_npz --ckpt model/artifacts/ckpt-e2e-round6/best.pt `
 >
 > 🩸 **`--labels immediate`**（當下這一步）。`target`（段落終點動作）是
 > 已刪的 v3/v5 那條線用的，餵給 `gen2_model` 會整局 PASS。
+>
+> 🩸 **`--epochs 24 --width 128 --blocks 8` 是 2026-08-24 起的規格**
+> （1,599,159 參數）。round0~round5 是 `--epochs 8 --width 96 --blocks 6`
+> （867k），2026-08-21 §17 量到那個組合**欠訓練** —— loss 還在掉 4%、
+> 驗證還在升就停了。換規格之後對 `gen1` 從 5.0% 變 20.0%。
+> npz 裡存了 `width` / `blocks`，載入時不需要對得上命令列。
 
 ---
 
 ## 打包 submission
+
+現在有**兩份**打包好的東西，指哪一個給 Kaggle 就是哪一個上場：
+
+| 路徑 | 內容 | 對手池名字 |
+|---|---|---|
+| `submission/` | 規則式 `gen0`，不帶權重。**榜上現行版本** | `submission` |
+| `submission/e2e-round6/` | 端到端網路 + round6 權重（5.97 MB） | `e2e-round6-sub` |
+
+### 規則式那份（`serving/build_submission.py` 產生）
 
 ```powershell
 python -m serving.build_submission --tar
@@ -153,11 +203,45 @@ python -m eval.runner --a submission --b gen1 --games 3 --workers 6
 ```
 
 > ⚠️ `build_submission` 會 **`rmtree` 整個 `submission/`**，跑之前先看裡面
-> 有沒有別人放的備份。
+> 有沒有別人放的備份 —— **`submission/e2e-round6/` 會一起被刪掉。**
 >
-> ⚠️ 現在 `main.py` 是規則式，所以只打包 `main.py` + `gen0.py`、**不帶權重**。
-> 要換成網路版的話，`serving/build_submission.py` 的 `FILE_MAP` 要加回
-> `contracts.py` / `npz_forward.py` / `gen2_model.py`，並用 `--weights` 指定 npz。
+> ⚠️ 它的 `FILE_MAP` 只有 `main.py` + `gen0.py`、`DEFAULT_WEIGHTS` 是 `None`。
+> 要讓它直接產網路版的話，`FILE_MAP` 要加回 `contracts.py` /
+> `npz_forward.py` / `gen2_model.py`，並用 `--weights` 指定 npz。
+
+### 網路版那份（2026-08-24 手動組出來的）
+
+沒有走 `build_submission`（它的 `FILE_MAP` 是規則式那組）。攤平用的是同一支
+檔案的 `_flatten()`，所以 import 改寫規則一致：
+
+```
+main.py         入口，import gen2_model 的 agent
+gen2_model.py   agents/gen2_model.py     （唯一的改寫：serving.npz_forward -> npz_forward）
+npz_forward.py  serving/npz_forward.py   （無改寫）
+contracts.py    contracts.py             （無改寫，ENCODER_VERSION 5）
+weights.npz     model/artifacts/weights-e2e-round6.npz  （原樣複製）
+```
+
+驗過的事（2026-08-24）：四支檔案跟來源逐行相同（`npz_forward.py` 只差
+CRLF/LF）、`weights.npz` sha256 一致、`ENCODER_VERSION` 與 npz 內的
+`encoder_version` 都是 5、隔離 `sys.path` 之後 import 解析到的是子資料夾裡
+那幾支、同一個 obs 餵進去 action 與 `--a e2e` + round6 **逐位元組相同**。
+
+```powershell
+Remove-Item Env:KAGGRI_WEIGHTS -ErrorAction SilentlyContinue
+python -m eval.runner --a e2e-round6-sub --b gen1 --games 20 --workers 16
+
+kaggle competitions submit kaggriculture `
+  -f submission/e2e-round6/submission.tar.gz `
+  -m "端到端網路 round6"
+```
+
+> ⚠️ **這份還沒過 `submission/main.py` 寫的換版門檻**（對 `gen1` 只有 20.0%，
+> [10.5%, 34.8%]）。2026-08-24 是在看過這個數字之後決定仍要送的。
+>
+> ⚠️ `submission/e2e-round6/{weights.npz, submission.tar.gz}` 共約 12 MB，
+> **不在 `.gitignore` 的任何規則裡**（頂層的 `submission/weights.npz` 才有
+> 專門放行）。`git add -A` 會把它們掃進去。
 
 ---
 

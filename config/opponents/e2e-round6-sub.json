@@ -1,0 +1,5 @@
+{
+  "name": "e2e-round6-sub",
+  "builtin": "submission/e2e-round6/main.py",
+  "note": "打包好的那一份（submission/e2e-round6/），不是 agents/gen2_model.py 的原始碼。走 builtin 分支 —— build_agent 直接把這個字串交給 env.run，用 Kaggle 自己的 exec + sys.path.append(exec_dir) 載入，攤平後的 `from gen2_model import` 才找得到同目錄的檔案。`--a submission/e2e-round6/main.py` 那種寫法會炸（load_spec 走 __import__，找不到 gen2_model）。 ⚠️ 跑之前一定要清掉 KAGGRI_WEIGHTS —— 有設的話會蓋掉 submission 自帶的 weights.npz，量到的就不是要出貨的那份。而且 result.json 的 weights 欄位這時只會記「(未設)」，事後考古看不出來。"
+}

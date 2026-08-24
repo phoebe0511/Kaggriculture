@@ -28,8 +28,8 @@ data/
 *.pt
 *.npz
 # 2026-08-21 起產物集中在這裡（`model/README.md`）。裡面的東西全部重跑得出來，
-# 保留下來的指標性權重放在 `model/` 底下 —— 但那幾份**也不進 git**，
-# 唯一進 git 的權重是 `submission/weights.npz`（見下面的放行清單）。
+# 保留下來的指標性權重放在 `model/` 底下，**那幾份逐檔放行進 git**
+# （見下面的放行清單）。
 model/artifacts/
 
 # --- 棋譜與 log ---
@@ -76,5 +76,6 @@ desktop.ini
 !model/weights-e2e-round0.npz
 !model/weights-e2e-round2.npz
 !model/weights-e2e-round5.npz
+!model/weights-e2e-round6.npz
 
 

@@ -24,7 +24,8 @@
 |---|---|
 | `weights-e2e-round0.npz` | **純 BC 的起點**。要回答「DAgger 到底帶來多少」只能跟它比 |
 | `weights-e2e-round2.npz` | 市場診斷是拿這一份做的（`agents/gen2_model.py` 的 docstring、`README.md`、journal §10/§11 的門檻掃描全部引用它） |
-| `weights-e2e-round5.npz` | **目前最好的 ①**，對 gen1 是 84.4%（`docs/eval-results.md`） |
+| `weights-e2e-round5.npz` | **舊架構（`--width 96 --blocks 6`，867k 參數）最好的一份**，對 gen1 現金比 84.4%（`docs/eval-results.md`）。留著是為了回答「加大模型到底帶來多少」 |
+| `weights-e2e-round6.npz` | **目前最好的**。2026-08-24 換規格重練（`--epochs 24 --width 128 --blocks 8`，1,599,159 參數）。對 `gen1` 現金比 **93%**（81,802 / 87,877）、得分率 20.0% [10.5%, 34.8%]，40 局配對（`temp/20260824-124546_e2e_vs_gen1`）。同日 `weights-e2e-big24.npz`（同架構、少 200 局資料）配對比較 Wilcoxon p=0.599 —— **兩者判不出高下**，留 round6 是因為資料較多、`op` 0.8996 與 market recall 0.9345 略高 |
 
 其餘的（`v4` / `v5-round*` / `dagger*` / `kawashigi`）在 `artifacts/` 裡。
 🩸 **它們現在載不起來** —— 對應的 agent（`gen3_target.py` / `gen4_demand.py`）
@@ -37,7 +38,7 @@ SystemExit**，錯誤訊息看起來像 `contracts.py` 的問題。不要當成�
 ## git
 
 `.gitignore` 擋掉所有 `*.npz` / `*.pt` 與整個 `model/artifacts/`，然後
-**逐檔**放行上面那三份（不是萬用字元）。加一份新的指標性權重 = 在
+**逐檔**放行上面那四份（不是萬用字元）。加一份新的指標性權重 = 在
 `.gitignore` 的放行清單多寫一行 + 在上面那張表多寫一列說明為什麼留。
 
 `submission/weights.npz` 也放行 —— 那是要上場的那一份，由
