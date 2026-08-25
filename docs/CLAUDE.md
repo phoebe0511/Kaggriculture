@@ -168,23 +168,53 @@ contracts.py                             → 凍結
 
 ### 還沒有的
 
-**`search/` 一行都還沒寫。** 這是路線圖上「網路 + search」那一步，也是唯一
-能超過規則式的東西。forward model 直接用引擎本身（離線跑，沒有 `actTimeout`
-限制，也沒有「呼叫引擎私有函式導致換版本每回合 TypeError」的風險）。
+**`search/` 2026-08-25 開工了**（`rollout_search.py` / `candidates.py`，
+加上 `tools/search_probe.py` / `tools/search_game.py`）。這是路線圖上
+「網路 + search」那一步，也是唯一能超過規則式的東西。forward model 直接用引擎本身
+（離線跑，沒有 `actTimeout` 限制，也沒有「呼叫引擎私有函式導致換版本每回合
+TypeError」的風險）。
 
-2026-08-24 量到三件事，把它的形式收窄了（細節見當天 journal §5/§6/§7）：
+⚠️ **離線 search 的產出上不了場** —— 每個決策要幾十次打到底的 rollout。
+它是用來離線產「比 expert 更好的動作」，再靠 DAgger 蒸餾回網路的。
+
+2026-08-24 量到三件事把它的形式收窄了（細節見當天 journal §5/§6/§7），
+但第 3 點已被 08-25 推翻：
 
 1. **線上即時搜尋不可行。** `actTimeout = 1` 秒（8 個真實 episode config
    與本機預設全部一樣）。一步 rollout 約 10.4 ms，換最便宜的 `gen0.act`
    當 rollout policy 也要 4.2 ms —— horizon 24 只夠 10 次 simulation。
 2. **不能用 value head 剪枝。** `tools/value_probe.py` 用 round6 權重重跑，
    H=1/8/24 三個 horizon 全部還是比不搜差。每個候選都得真的打到底。
-3. **搜「某一回合的動作」上限只有 2.4%。** oracle 兩代幾乎沒變
-   （round5 +2.62%、round6 +2.42%），而對 `ladder-top-a` 的缺口是 45%。
-   ⚠️ 這不表示 search 沒用，是表示**搜尋的對象可能要換**（從單回合動作
-   換成整套策略）。那個決定還沒做，需要人判斷，不要自己推進。
+3. ~~搜「某一回合的動作」上限只有 2.4%~~ —— **2026-08-25 推翻，不要再引用。**
+   那個 oracle（round5 +2.62% / round6 +2.42%）的候選集合**只有 8 個**
+   （`tools/value_probe.py:118-120`：不改、6 個「單一 unit 換成第 2 名」、
+   1 個強迫買種子），而且基準線是網路自己的 argmax。
+   候選擴大到 57 個、基準線換成 `gen0` 的動作之後，**oracle 是 +8.37%**
+   （12 個盤面，`temp/search-probe-stage1.json`）。leverage 集中在 day 6~12，
+   day 18 之後幾乎沒有搜的價值。詳見 08-25 journal §9~§11。
 
 ### 現在的工程重點
+
+🟢 **2026-08-25：離線 search 的兩個 gate 都過了，這是目前最好的一條路。**
+
+    對 ladder-top-a（seed 0~9、a_slot 0、同一組 seed）的現金比
+      round6 網路          51.5%   63,546
+      gen1 / gen0 規則式    55.1%   67,944
+      gen0 + 離線 search   76.9%   94,892     <- 10/10 局，p=0.00195
+      ladder-top-a 自己             123,323
+
+缺口從 45% 縮到 23%。**但還沒追過 `ladder-top-a`。** 兩個未解的問題見
+08-25 journal §15：(1) 對手的期末現金沒有記錄，分不出增益是「自己多賺」還是
+「壓低開迴路的 replay」（工具已修、還沒重跑）；(2) 產出上不了場，一定要
+Stage 3 蒸餾回網路。
+
+增益的來源可以看懂：**day 0 佔 46.5%，而且是「不要種 day 10 才首收的
+STRAWBERRY / MELON，改種 day 2 就收的 CARROT」**（journal §16）。那正好是
+08-24 §4 診斷出來但用參數修不掉的「前六天賺得不夠」。
+
+---
+
+**（以下是 08-24 寫的，模仿路線那一段仍然成立）**
 
 **模仿這條路已經接近它的天花板，瓶頸不在網路。**
 

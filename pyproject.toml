@@ -11,6 +11,8 @@ dependencies = [
 dev = [
     "kaggle==2.2.4",
     "pytest==9.1.1",
+    # CMA-ES，只給 tools/param_search.py 用；不進 [project].dependencies。
+    "cma==4.4.4",
 ]
 
 [build-system]
