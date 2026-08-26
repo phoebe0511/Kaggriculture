@@ -81,15 +81,28 @@ def watch(run_dir):
         prog = prog / "progress"
     if not prog.is_dir():
         raise SystemExit(f"找不到 {prog} —— 路徑對嗎？")
+    # 🩸 一天搜幾個 hour 決定了「決策點總數」。2026-08-26 23:49 使用者抓到
+    # 這裡把「決策點數」印成「第幾天」—— `--hours 12` 時兩者剛好相等所以看不
+    # 出來，改成一天 4 個之後就差 4 倍。
+    per_day = None
+    cfg_path = prog.parent / "config.json"
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(io.open(cfg_path, encoding="utf-8").read())
+            per_day = len([h for h in str(cfg["hours"]).split(",") if h.strip()])
+        except (ValueError, KeyError):
+            per_day = None
+
     files = sorted(glob.glob(str(prog / "*.jsonl")))
     if not files:
         # 開跑後的頭幾分鐘都在算 gen0 對照組，還沒有決策點可以記。
         print(f"{prog} 還沒有 .jsonl —— 十之八九是還在跑 gen0 對照組，等一下再看。")
         return 0
 
-    print(f"（10 局同時跑，一個 seed 一個 worker；"
-          f"「搜到第幾天」是那一局之內的進度，不是第幾局）")
-    print(f"{'seed':>5}{'對手':>11}{'gen0 基準':>11}{'搜到第幾天':>12}"
+    print(f"（10 局同時跑，一個 seed 一個 worker。"
+          f"「第幾天」「決策點」都是那一局**之內**的進度，不是第幾局。"
+          f"一天搜幾個 hour 由 --hours 決定，所以決策點總數 = 天數 × 那個數字）")
+    print(f"{'seed':>5}{'對手':>11}{'gen0 基準':>11}{'第幾天':>9}{'決策點':>11}"
           f"{'我方現金':>9}{'對手現金':>9}{'目前 Q':>11}"
           f"{'vs gen0':>9}{'改過':>6}{'已花':>8}{'更新':>10}")
     done_rows, running = [], 0
@@ -113,7 +126,8 @@ def watch(run_dir):
             done_rows.append((final["cash"], final["baseline"],
                               final.get("opp"), base_opp))
             print(f"{seed:>5}{who:>13}{final['baseline']:>11,.0f}"
-                  f"{str(total) + '/' + str(total) + ' 完成':>12}"
+                  f"{'完成':>8}"
+                  f"{str(last['done'] if last else '?') + ' 個':>11}"
                   f"{_cash(final.get('cash')):>11}"
                   f"{_cash(final.get('opp')):>11}"
                   f"{'':>11}"
@@ -122,15 +136,18 @@ def watch(run_dir):
                   f"{(last['secs'] if last else 0) / 60:>7.0f}分{final['t']:>10}")
         elif last:
             running += 1
+            day_cell = f"{last.get('day', 0) + 1}/{total}"
+            pts_cell = (f"{last['done']}/{total * per_day}" if per_day
+                        else str(last["done"]))
             print(f"{seed:>5}{who:>13}{base:>11,.0f}"
-                  f"{str(last['done']) + '/' + str(total):>9}"
+                  f"{day_cell:>9}{pts_cell:>11}"
                   f"{_cash(last.get('me')):>11}"
                   f"{_cash(last.get('opp_now')):>11}"
                   f"{last['q']:>11,.0f}{last['q'] / base - 1:>8.1%}"
                   f"{last['changed']:>6}{last['secs'] / 60:>7.0f}分{last['t']:>10}")
         else:
             running += 1
-            print(f"{seed:>5}{who:>13}{(base or 0):>11,.0f}{'還在算對照組':>12}")
+            print(f"{seed:>5}{who:>13}{(base or 0):>11,.0f}{'還在算對照組':>14}")
 
     if done_rows:
         diffs = [a - b for a, b, _o, _ob in done_rows]
