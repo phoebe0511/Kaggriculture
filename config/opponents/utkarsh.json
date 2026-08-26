@@ -1,0 +1,9 @@
+{
+  "name": "utkarsh",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "93803702",
+    "player": 0
+  },
+  "note": "rating 3050.1。動物配置是 8 牛 6 羊，跟主流的 10 牛 4 羊略不同。 從 config/ladder-top.json 抽出來成獨立 spec，讓 eval.runner.load_spec 叫得到（它只找 config/opponents/<name>.json）。⚠️ 開迴路 replay，細節見 agents/replay.py docstring。"
+}

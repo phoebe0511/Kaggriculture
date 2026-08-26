@@ -143,7 +143,7 @@ def main(argv=None):
             snap = RS.snapshot(env)
             snap_ms = (time.perf_counter() - t_snap) * 1000
 
-            cands, blocked = CAND.generate(obs, cfg, base, rng)
+            cands, blocked, _info = CAND.generate(obs, cfg, base, rng)
             t0 = time.perf_counter()
             scored = RS.evaluate_all(env, snap, cands, act_them, rollout_act)
             wall = time.perf_counter() - t0
