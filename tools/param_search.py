@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import os
 import pickle
 import statistics
 import time
@@ -63,23 +64,39 @@ from tools.param_space import DIM, decode, to_json_params, x0
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: checkpoint 打的另外三支隊伍。挑打法明顯不同的 —— tetsuya 是 8 支裡唯一養鵝的、
+#: checkpoint 打的隊伍。挑打法明顯不同的 —— tetsuya 是 8 支裡唯一養鵝的、
 #: recursion 是唯一種瓜的、utkarsh 的動物配置跟主流不同。
 #: 🩸 **不要用 `ladder-top-b`** —— 它跟 `ladder-top-a` 是同一局（episode 93916293）
 #: 的兩個 player，config note 自己寫「不是兩個獨立樣本」，拿它驗收等於沒驗。
-HOLDOUT_TEAMS = ("tetsuya", "recursion", "utkarsh")
+#:
+#: 🩸 **`gen1` 是刻意放進來的、唯一一支會反應的。** 前三支跟訓練用的
+#: `ladder-top-a` 一樣都是**開迴路 replay**，所以「靠讓對手的 BUY_*/HIRE 失敗
+#: 來壓低它的現金」這種招數對它們全部有效，holdout 抓不到（見 `OBJECTIVES`
+#: 的誘因問題）。`gen1` 會依盤面改動作，被卡住就換做別的 —— train 升而 gen1
+#: 那一欄不升，就是在吃 replay 的被動性，不是真的變強。
+#: （`gen1` 不是另一支 agent，是 `agents.gen0:act` 不帶 params 走 DEFAULT_PARAMS，
+#: `config/opponents/gen1.json`；`agents/gen1.py` 2026-08-21 就併掉了。）
+HOLDOUT_TEAMS = ("tetsuya", "recursion", "utkarsh", "gen1")
 
 
 def load_team_specs(names=HOLDOUT_TEAMS):
-    """從 `config/ladder-top.json` 撈出指定隊伍的 spec。"""
+    """撈出指定隊伍的 spec。先找 `config/ladder-top.json`，沒有就走 `load_spec`。"""
     path = REPO_ROOT / "config" / "ladder-top.json"
     with open(path, encoding="utf-8") as f:
         pool = json.load(f)["opponents"]
     by_name = {o["name"]: o for o in pool}
-    missing = [n for n in names if n not in by_name]
-    if missing:
-        raise SystemExit(f"{path} 裡沒有這些隊伍：{missing}；有的是 {sorted(by_name)}")
-    return [by_name[n] for n in names]
+    out = []
+    for n in names:
+        if n in by_name:
+            out.append(by_name[n])
+        else:
+            try:
+                out.append(load_spec(n))
+            except (FileNotFoundError, SystemExit) as exc:
+                raise SystemExit(
+                    f"holdout 隊伍 {n!r} 在 {path} 和 config/opponents/ 都找不到"
+                    f"；ladder-top 有的是 {sorted(by_name)}（{exc}）") from exc
+    return out
 
 
 def candidate_spec(x, name):
@@ -209,7 +226,17 @@ def main(argv=None):
     ap.add_argument("--resume", help="續跑：指向 temp/cma/<時間戳>")
     ap.add_argument("--smoke", action="store_true",
                     help="2 代、popsize 4、2 seed —— 驗存檔續跑走得通")
+    ap.add_argument("--log-level", default="0",
+                    help="agent 的 KAGGRI_LOG_LEVEL。🩸 預設 0 —— "
+                         "`agents/gen0.py:66` 沒設的話是 **3**，每回合把一個大 "
+                         "dict 序列化噴到 stdout。2026-08-27 實測（popsize 4 / "
+                         "4 seed / 1 代）：輸出 50,651 bytes vs 14,699,160 bytes。"
+                         "⚠️ **牆鐘時間沒有變**（一代 221.3 -> 218.6 秒，在雜訊"
+                         "範圍內）—— 關掉是為了不要洗版和寫爆磁碟，不是為了快。")
     args = ap.parse_args(argv)
+
+    # 🩸 一定要在開 Pool 之前設。Windows 是 spawn，child 拿的是這一刻的環境。
+    os.environ["KAGGRI_LOG_LEVEL"] = str(args.log_level)
 
     if args.smoke:
         # 🩸 明確傳進來的旗標不要被 smoke 蓋掉 —— 續跑時 `--generations` 被蓋回 2
