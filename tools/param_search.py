@@ -274,19 +274,57 @@ def watch(state_dir):
         print("  「差」= train − holdout（都是打 "
               f"{cfg.get('opponent')}，只是 seed 不同）。擴大就是在背 seed")
         if len(cks) >= 2:
-            g0, g1 = cks[0]["generation"], cks[-1]["generation"]
+            # 🩸 一定要把 `holdout` 也列進來 —— 它是「同一個對手、沒訓練過的
+            # seed」，最直接的過擬合訊號。只列 train + 各隊伍的話，
+            # 「train 升但 holdout 崩」這件事看不出來（2026-08-27 漏過一次）。
+            #
+            # 🩸 也一定要有「相對前一次」那一欄。只看頭到尾的話，最近才發生的
+            # 反轉會被前面的進步蓋掉。
+            def _get(c, k):
+                return c["teams"].get(k, 0.0) if k in teams else c.get(k, 0.0)
+
+            # 🩸 checkpoint 打的是「歷來最佳」那組參數。歷來最佳沒動的話，
+            # 連續兩次 checkpoint 會**逐位元組相同**，拿它們相減永遠是 0 ——
+            # 「train 升但其它全退」就永遠不會觸發（2026-08-27 漏過）。
+            # 所以要往回找到最近一次**數值不同**的 checkpoint。
+            prev = cks[-2]
+            for c in reversed(cks[:-1]):
+                if c["train"] != cks[-1]["train"] or c["holdout"] != cks[-1]["holdout"]:
+                    prev = c
+                    break
+            if prev is not cks[-2]:
+                print()
+                print(f"  ⚠️ 第 {cks[-2]['generation']} 代之後歷來最佳沒再更新 ——"
+                      f" 後面的 checkpoint 是同一組參數，數字一模一樣。"
+                      f"「相對前一次」改跟第 {prev['generation']} 代比。")
+            g0, gp, g1 = (cks[0]["generation"], prev["generation"],
+                          cks[-1]["generation"])
+
             print()
-            print(f"  第 {g0} 代 -> 第 {g1} 代的變化（正 = 變好）：")
-            print(f"    {'train':<12}{cks[-1]['train'] - cks[0]['train']:>+10,.0f}")
-            for t in teams:
-                dt = cks[-1]["teams"].get(t, 0) - cks[0]["teams"].get(t, 0)
+            print(f"  變化（正 = 變好）      {f'第{g0}->第{g1}':>12}"
+                  f"{f'第{gp}->第{g1}':>12}")
+            for k in ["train", "holdout"] + list(teams):
+                d_all = _get(cks[-1], k) - _get(cks[0], k)
+                d_last = _get(cks[-1], k) - _get(prev, k)
                 tag = ""
-                if t == "gen1":
-                    tag = ("  ← 唯一會反應的；跟 train 同向 ✓"
-                           if dt > 0 else
-                           "  ← 唯一會反應的；🩸 train 升它沒升 = 在吃 replay "
-                           "的被動性")
-                print(f"    {t:<12}{dt:>+10,.0f}{tag}")
+                if k == "holdout":
+                    tag = "  ← 同一個對手、沒訓練過的 seed"
+                elif k == "gen1":
+                    tag = "  ← 唯一會反應的（其餘三支都是開迴路 replay）"
+                print(f"    {k:<18}{d_all:>+12,.0f}{d_last:>+12,.0f}{tag}")
+
+            # 判讀：train 升、其它全跌 = 在背 train 的 seed
+            others = ["holdout"] + list(teams)
+            d_tr = _get(cks[-1], "train") - _get(prev, "train")
+            down = [k for k in others if _get(cks[-1], k) - _get(prev, k) < 0]
+            if d_tr >= 0 and len(down) == len(others):
+                print(f"  🩸 第 {gp} -> {g1} 代：train 沒退步但**其它 "
+                      f"{len(others)} 欄全部退**（{', '.join(down)}）"
+                      " —— 那是在背 train 的 seed，不是變強")
+            gaps = [c["train"] - c["holdout"] for c in cks]
+            if gaps[-1] == max(gaps) and len(gaps) >= 3:
+                print(f"  🩸 train − holdout 的差 {gaps[-1]:,.0f} 是歷來最大"
+                      f"（之前 {min(gaps):,.0f} ~ {sorted(gaps)[-2]:,.0f}）")
 
     bp = d / "best.json"
     if bp.is_file():
