@@ -70,14 +70,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: 🩸 **不要用 `ladder-top-b`** —— 它跟 `ladder-top-a` 是同一局（episode 93916293）
 #: 的兩個 player，config note 自己寫「不是兩個獨立樣本」，拿它驗收等於沒驗。
 #:
-#: 🩸 **`gen1` 是刻意放進來的、唯一一支會反應的。** 前三支跟訓練用的
+#: 🩸 **2026-08-27 從 3 支改成全部 8 支。** 原本只挑 tetsuya / recursion /
+#: utkarsh（「打法明顯不同」），結果**看不到對 rating 最高的 kawashigi 和
+#: thomas 有沒有效**。加滿的成本幾乎是零：每支 20 局 × 多 5 支 = 100 局 ≈ 55
+#: 秒，而兩次 checkpoint 之間隔了 10 代 ≈ 2,280 秒（+2.4%）。
+#:
+#: 🩸 **`gen1` 是刻意放進來的、唯一一支會反應的。** 那 8 支跟訓練用的
 #: `ladder-top-a` 一樣都是**開迴路 replay**，所以「靠讓對手的 BUY_*/HIRE 失敗
 #: 來壓低它的現金」這種招數對它們全部有效，holdout 抓不到（見 `OBJECTIVES`
 #: 的誘因問題）。`gen1` 會依盤面改動作，被卡住就換做別的 —— train 升而 gen1
 #: 那一欄不升，就是在吃 replay 的被動性，不是真的變強。
 #: （`gen1` 不是另一支 agent，是 `agents.gen0:act` 不帶 params 走 DEFAULT_PARAMS，
 #: `config/opponents/gen1.json`；`agents/gen1.py` 2026-08-21 就併掉了。）
-HOLDOUT_TEAMS = ("tetsuya", "recursion", "utkarsh", "gen1")
+#:
+#: ⚠️ `kawashigi` 是 episode 94019142，訓練用的 `ladder-top-a` 是 93916293 ——
+#: **同一個玩家、不同局**，動作序列不同，但不是完全獨立的樣本。
+#: `thomas` 是 94019142 的另一個 player，跟 `kawashigi` 同一局；那跟
+#: `ladder-top-a` / `ladder-top-b` 的關係一樣，兩者不是獨立樣本，
+#: 但拿來當 holdout 沒問題（要避免的是拿 `ladder-top-b` 驗收 `ladder-top-a`）。
+HOLDOUT_TEAMS = ("kawashigi", "thomas", "tetsuya", "utkarsh",
+                 "peikopon", "lucien", "recursion", "kostiantyn", "gen1")
 
 
 def load_team_specs(names=HOLDOUT_TEAMS):
@@ -178,7 +190,7 @@ def evaluate_one(x, opponent_spec, games, seed0, workers, swap, name="cand",
 # --------------------------------------------------------------------------
 
 def checkpoint(x, args, opponent_spec, teams):
-    """當代最佳去打 holdout seed + 另外三支隊伍。"""
+    """當代最佳去打 holdout seed + `HOLDOUT_TEAMS` 的每一支。"""
     out = {}
     out["holdout"], out["holdout_dropped"] = evaluate_one(
         x, opponent_spec, args.holdout_seeds, args.holdout_seed0,
@@ -374,6 +386,14 @@ def main(argv=None):
     ap.add_argument("--resume", help="續跑：指向 temp/cma/<時間戳>")
     ap.add_argument("--watch", metavar="STATE_DIR",
                     help="只看某一輪的進度，不跑新的")
+    ap.add_argument("--warm-start", metavar="PATH",
+                    help="用這個 gen_*.pkl 的 es.best.x（或 best.json 的 x）"
+                         "當初始平均，而不是 gen0 的預設參數。"
+                         "🩸 covariance **不**沿用、sigma 用 --sigma0 重設 —— "
+                         "上一輪的 covariance 是在雜訊很大的排序下學出來的，"
+                         "而且它就是那輪過擬合的方向，沿用等於把錯誤帶進來。"
+                         "跟 --resume 不同：--resume 是同一輪接下去，"
+                         "這個是**新的一輪**、只借起點。")
     ap.add_argument("--smoke", action="store_true",
                     help="2 代、popsize 4、2 seed —— 驗存檔續跑走得通")
     ap.add_argument("--log-level", default="0",
@@ -419,14 +439,29 @@ def main(argv=None):
     else:
         state_dir = REPO_ROOT / "temp" / "cma" / time.strftime("%Y%m%d-%H%M%S")
         state_dir.mkdir(parents=True, exist_ok=True)
+        x_init = x0()
+        if args.warm_start:
+            wp = Path(args.warm_start)
+            if wp.suffix == ".pkl":
+                with open(wp, "rb") as f:
+                    x_init = [float(v) for v in pickle.load(f).best.x]
+            else:
+                with open(wp, encoding="utf-8") as f:
+                    x_init = [float(v) for v in json.load(f)["x"]]
+            if len(x_init) != DIM:
+                raise SystemExit(
+                    f"{wp} 的 x 長度是 {len(x_init)}，這一版的維度是 {DIM} —— "
+                    "param_space 的 SEARCH_SPACE 換過了，起點不能用")
+            print(f"暖啟動：起點取自 {wp}（covariance 重來、sigma {args.sigma0}）")
         es = cma.CMAEvolutionStrategy(
-            x0(), args.sigma0,
+            x_init, args.sigma0,
             {"bounds": [0, 1], "popsize": args.popsize, "seed": args.cma_seed,
              "verbose": -9},
         )
         gen0_idx = 0
         with open(state_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump({"argv": vars(args), "dim": DIM,
+                       "warm_start": args.warm_start,
                        "opponent": opponent_spec.get("name"),
                        "teams": [t["name"] for t in teams]},
                       f, ensure_ascii=False, indent=2)
@@ -506,7 +541,7 @@ def main(argv=None):
                 f.write(json.dumps(ck, ensure_ascii=False) + "\n")
             teams_txt = "  ".join(f"{k} {v:,.0f}" for k, v in ck["teams"].items())
             print(f"    checkpoint  train {best_score:>10,.0f}   "
-                  f"holdout {ck['holdout']:>10,.0f}   三隊平均 "
+                  f"holdout {ck['holdout']:>10,.0f}   各隊平均 "
                   f"{ck['teams_mean']:>10,.0f}   ({teams_txt})")
             if prev_holdout is not None and ck["holdout"] <= prev_holdout:
                 print(f"    ⚠️ holdout 沒有進步（上次 {prev_holdout:,.0f}）—— "
