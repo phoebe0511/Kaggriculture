@@ -2,6 +2,7 @@
 
     python -m tools.param_search --seeds 20 --workers 24            # 開新的
     python -m tools.param_search --resume temp/cma/<時間戳>          # 續跑
+    python -m tools.param_search --watch  temp/cma/<時間戳>          # 只看進度
     python -m tools.param_search --smoke                            # 2 代小 smoke
 
 ## 目標函數
@@ -199,6 +200,115 @@ def checkpoint(x, args, opponent_spec, teams):
 # 主迴圈
 # --------------------------------------------------------------------------
 
+def watch(state_dir):
+    """把一輪的進度讀成一張表。跑到一半隨時可以看。
+
+        python -m tools.param_search --watch temp/cma/<時間戳>
+
+    要盯的兩件事印在最後面 —— `gen1` 那一欄跟 train 同不同向（不同向就是在吃
+    replay 的被動性，不會轉移到榜上），以及 `歷來最佳` 有沒有卡住（卡住代表
+    sigma 已經小到 `--seeds` 排不動相鄰候選，2026-08-25 量到 margin 要 54 個）。
+    """
+    d = Path(state_dir)
+    cfg = {}
+    if (d / "config.json").is_file():
+        with open(d / "config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+    a = cfg.get("argv", {})
+    rows = []
+    if (d / "log.jsonl").is_file():
+        with open(d / "log.jsonl", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    seed0, nseed = a.get("seed0") or 0, a.get("seeds") or 0
+    print(f"{d}   對手 {cfg.get('opponent')}   目標 {a.get('objective')}"
+          f"   popsize {a.get('popsize')}   train seed {seed0}~{seed0 + nseed - 1}")
+    if not rows:
+        print("  還沒有完整的一代。")
+        return 0
+    total = a.get("generations", 0)
+    per = statistics.fmean(r["wall_secs"] for r in rows)
+    left = max(0, total - len(rows))
+    print(f"  {len(rows)}/{total} 代   一代平均 {per:.0f} 秒"
+          f"   還剩 {left} 代 ≈ {left * per / 3600:.1f} 小時")
+    if (d / "STOP").exists():
+        print("  ⚠️ STOP 檔還在 —— 當代跑完就會收工")
+
+    print()
+    print(f"## 每一代（最近 15 代；分數是 {a.get('objective')}，越接近 0 越好）")
+    print(f"  {'代':>4}{'最佳':>11}{'平均':>11}{'歷來最佳':>11}"
+          f"{'sigma':>8}{'秒':>6}{'作廢局':>7}")
+    for r in rows[-15:]:
+        print(f"  {r['generation']:>4}{r['best']:>11,.0f}{r['mean']:>11,.0f}"
+              f"{r['best_so_far']:>11,.0f}{r['sigma']:>8.4f}"
+              f"{r['wall_secs']:>6.0f}{r['dropped_games']:>7}")
+
+    # 🩸 歷來最佳卡住 = sigma 已經小到 `--seeds` 排不動相鄰候選。那時候該重開
+    # 一輪把 seeds 拉高，繼續等不會有東西。
+    best = [r["best_so_far"] for r in rows]
+    stale = 0
+    for x in reversed(best[:-1]):
+        if x != best[-1]:
+            break
+        stale += 1
+    if stale >= 20:
+        print(f"  🩸 歷來最佳已經 {stale} 代沒動（sigma {rows[-1]['sigma']:.4f}）"
+              f" —— 考慮重開一輪把 --seeds 從 {a.get('seeds')} 拉高")
+
+    cks = []
+    if (d / "checkpoints.jsonl").is_file():
+        with open(d / "checkpoints.jsonl", encoding="utf-8") as f:
+            cks = [json.loads(line) for line in f if line.strip()]
+    print()
+    print(f"## holdout（每 {a.get('checkpoint_every')} 代）")
+    if not cks:
+        print(f"  還沒到第 {a.get('checkpoint_every')} 代")
+    else:
+        teams = list(cks[-1].get("teams", {}))
+        print(f"  {'代':>4}{'train':>10}{'holdout':>10}{'差':>9}  "
+              + "".join(f"{t:>11}" for t in teams))
+        for c in cks:
+            print(f"  {c['generation']:>4}{c['train']:>10,.0f}"
+                  f"{c['holdout']:>10,.0f}{c['train'] - c['holdout']:>9,.0f}  "
+                  + "".join(f"{c['teams'].get(t, float('nan')):>11,.0f}"
+                            for t in teams))
+        print("  「差」= train − holdout（都是打 "
+              f"{cfg.get('opponent')}，只是 seed 不同）。擴大就是在背 seed")
+        if len(cks) >= 2:
+            g0, g1 = cks[0]["generation"], cks[-1]["generation"]
+            print()
+            print(f"  第 {g0} 代 -> 第 {g1} 代的變化（正 = 變好）：")
+            print(f"    {'train':<12}{cks[-1]['train'] - cks[0]['train']:>+10,.0f}")
+            for t in teams:
+                dt = cks[-1]["teams"].get(t, 0) - cks[0]["teams"].get(t, 0)
+                tag = ""
+                if t == "gen1":
+                    tag = ("  ← 唯一會反應的；跟 train 同向 ✓"
+                           if dt > 0 else
+                           "  ← 唯一會反應的；🩸 train 升它沒升 = 在吃 replay "
+                           "的被動性")
+                print(f"    {t:<12}{dt:>+10,.0f}{tag}")
+
+    bp = d / "best.json"
+    if bp.is_file():
+        from tools.param_space import KEYS, decode, x0
+        with open(bp, encoding="utf-8") as f:
+            b = json.load(f)
+        base, cur = decode(x0()), decode(b["x"])
+        diffs = []
+        for k in KEYS:
+            v0, v1 = base.get(k), cur.get(k)
+            if isinstance(v0, (int, float)) and isinstance(v1, (int, float)) and v0:
+                diffs.append((abs((v1 - v0) / v0), k, v0, v1))
+        diffs.sort(reverse=True)
+        print()
+        print(f"## 目前最佳（第 {b['generation']} 代，{b['score']:,.0f}）"
+              "動最多的 8 個參數")
+        print(f"  {'參數':<28}{'預設':>12}{'現在':>12}{'變化':>9}")
+        for frac, k, v0, v1 in diffs[:8]:
+            print(f"  {k:<28}{v0:>12,.4g}{v1:>12,.4g}{(v1 - v0) / v0:>+9.0%}")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="CMA-ES 最佳化 gen0 的連續參數")
     ap.add_argument("--seeds", type=int, default=20, help="每次評估幾個 train seed")
@@ -224,6 +334,8 @@ def main(argv=None):
     ap.add_argument("--no-batch", action="store_true",
                     help="退回逐候選呼叫 eval.runner.run()，不碰私有 API")
     ap.add_argument("--resume", help="續跑：指向 temp/cma/<時間戳>")
+    ap.add_argument("--watch", metavar="STATE_DIR",
+                    help="只看某一輪的進度，不跑新的")
     ap.add_argument("--smoke", action="store_true",
                     help="2 代、popsize 4、2 seed —— 驗存檔續跑走得通")
     ap.add_argument("--log-level", default="0",
@@ -234,6 +346,9 @@ def main(argv=None):
                          "⚠️ **牆鐘時間沒有變**（一代 221.3 -> 218.6 秒，在雜訊"
                          "範圍內）—— 關掉是為了不要洗版和寫爆磁碟，不是為了快。")
     args = ap.parse_args(argv)
+
+    if args.watch:
+        return watch(args.watch)
 
     # 🩸 一定要在開 Pool 之前設。Windows 是 spawn，child 拿的是這一刻的環境。
     os.environ["KAGGRI_LOG_LEVEL"] = str(args.log_level)
