@@ -12,11 +12,25 @@
 
 1. **基準線非法有多常見、落在哪裡？** 一局 30~60 個決策點，只要中一次舊版就整局
    死掉。修完之後不會死，但頻率仍然是分佈偏移的指標。
-2. **`gain` 夠不夠大？** `gain` = 贏家的 Q 減基準線的 Q。如果它的中位數遠小於
-   **局間配對差的 sd**（2026-08-26 量到 10,704），那 60 個候選的 argmax 就是被
-   長 horizon 的混沌決定的 —— **標籤本質上學不起來**，加權/換編碼/換對手全都
-   沒用。
+2. **`gain` 夠不夠大？** `gain` = 贏家的 Q 減基準線的 Q。
+
+   🩸 **`gain` 恆 ≥ 0，這是恆等式不是量測結果。** 基準線自己就在候選裡
+   （`search/rollout_search.py:114-118` 會強制），取 max 不可能比成員小。
+   而且 `q_t` 就等於下一個決策點的 `q_base`，相鄰項抵消之後
+   **Σgain == 期末現金 − 對照組現金**（2026-08-27 實測 10 局誤差全部是 0）。
+   所以 `search_game` 印的「N/N 局都贏」「Wilcoxon p」也全是恆等式，
+   **不要拿它們當 search 有效的證據**。有內容的是「現金比」那一欄 ——
+   對手會跟著動，那個沒有結構保證。
+
+   `gain` 是**一個決策點的貢獻**，所以不能拿它跟局間配對差的 sd 比
+   （那是整季 30 天累積起來的量）。合理的對照是同一批的
+   「整局差 / 有改的決策點數」。
+
 3. **候選集合健康嗎？** `blocked / n_raw` 太高代表大多數候選根本沒進到評分。
+
+⚠️ 這支**回答不了**「標籤學不學得起來」。`gain` 再大也可能只是 51 個一樣好的
+候選裡挑到「這一局最走運的那條鏈」（winner's curse）。要判定那件事得換一個
+延續策略重評 —— `tools/search_curse_probe.py`。
 
 用法：
 
@@ -38,8 +52,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-#: 2026-08-26 實測：20 局配對差的 sd。`gain` 要跟它比才有意義 ——
-#: 比它小很多的話，「最佳候選」是雜訊選出來的。
+#: 2026-08-26 實測：20 局配對差的 sd。這是**整季**層級的量。
+#: 🩸 不要拿它跟單一決策點的 `gain` 比 —— 2026-08-27 發現那是比錯尺度，
+#: 一步的貢獻當然幾乎都小於 30 天累積起來的抖動（1200 個點只有 11 個過線，
+#: 但那 11/1200 什麼都證明不了）。留著只當「整季尺度」的參照。
 PAIRED_SD = 10704.0
 
 
@@ -116,29 +132,39 @@ def main(argv=None):
                      f"   平均 {statistics.fmean(changed):>10,.0f}")
         for q in (0.5, 0.75, 0.9):
             v = statistics.quantiles(gains, n=100)[int(q * 100) - 1]
-            L.append(f"  第 {q:.0%} 百分位 {v:>10,.0f}"
-                     f"   = 局間 sd 的 {v / PAIRED_SD:.2f} 倍")
-        big = sum(1 for g in gains if g >= PAIRED_SD)
+            L.append(f"  第 {q:.0%} 百分位 {v:>10,.0f}")
         L.append("")
-        L.append(f"  🩸 gain >= 局間 sd（{PAIRED_SD:,.0f}）的有 "
-                 f"{big}/{len(gains)}  {_pct(big, len(gains))}")
-        L.append("     這個比例低 = 多數決策點的「最佳候選」是雜訊選出來的，")
-        L.append("     標籤本質上學不起來（加權/換編碼/換對手都沒用）。")
+        L.append(f"  Σgain = {sum(gains):,.0f}  = 這批「期末現金 − 對照組」的"
+                 "總和（恆等式，2026-08-27 驗過 10 局誤差全 0）")
+        L.append(f"  整季尺度參照：局間配對差 sd {PAIRED_SD:,.0f}"
+                 f"（🩸 那是整季的量，不要拿來跟單點的 gain 比大小）")
 
     # --- 3. 第一名跟第二名的距離 ---
-    pairs = [(r["q"], r["runner_up"]) for r in rows
-             if r.get("runner_up") is not None and r.get("q") is not None]
-    if pairs:
-        margins = [a - b for a, b in pairs]
+    # 🩸 一定要拆成「有改」跟「沒改」。混在一起算的話，沒改的那些點（贏家就是
+    # base，一堆候選跟它打平）會把並列率灌爆 —— 2026-08-27 踩過：全部一起算
+    # 並列 68%，只看有改的其實是 22%。
+    scored = [r for r in rows
+              if r.get("runner_up") is not None and r.get("q") is not None]
+    for name, sub in (("有改（search 換掉 base）",
+                       [r for r in scored if r.get("gain", 0) > 0]),
+                      ("沒改（贏家就是 base）",
+                       [r for r in scored if r.get("gain", 0) == 0])):
+        if not sub:
+            continue
+        margins = [r["q"] - r["runner_up"] for r in sub]
         tie = sum(1 for m in margins if m == 0)
-        L += ["", f"## 第一名 − 第二名，n={len(margins)}",
+        L += ["", f"## 第一名 − 第二名 · {name}，n={len(margins)}",
               f"  中位數 {statistics.median(margins):>10,.0f}"
               f"   平均 {statistics.fmean(margins):>10,.0f}",
-              f"  完全並列 {tie}/{len(margins)}  {_pct(tie, len(margins))}",
-              f"  差距 < 局間 sd 的 "
-              f"{sum(1 for m in margins if m < PAIRED_SD)}/{len(margins)}"
-              f"  {_pct(sum(1 for m in margins if m < PAIRED_SD), len(margins))}",
-              "  🩸 差距小 = argmax 不穩，換一組 rollout 就會選到別的。"]
+              f"  完全並列 {tie}/{len(margins)}  {_pct(tie, len(margins))}"]
+        for q in (0.25, 0.75):
+            v = statistics.quantiles(margins, n=100)[int(q * 100) - 1]
+            L.append(f"  第 {q:.0%} 百分位 {v:>10,.0f}")
+    if scored:
+        L += ["", "  🩸 「有改」那組的差距若跟 gain 本身同一個量級，代表 argmax "
+                  "可能只是挑到走運的鏈。",
+              "     判定要跑 tools/search_curse_probe.py（換延續策略重評），"
+              "這支判不出來。"]
 
     # --- 4. 候選集合健康度 ---
     have = [r for r in rows if r.get("n_raw")]
