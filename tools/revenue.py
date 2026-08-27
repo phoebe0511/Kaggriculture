@@ -46,25 +46,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-@contextlib.contextmanager
-def _silenced():
-    """fd 層級靜音。open_spiel 是 C++ extension，直接寫檔案描述子，
-    `redirect_stdout` 只換 Python 層的 `sys.stdout`，攔不到。"""
-    with open(os.devnull, "w") as devnull:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        saved = os.dup(1), os.dup(2)
-        os.dup2(devnull.fileno(), 1)
-        os.dup2(devnull.fileno(), 2)
-        try:
-            yield
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.dup2(saved[0], 1)
-            os.dup2(saved[1], 2)
-            os.close(saved[0])
-            os.close(saved[1])
+from tools._quiet import silenced as _silenced   # noqa: E402  舊名字留著
 
 
 with _silenced():

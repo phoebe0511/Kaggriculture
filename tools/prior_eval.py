@@ -46,9 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import contracts as C                                    # noqa: E402
-from model.net import KaggricultureNet                   # noqa: E402
-from model.train import Dataset, evaluate                # noqa: E402
+from tools._quiet import silenced                        # noqa: E402
+
+# 🩸 `contracts` / `agents.gen0` 會連帶 import 引擎，而 open_spiel 掃遊戲
+# 清單會噴 336 行到 stderr（fd 層級，`redirect_stderr` 攔不到）。
+with silenced():
+    import contracts as C                                # noqa: E402
+    from model.net import KaggricultureNet               # noqa: E402
+    from model.train import Dataset, evaluate            # noqa: E402
 
 
 def load_model(ckpt_path, device):

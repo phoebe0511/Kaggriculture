@@ -44,7 +44,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kaggle_environments.envs.kaggriculture import kaggriculture as _engine
+from tools._quiet import silenced
+
+with silenced():          # open_spiel 掃遊戲清單會噴 336 行到 stderr
+    from kaggle_environments.envs.kaggriculture import kaggriculture as _engine
 
 from agents.gen0 import DEFAULT_PARAMS
 

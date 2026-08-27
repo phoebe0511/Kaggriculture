@@ -24,7 +24,12 @@ import json
 import time
 from pathlib import Path
 
-from agents.gen0 import DEFAULT_PARAMS
+from tools._quiet import silenced
+
+# 🩸 `contracts` / `agents.gen0` 會連帶 import 引擎，而 open_spiel 掃遊戲
+# 清單會噴 336 行到 stderr（fd 層級，`redirect_stderr` 攔不到）。
+with silenced():
+    from agents.gen0 import DEFAULT_PARAMS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OPPONENT_DIR = REPO_ROOT / "config" / "opponents"
