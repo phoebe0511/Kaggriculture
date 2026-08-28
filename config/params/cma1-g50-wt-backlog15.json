@@ -1,0 +1,83 @@
+{
+  "name": "cma1-g50-wt-backlog15",
+  "entry": "agents.gen0:act",
+  "engine_version": "1.32.7",
+  "frozen": "2026-08-28",
+  "source": "config/params/cma1-g50-wt.json + seed_backlog",
+  "note": "驗收 seed_backlog=1.5 用的變體，跟 config/params/cma1-g50-wt.json 只差這一項。種子存量目標從「流量（替換速率 × seed_buffer_days）」改成「流量和一次性缺口取大的」——「缺口」是 tasks 裡 PLANT 的數量。單局追蹤 seed 4242：day 0 種 5 -> 10 格、day 1 結束 7 -> 11 格。⚠️ 還沒做 640 局驗收。跑 `python -m eval.runner --a config/params/cma1-g50-wt-backlog15.json --ladder config/ladder-top.json --games 80 --log-level 0` 對照基準線。",
+  "params": {
+    "basket": [
+      "MELON",
+      "CARROT",
+      "CARROT",
+      "WHEAT",
+      "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "crop_share": {
+      "STRAWBERRY": 0.4
+    },
+    "max_crop_share": 0.2874364458062525,
+    "oversupply_factor": 2.8930691298383002,
+    "crop_oversupply": {
+      "MELON": 4.0
+    },
+    "max_animal_share": 0.7743249911752783,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 3,
+    "animal": "GOOSE",
+    "max_hands": 11,
+    "hands_per_quadrant": 4,
+    "hire_margin": 1.0497741916829,
+    "hire_per_turn": 4,
+    "wheat_carry": 9,
+    "wheat_reserve_days": 2,
+    "use_fertilizer": true,
+    "seed_buffer_days": 2,
+    "cash_reserve_days": 0,
+    "sell_chunk": 20,
+    "sell_price_frac": 0.44156676275478285,
+    "shed_force_sell": 0.6517888746109459,
+    "liquidate_days_left": 3,
+    "animal_reserve": 298,
+    "animal_spend_frac": 0.7614473584950167,
+    "buy_land": true,
+    "land_first_min_day": 5,
+    "max_quadrants": 3,
+    "land_min_days_left": 5,
+    "n_structures": 12,
+    "opponent_supply_weight": 0.35940589406834345,
+    "animal_demand_share_floor": 0.2504081850740226,
+    "feed_crop_bootstrap_share": 0.0772708354663828,
+    "feed_crop_demand_weight": 0.39930217486156255,
+    "strawberry_high_demand": 19,
+    "strawberry_high_share": 0.6399926861305701,
+    "early_coop_limit": 4,
+    "early_coop_until_day": 21,
+    "sell_before_spending": false,
+    "fertilizer_roi_margin": 1.2491323653413258,
+    "fertilize_one_time": false,
+    "late_crew_caps": [
+      [
+        2,
+        10
+      ],
+      [
+        1,
+        8
+      ]
+    ],
+    "optimal_assignment": true,
+    "daytime_return_min_value": 138,
+    "daytime_return_max_distance": 9,
+    "avoid_last_hour_planting": true,
+    "sell_same_turn_returns": true,
+    "tiles_per_unit": 6,
+    "water_on_demand": true,
+    "whole_turn_assignment": true,
+    "priority_step_cost": 1,
+    "seed_backlog": 1.5
+  }
+}

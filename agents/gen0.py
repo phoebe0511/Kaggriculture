@@ -187,6 +187,10 @@ DEFAULT_PARAMS = {
     # 種子存幾天份。目標量 = 該作物每天要種幾顆 × 這個天數，不是固定顆數 ——
     # 固定 6 顆的話光 STRAWBERRY($100) + MELON($80) 開局就要 $1,080。
     "seed_buffer_days": 2,
+    # ⚠️ `seed_backlog` 是實驗性的開關，**故意不放進這張表** ——
+    # `tests/test_frozen_reference.py` 守著「`ref-v11` 等於這張表的完整展開」，
+    # 加預設值會讓那個凍結參照漂掉。用 `params.get()` 讀，說明在 `_market()`
+    # 買種子那一段。
     # 現金底線 = 維持現有規模的日常開銷（雇工 + 飼料 + 種子）× 這個天數。
     # 低於底線就不買動物、不買地。
     "cash_reserve_days": 3,
@@ -2268,6 +2272,29 @@ def _market(
     #    存量目標照**種植速率**算，不是每種都固定 6 顆。長週期的作物種得慢，
     #    囤 6 顆 STRAWBERRY（$600）是把現金鎖死在倉庫裡好幾天。
     basket = params["basket"]
+    # 🩸 `seed_buffer_days` 那個目標是**流量**（穩態的替換速率），開局沒有
+    # 穩態可言。2026-08-28 追蹤 seed 4242 的 day 0（`cma1-g50-wt`）：13 格全空、
+    # 4 個工人都在，種子存量目標卻只有 5 顆（WHEAT 1 / CARROT 2 /
+    # STRAWBERRY 1 / MELON 1），整天只種 5 格。算式是
+    #
+    #     per_day = 13 × 0.25 / 4 = 0.81   ->  int(0.81 × 2 + 0.5) = 2
+    #
+    # 對 CARROT 的替換速率是對的，但 **day 0 有 13 格的一次性缺口**，那個缺口
+    # 不在替換速率裡。對手 day 0 種 19 格（journal §22）。
+    #
+    # `seed_backlog` 把「現在有幾格等著種」也算進目標：
+    #
+    #     target = max(流量目標, 等著種的格數 × 該作物佔比 × seed_backlog)
+    #
+    # 等著種的格數直接數 `tasks` 裡的 PLANT —— 需求本來就算好了。
+    # 0（不給就是 0）完全維持舊行為。**故意不進 `DEFAULT_PARAMS`**，理由見
+    # 那裡的註解。
+    #
+    # 單局追蹤（seed 4242）：day 0 種 5 -> 10 格，day 1 結束 7 -> 11 格。
+    # ⚠️ **只有一局，還沒做 640 局驗收**（2026-08-28 夜，機器在跑 PPO）。
+    backlog_factor = float(params.get("seed_backlog", 0.0) or 0.0)
+    plant_demand = (sum(1 for t in tasks if t[1] == "PLANT")
+                    if backlog_factor > 0 else 0)
     if not liquidating:
         for crop in sorted(set(basket)):
             if not _crop_can_harvest(crop, days_left):
@@ -2275,6 +2302,11 @@ def _market(
             share = basket.count(crop) / len(basket)
             per_day = n_crop_tiles * share / crop_cycle(crop)[0]
             target = max(1, int(per_day * params["seed_buffer_days"] + 0.5))
+            if plant_demand:
+                # 流量目標和一次性缺口取大的，不是相加 —— 相加會在穩態時
+                # 一直多囤一份。
+                target = max(target, int(plant_demand * share
+                                         * backlog_factor + 0.5))
             need = target - private["seeds"].get(crop, 0)
             if need <= 0:
                 continue
