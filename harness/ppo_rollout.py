@@ -11,9 +11,16 @@ policy **自己**的動作和機率，PPO 要算 importance ratio 用。
 `gen0.step_toward`。理由是網路不用重新學路徑 —— `contracts.py` 的 v3 標籤
 就是這個形狀，`legal_target_mask` / `legal_unit_mask` 都現成。
 
-聯合動作是 13 個 unit 各自獨立取樣的乘積，**不碰 44^13**：
+聯合動作是 13 個 unit 各自獨立取樣的乘積，再乘上 market 那一份，**不碰
+44^13**：
 
     logprob(joint) = Σ_unit [ logprob(target_u) + logprob(op_u) ]
+                   + logprob(market)
+
+🩸 market 一定要一起取樣。`contracts.decode_market_orders` 本身是門檻 +
+argmax，走那條路 HIRE / BUY_LAND / BUY_SEED / SELL 全部沒有 logprob，
+policy gradient 到不了 —— PPO 就只能學「工人走去哪、到了做什麼」，
+學不到雇工、買地、種什麼。
 
 ## 吞吐量（2026-08-28 實測）
 
@@ -28,6 +35,7 @@ server。
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -38,6 +46,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# 🩸 `agents.gen0` 在 import 時就把 LOG_LEVEL 讀成常數（gen0.py:66），預設 3
+# 會把每個決策細節寫到 stderr。當對手跑的時候那是每局 720 次寫入。
+# 一定要在 import 之前設，之後改沒有用。
+os.environ.setdefault("KAGGRI_LOG_LEVEL", "0")
+
 from tools._quiet import silenced                      # noqa: E402
 
 with silenced():
@@ -46,6 +59,8 @@ with silenced():
     from kaggle_environments import make
     from agents.gen0 import step_toward
     from model.net import KaggricultureNet
+    from model.ppo import (TrajectoryWriter, market_logp_entropy,
+                           masked_log_softmax, sample_market)
 
 
 def build_net(width=64, blocks=4, unit_hidden=256):
@@ -58,6 +73,19 @@ def build_net(width=64, blocks=4, unit_hidden=256):
         width=width, unit_hidden=unit_hidden, n_blocks=blocks)
 
 
+def load_opponent(name):
+    """用 `eval/runner.py` 的載入器做出一個 `(obs, config) -> action`。
+
+    吃得下 `config/params/cma1-g50-wt.json` 這種凍結的 spec（會自動帶
+    `_replace_defaults`），也吃得下 `gen0`、`config/opponents/*.json`。
+    """
+    from eval.runner import build_agent, load_spec       # noqa: PLC0415
+    fn = build_agent(load_spec(name))
+    if isinstance(fn, str):
+        raise SystemExit(f"{name} 是引擎內建的（{fn}），這裡要的是 callable")
+    return fn
+
+
 def masked_sample(logits, mask):
     """一次對所有 unit 取樣。`logits` / `mask` 都是 `[n, K]`。
 
@@ -65,14 +93,11 @@ def masked_sample(logits, mask):
     逐 unit 搬回主機是 rollout 的主要開銷（2026-08-28 實測：逐 unit 迴圈讓每步
     從 2.9 ms 變成 4.1 ms）。
 
-    🩸 mask 整列全 False 的 unit 是存在的（站在 shed 上、手上沒東西）。
-    那一列退回「全部合法」而不是拋錯 —— 引擎對非法動作是靜默忽略，
-    取樣到非法的等於 PASS。
+    mask 的處理（含整列全 False 的 unit）交給 `model.ppo.masked_log_softmax`
+    —— update 重算 logprob 時走的是同一個函式，兩邊分歧會讓 ratio 一開始就
+    不是 1。
     """
-    m = mask.bool()
-    dead = ~m.any(dim=-1, keepdim=True)
-    m = m | dead                       # 全 False 的那幾列變成全 True
-    logp = torch.log_softmax(logits.masked_fill(~m, -1e9), dim=-1)
+    logp = masked_log_softmax(logits, mask)
     idx = torch.multinomial(logp.exp(), 1).squeeze(-1)
     return idx, logp.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 
@@ -103,9 +128,15 @@ class TorchPolicy:
         tgt_mask = torch.as_tensor(C.legal_target_mask(obs, config), device=dev)
         board = len(obs["farms"][obs["player"]]["tiles"])
 
+        mk_legal = torch.as_tensor(
+            C.legal_market_mask(obs, config)[None], device=dev)
+
         t_idx, t_lp = masked_sample(tgt_logits, tgt_mask)
         o_idx, o_lp = masked_sample(op_logits, op_mask)
-        logps = float((t_lp + o_lp).sum().item())
+        mk_pres, mk_q = sample_market(mk_present, mk_qty, mk_legal)
+        mk_lp, _ = market_logp_entropy(
+            mk_present, mk_qty, mk_legal, mk_pres, mk_q)
+        logps = float((t_lp + o_lp).sum().item()) + float(mk_lp[0].item())
         t_np = t_idx.cpu().numpy()          # 一次搬回主機，不是逐 unit
         o_np = o_idx.cpu().numpy()
 
@@ -118,9 +149,10 @@ class TorchPolicy:
                 units.append(step_toward(cur, (tx, ty)))
             else:
                 units.append(C.decode_unit(int(o_np[i]), None))
+        qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
+        qty_onehot[np.arange(C.N_MARKET_OPS), mk_q[0].cpu().numpy()] = 1.0
         market = C.decode_market_orders(
-            mk_present[0].cpu().numpy(),
-            mk_qty[0].cpu().numpy().reshape(C.N_MARKET_OPS, C.N_MARKET_QTY),
+            np.where(mk_pres[0].cpu().numpy(), 1.0, -1.0), qty_onehot,
             obs, config)
         action = {"farmer": units[0], "hands": units[1:], "market": market}
         return action, logps, float(value[0].item())
@@ -164,16 +196,41 @@ def main(argv=None):
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--envs", type=int, default=0,
                     help="用跨 env 批次跑幾個 env（0 = 走單 env 的舊路徑）")
+    ap.add_argument("--collect", action="store_true",
+                    help="順便收軌跡，印出緩衝區的大小與 reward 分佈")
+    ap.add_argument("--opponent", default="",
+                    help="固定對手的 spec（空字串 = 自對局）")
+    ap.add_argument("--episode-steps", type=int, default=0)
     args = ap.parse_args(argv)
     if args.envs:
         net = build_net(args.width, args.blocks)
-        vec = VecRollout(net, n_envs=args.envs, seed0=5000, device=args.device)
+        vec = VecRollout(net, n_envs=args.envs, seed0=5000, device=args.device,
+                         episode_steps=args.episode_steps or None,
+                         opponent=load_opponent(args.opponent)
+                         if args.opponent else None)
         t0 = time.perf_counter()
-        steps, cash = vec.run()
+        steps, cash, trajs = vec.run(collect=args.collect)
         dt = time.perf_counter() - t0
         print(f"  {args.envs} 個 env 平行   {dt:>6.1f} 秒   "
               f"{dt/args.envs:>6.2f} 秒/局   {steps/dt:>7.0f} 個決策/秒   "
               f"device={args.device}")
+        if args.collect:
+            from model.ppo import RolloutBatch, step_rewards
+            mb = sum(t.nbytes() for t in trajs) / 1e6
+            batch = RolloutBatch(trajs)
+            r = np.concatenate([step_rewards(t.cash[:, 0], t.cash[:, 1])
+                                for t in trajs])
+            print(f"  軌跡 {len(trajs)} 條   {len(batch)} 步   "
+                  f"{len(batch.unit_step)} 個 unit   {mb:.0f} MB")
+            print(f"  reward  mean {r.mean():+.4f}  std {r.std():.4f}  "
+                  f"非零 {100*np.mean(r != 0):.1f}%    "
+                  f"adv std {batch.adv.std():.3f}  ret 範圍 "
+                  f"[{batch.ret.min():+.2f}, {batch.ret.max():+.2f}]")
+            pairs = vec.our_cash(cash)
+            wins = sum(1 for a, b in pairs if a > b)
+            print(f"  期末    我方 {np.mean([a for a, _ in pairs]):>9,.0f}   "
+                  f"對手 {np.mean([b for _, b in pairs]):>9,.0f}   "
+                  f"勝 {wins}/{len(pairs)}")
         return 0
     bench(args.games, args.width, args.blocks, args.device)
     return 0
@@ -201,19 +258,28 @@ class VecRollout:
     （雇了幾個人會變），所以不能用固定形狀。
     """
 
-    def __init__(self, net, n_envs=32, seed0=0, device="cpu"):
+    def __init__(self, net, n_envs=32, seed0=0, device="cpu",
+                 episode_steps=None, opponent=None):
         self.net = net.to(device).eval()
         self.device = device
         self.n_envs = n_envs
         self.seed0 = seed0
+        self.episode_steps = episode_steps
+        #: `None` = 自對局（兩邊都是 net，兩條軌跡都收）。
+        #: 給 callable `(obs, config) -> action` 就是打固定對手，只收我方那一條。
+        self.opponent = opponent
+        #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
+        self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
 
     def reset(self):
         self.envs = []
         for i in range(self.n_envs):
+            cfg = {"seed": self.seed0 + i}
+            if self.episode_steps:
+                cfg["episodeSteps"] = self.episode_steps
             with silenced():
-                env = make("kaggriculture",
-                           configuration={"seed": self.seed0 + i}, debug=False)
+                env = make("kaggriculture", configuration=cfg, debug=False)
                 env.reset(2)
             self.envs.append(env)
 
@@ -232,9 +298,16 @@ class VecRollout:
                 items.append((ei, p, obs, env.configuration))
         return items
 
+    def _ours(self, ei, p):
+        return self.opponent is None or p == self.seats[ei]
+
     @torch.no_grad()
-    def _policy_batch(self, items):
-        """一次前向。回傳每個 item 的 (action, logprob, value)。"""
+    def _policy_batch(self, items, collect=False):
+        """一次前向。回傳每個 item 的 `(env_index, player, action, rec)`。
+
+        `rec` 是這一步要存進軌跡的東西（`collect=False` 時只有 logp/value，
+        沒有觀測）—— 觀測佔 98% 的記憶體，只量吞吐量時不留。
+        """
         dev = self.device
         # 🩸 `C.encode` 是 0.31 ms/次 —— 兩個回傳值要一次拿，不要呼叫兩次。
         enc = [C.encode(o, c) for _, _, o, c in items]
@@ -255,19 +328,30 @@ class VecRollout:
             torch.as_tensor(ub, device=dev), torch.as_tensor(up, device=dev),
             torch.as_tensor(uf, device=dev))
 
-        op_mask = torch.as_tensor(
-            np.concatenate([C.legal_unit_mask(o, c) for _, _, o, c in items]),
-            device=dev)
-        tgt_mask = torch.as_tensor(
-            np.concatenate([C.legal_target_mask(o, c) for _, _, o, c in items]),
-            device=dev)
+        op_mask_np = np.concatenate(
+            [C.legal_unit_mask(o, c) for _, _, o, c in items])
+        tgt_mask_np = np.concatenate(
+            [C.legal_target_mask(o, c) for _, _, o, c in items])
+        op_mask = torch.as_tensor(op_mask_np, device=dev)
+        tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
         t_idx, t_lp = masked_sample(tgt_logits, tgt_mask)
         o_idx, o_lp = masked_sample(op_logits, op_mask)
+
+        # market 也要取樣，不能用 `decode_market_orders` 的門檻 + argmax ——
+        # 那條路沒有 logprob，HIRE / BUY_LAND / BUY_SEED 就拿不到 gradient。
+        mk_legal_np = np.stack(
+            [C.legal_market_mask(o, c) for _, _, o, c in items])
+        mk_legal = torch.as_tensor(mk_legal_np, device=dev)
+        mk_pres_act, mk_qty_act = sample_market(mk_present, mk_qty, mk_legal)
+        mk_lp, _mk_ent = market_logp_entropy(
+            mk_present, mk_qty, mk_legal, mk_pres_act, mk_qty_act)
 
         t_np, o_np = t_idx.cpu().numpy(), o_idx.cpu().numpy()
         lp_np = (t_lp + o_lp).cpu().numpy()
         v_np = value.cpu().numpy()
-        mp_np, mq_np = mk_present.cpu().numpy(), mk_qty.cpu().numpy()
+        mk_lp_np = mk_lp.cpu().numpy()
+        mp_np = mk_pres_act.cpu().numpy()
+        mq_np = mk_qty_act.cpu().numpy()
         ub_np = ub
 
         out = []
@@ -283,31 +367,81 @@ class VecRollout:
                     units.append(step_toward(cur, (tx, ty)))
                 else:
                     units.append(C.decode_unit(int(oi), None))
-            market = C.decode_market_orders(
-                mp_np[bi], mq_np[bi].reshape(C.N_MARKET_OPS, C.N_MARKET_QTY), o, c)
+            # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
+            # clamp、HIRE 要送 n 筆這些規則都在那裡面，重寫一份會走鐘。
+            pres_logit = np.where(mp_np[bi], 1.0, -1.0)
+            qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
+            qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
+            market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
             action = {"farmer": units[0], "hands": units[1:], "market": market}
-            out.append((ei, p, action, float(lp_np[sel].sum()), float(v_np[bi])))
+            rec = {"logp": float(lp_np[sel].sum()) + float(mk_lp_np[bi]),
+                   "value": float(v_np[bi])}
+            if collect:
+                # 🩸 每個切片都要 `.copy()`：`sel` 是布林索引所以本來就是複本，
+                # 但 `sp[bi]` 是 view，整批 `sp` 會被下一步蓋掉。
+                rec.update(
+                    spatial=sp[bi].copy(), scalar=sc[bi].copy(),
+                    unit_pos=pos.copy(), unit_feats=feat_list[bi].copy(),
+                    op_mask=op_mask_np[sel], tgt_mask=tgt_mask_np[sel],
+                    op_idx=o_np[sel].astype(np.int64),
+                    tgt_idx=t_np[sel].astype(np.int64),
+                    mk_legal=mk_legal_np[bi], mk_present=mp_np[bi],
+                    mk_qty=mq_np[bi].astype(np.int64))
+            out.append((ei, p, action, rec))
         return out
 
-    def run(self, max_steps=720):
-        """跑到全部結束。回傳 (走了幾步, 每個 env 的期末現金)。"""
+    def run(self, max_steps=720, collect=False):
+        """跑到全部結束。
+
+        回傳 `(走了幾步, 每個 env 的期末現金, 軌跡 list)`。
+        `collect=False` 時軌跡是空的 —— 只量吞吐量時不留觀測。
+        """
         self.reset()
         steps = 0
+        # 每個由 net 控制的 (env, player) 一條軌跡。自對局時同一份權重下兩邊，
+        # 所以兩條都能用來訓練，樣本數直接翻倍。
+        writers = {(ei, p): TrajectoryWriter()
+                   for ei in range(self.n_envs) for p in range(2)
+                   if self._ours(ei, p)}
         for _ in range(max_steps):
-            items = self._gather()
-            if not items:
+            active = self._gather()
+            if not active:
                 break
-            decided = self._policy_batch(items)
-            acts = {ei: [{}, {}] for ei, _, _, _, _ in decided}
-            for ei, p, action, _lp, _v in decided:
+            items = [it for it in active if self._ours(it[0], it[1])]
+            decided = self._policy_batch(items, collect=collect) if items else []
+            acts = {ei: [{}, {}] for ei, _, _, _ in active}
+            for ei, p, action, _rec in decided:
                 acts[ei][p] = action
+            for ei, p, obs, cfg in active:
+                if not self._ours(ei, p):
+                    acts[ei][p] = self.opponent(obs, cfg)
+            if collect:
+                for (ei, p, obs, _c), (_ei, _p, _a, rec) in zip(items, decided):
+                    # 🩸 期中的 `steps[-1][p]["reward"]` 是 0 —— 引擎只在 DONE
+                    # 那一步才填 reward（kaggriculture.py:963）。現金要從
+                    # observation 的 farms 拿。
+                    farms = obs["farms"]
+                    writers[(ei, p)].add(
+                        rec, float(farms[p]["money"]),
+                        float(farms[1 - p]["money"]))
             # 引擎自己不印東西，不用每一步都 dup2 —— `silenced()` 一次要 4 個
             # syscall，720 步 × K 個 env 加起來很可觀。
             for ei, pair in acts.items():
                 self.envs[ei].step(pair)
             steps += len(decided)
         cash = [[s["reward"] for s in e.steps[-1]] for e in self.envs]
-        return steps, cash
+        trajs = []
+        if collect:
+            for (ei, p), w in writers.items():
+                tr = w.finish(cash[ei][p], cash[ei][1 - p])
+                if tr is not None:
+                    trajs.append(tr)
+        return steps, cash, trajs
+
+    def our_cash(self, cash):
+        """把 `run()` 回傳的現金拆成 (我方, 對手) —— 打固定對手時才有意義。"""
+        return [(c[self.seats[ei]], c[1 - self.seats[ei]])
+                for ei, c in enumerate(cash)]
 
 
 if __name__ == "__main__":
