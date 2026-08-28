@@ -449,6 +449,34 @@ def partial_units(crop, days):
     return min(cd["max_yield"], 1 + max(0, age - ws + 1))
 
 
+#: `crop_cycle` 的一輪產量跟實測差很多。2026-08-28 量的（`yield_truth.py`，
+#: cma1-g50 對 `pass`、seeds 2000-2002，只算我方，兩種方法交叉驗證過）：
+#:
+#:     作物        實測每次種植   crop_cycle   實際/模型
+#:     STRAWBERRY      7.39           4          1.85
+#:     MELON           5.60           6          0.93
+#:     CARROT          1.77           3          0.59
+#:     TOMATO          2.24           4          0.56
+#:     WHEAT           1.94           4          0.49
+#:
+#: `crop_cycle` 的 docstring 寫「每天澆水、**不施肥**」，但我們一局施肥 74 次，
+#: 而引擎的施肥是產出 +2 而不是 +1（`kaggriculture.py:442` / `:800`）。
+#: ongoing 作物（STRAWBERRY / TOMATO）因此被低估，一次性作物則因為收不完而
+#: 被高估。
+#:
+#: ⚠️ 這是**對我們自己的執行**校正，不是作物的理論上限 —— 同一局 recursion 的
+#: WHEAT 是 3.62（我們 1.94）。排程改了就要重量。
+#: 空 dict = 不校正（原行為）。`_YIELD_MEASURED` 是量到的那組，要用得自己設。
+_YIELD_MEASURED = {
+    "STRAWBERRY": 1.85,
+    "MELON": 0.93,
+    "CARROT": 0.59,
+    "TOMATO": 0.56,
+    "WHEAT": 0.49,
+}
+_YIELD_CALIBRATION = {}
+
+
 def yield_per_tile_day(crop, days_left):
     """一格這種作物，從現在到賽季結束平均每天產幾個。
 
@@ -458,7 +486,8 @@ def yield_per_tile_day(crop, days_left):
         return 0.0
     cycle_days, cycle_units = crop_cycle(crop)
     full, rem = divmod(days_left, cycle_days)
-    return (full * cycle_units + partial_units(crop, rem)) / days_left
+    raw = (full * cycle_units + partial_units(crop, rem)) / days_left
+    return raw * _YIELD_CALIBRATION.get(crop, 1.0)
 
 
 def _crop_can_harvest(crop, days_left, margin=0):
@@ -611,7 +640,8 @@ _BASKET_DEBUG = []
 
 @functools.lru_cache(maxsize=8192)
 def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_share,
-                 params_oversupply=1.5, per_crop=(), per_share=()):
+                 params_oversupply=1.5, per_crop=(), per_share=(),
+                 early_days=0, season_days=30):
     """逐格分配：每次把下一格給「邊際價值最高」的作物。
 
     `demand_key` 是 (作物, 該作物的日消耗量) 的 tuple，來自這一局實際開出來的
@@ -660,7 +690,16 @@ def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_sha
         demand_cap[c] = max(1, int(demand.get(c, 0.0) / ypd[c] * over + 0.5))
 
     def marginal(crop):
-        """再給這個作物一格，那一格每天值多少錢。"""
+        """再給這個作物一格，那一格每天值多少錢。
+
+        `early_cash_days` 打開時，賽季前段對「要很久才有第一次收成」的作物打
+        折 —— 前期現金會複利（買地、雇人、買動物都要錢），這個模型原本完全
+        沒有現金流概念。
+
+        2026-08-28 實測動機：day 0 我們種 6 格（STRAWBERRY / MELON 為主，
+        `first_yield_day` 都是 10），kostiantyn 種 19 格 WHEAT
+        （`first_yield_day` 2），day 5 賣 17 個變現。day 6 現金 234 對 1,740。
+        """
         if ypd[crop] <= 0:          # 剩下的天數連一次收成都排不進去
             return 0.0
         if alloc[crop] >= min(cap[crop], demand_cap[crop]):
@@ -668,7 +707,11 @@ def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_sha
         produced = (alloc[crop] + 1) * ypd[crop] * days_left
         absorbed = demand.get(crop, 0.0) * days_left
         excess = max(0.0, produced - absorbed)
-        return ypd[crop] * _avg_sell_price(crop, inv0[crop], int(excess))
+        value = ypd[crop] * _avg_sell_price(crop, inv0[crop], int(excess))
+        if early_days > 0 and days_left > season_days - early_days:
+            # 第一次收成愈晚，前期折得愈凶。first_yield_day 2 -> 1.0，10 -> 0.2
+            value *= 2.0 / max(2.0, float(CROPS[crop]["first_yield_day"]))
+        return value
 
     for _ in range(n_crop_tiles):
         best = max(CROPS, key=lambda c: (marginal(c), c))
@@ -953,7 +996,10 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
                         params["fallback_crop"], params["max_crop_share"],
                         params["oversupply_factor"],
                         tuple(sorted(params["crop_oversupply"].items())),
-                        tuple(sorted(crop_shares.items())))
+                        tuple(sorted(crop_shares.items())),
+                        int(params.get("early_cash_days", 0)),
+                        int((config or {}).get('episodeSteps', 720))
+                        // max(1, int((config or {}).get('turnsPerDay', 24))))
 
 
 def _add_internal_feed_demand(demand, committed_animals, params):
