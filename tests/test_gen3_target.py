@@ -113,3 +113,54 @@ def test_masked_argmax_matches_the_training_side():
     want = masked_log_softmax(torch.as_tensor(logits),
                               torch.as_tensor(mask)).argmax(-1).numpy()
     assert (masked_argmax(logits, mask) == want).all()
+
+
+def test_net_profile_packages_everything_gen3_target_needs(tmp_path):
+    """`--profile net` 打出來的包要能自己站住。
+
+    🩸 2026-08-28 規則式那條線就是漏了 `contracts.py`，上 Kaggle 每回合
+    `ModuleNotFoundError`，而本機 640 局零錯誤（`eval/runner.py` 在 repo root
+    底下跑）。網路版多了 `gen3_target.py` + `npz_forward.py`，同一個坑要再驗一次。
+
+    判斷方式是「這個名字在 repo root 有沒有對應的檔案」，**不是 `find_spec`**
+    —— 跑測試時 repo root 在 `sys.path` 上，什麼都找得到。
+    """
+    import ast
+    from pathlib import Path
+
+    from serving.build_submission import PROFILES, copy_files
+
+    repo_root = Path(__file__).resolve().parents[1]
+    profile = PROFILES["net"]
+    # ⚠️ 一定要給 tmp_path —— `copy_files` 會 rmtree 目標目錄。
+    dest = copy_files(tmp_path / "sub", weights=None,
+                      file_map=profile["files"])
+    flats = list(profile["files"].values())
+    packaged = {f.rsplit(".", 1)[0] for f in flats}
+    assert "gen3_target" in packaged and "npz_forward" in packaged
+    assert "contracts" in packaged, "少了 contracts.py，上場每回合都會死"
+
+    def is_repo_module(root):
+        return ((repo_root / f"{root}.py").is_file()
+                or (repo_root / root / "__init__.py").is_file())
+
+    offenders = []
+    for flat in flats:
+        tree = ast.parse((dest / flat).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(node, ast.ImportFrom) and node.level:
+                offenders.append(f"{flat}:{node.lineno} 相對 import")
+                continue
+            names = ([node.module] if isinstance(node, ast.ImportFrom)
+                     else [a.name for a in node.names])
+            for name in names:
+                root = (name or "").split(".")[0]
+                if root == "torch":
+                    offenders.append(f"{flat}:{node.lineno} import torch")
+                elif root and root not in packaged and is_repo_module(root):
+                    offenders.append(
+                        f"{flat}:{node.lineno} import {root} —— repo 裡有，"
+                        f"但沒打包")
+    assert not offenders, "\n  ".join(["net profile 的包不完整："] + offenders)

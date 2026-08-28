@@ -78,6 +78,32 @@ FILE_MAP = {
     "agents/gen0.py": "gen0.py",
 }
 
+#: 兩種出貨形狀。`gen0` 是現在上榜的規則式那條線；`net` 是 PPO 那條
+#: （`agents/gen3_target.py` + 純 numpy 前向 + 一份 `.npz`）。
+#:
+#: 🩸 `net` 仍然要帶 `agents/gen0.py` —— `gen3_target` 的走路用
+#: `gen0.step_toward`，那是 `CLAUDE.md` 的硬規則（不准另抄一份）。
+#: 也仍然要 `contracts.py`（2026-08-28 上榜炸過一次）。
+#:
+#: ⚠️ **`net` 還缺一支自己的 `main.py`。** 現在 repo 根目錄那支 import 的是
+#: `gen0`，`--profile net` 會原樣打包它 —— 打出來的包會跑規則式，不是網路。
+#: 真的要出網路版時得像 `submission/cma1-g50-wt/main.py` 那樣手寫一支
+#: （那邊內嵌 `PARAMS`，這邊要 import `gen3_target`），再用
+#: `python -m tools.submission_check <目錄>` 從 repo 外驗一次。
+PROFILES = {
+    "gen0": {"files": FILE_MAP, "weights": None},
+    "net": {
+        "files": {
+            "main.py": "main.py",
+            "contracts.py": "contracts.py",
+            "agents/gen0.py": "gen0.py",
+            "agents/gen3_target.py": "gen3_target.py",
+            "serving/npz_forward.py": "npz_forward.py",
+        },
+        "weights": "submission/weights.npz",
+    },
+}
+
 #: 權重。二進位，不做 import 改寫，檔名固定成 `weights.npz` ——
 #: `agents/gen2_model.py` 沒有 `KAGGRI_WEIGHTS` 時就找自己旁邊這一個。
 #:
@@ -93,7 +119,7 @@ FILES = tuple(FILE_MAP.values()) + ((WEIGHTS_NAME,) if DEFAULT_WEIGHTS else ())
 #: ⚠️ 那是**本機**的證據，不是 Kaggle runtime 的。新增名字時要重新確認。
 VERIFIED_FREE_NAMES = (
     "main", "contracts", "gen0", "gen2_model",
-    "npz_forward", "action_validation",
+    "npz_forward", "action_validation", "gen3_target",
 )
 
 # 攤平之後 package 前綴要拿掉。用 regex 而不是純字串取代，是為了不去動到
@@ -117,13 +143,14 @@ def _flatten(source):
     return text, total
 
 
-def build(output=OUTPUT, dest=SUBMISSION_DIR):
+def build(output=OUTPUT, dest=SUBMISSION_DIR, files=None):
     """把 `dest` 底下攤平好的檔案打成 tar.gz。**先跑過 `copy_files()`。**"""
+    files = tuple(files) if files is not None else FILES
     output = Path(output)
     dest = Path(dest)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(output, "w:gz") as archive:
-        for flat in FILES:
+        for flat in files:
             source = dest / flat
             if not source.is_file():
                 raise FileNotFoundError(f"{source}（先跑 copy_files()）")
@@ -131,7 +158,7 @@ def build(output=OUTPUT, dest=SUBMISSION_DIR):
 
     with tarfile.open(output, "r:gz") as archive:
         names = archive.getnames()
-    if names != list(FILES):
+    if names != list(files):
         raise AssertionError(f"submission 內容不符: {names!r}")
     if output.stat().st_size > SIZE_LIMIT:
         raise AssertionError(f"submission 超過 100 MiB: {output.stat().st_size}")
@@ -146,7 +173,7 @@ def build(output=OUTPUT, dest=SUBMISSION_DIR):
     return output
 
 
-def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
+def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS, file_map=None):
     """把 `FILE_MAP` 的檔案攤平複製到 `dest`，並改寫 package import。
 
     整個 `dest` 先砍掉重建 —— 不清的話，上一版的 `agents/` 子目錄會留在
@@ -154,8 +181,9 @@ def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
 
     ⚠️ **`dest` 會被 `rmtree`。** 跑之前先看裡面有沒有別人放的備份。
     """
+    file_map = FILE_MAP if file_map is None else file_map
     dest = Path(dest)
-    for relative in FILE_MAP:
+    for relative in file_map:
         if not (REPO_ROOT / relative).is_file():
             raise FileNotFoundError(REPO_ROOT / relative)
     weights_src = (REPO_ROOT / weights) if weights else None
@@ -167,7 +195,7 @@ def copy_files(dest=SUBMISSION_DIR, weights=DEFAULT_WEIGHTS):
     dest.mkdir(parents=True)
 
     copied = []
-    for relative, flat in FILE_MAP.items():
+    for relative, flat in file_map.items():
         text, rewrites = _flatten(REPO_ROOT / relative)
         target = dest / flat
         target.write_text(text, encoding="utf-8", newline="\n")
@@ -200,13 +228,21 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tar", action="store_true",
                     help="另外產出 submission.tar.gz")
-    ap.add_argument("--weights", default=DEFAULT_WEIGHTS,
+    ap.add_argument("--weights", default=None,
                     help="要打包的 .npz。ENCODER_VERSION 不符的話 agent 第一回合"
-                         "就會 SystemExit —— 所以換 schema 一定要一起換這個")
+                         "就會 SystemExit —— 所以換 schema 一定要一起換這個。"
+                         "不給就用 profile 的預設")
+    ap.add_argument("--profile", default="gen0", choices=sorted(PROFILES),
+                    help="gen0 = 現在上榜的規則式；net = PPO 那條"
+                         "（gen3_target + npz_forward + weights.npz）")
     args = ap.parse_args(argv)
-    copy_files(weights=args.weights)
+    profile = PROFILES[args.profile]
+    weights = args.weights if args.weights is not None else profile["weights"]
+    copy_files(weights=weights, file_map=profile["files"])
     if args.tar:
-        build()
+        files = tuple(profile["files"].values()) + (
+            (WEIGHTS_NAME,) if weights else ())
+        build(files=files)
 
 
 if __name__ == "__main__":

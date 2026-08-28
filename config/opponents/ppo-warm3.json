@@ -1,0 +1,6 @@
+{
+  "name": "ppo-warm3",
+  "entry": "agents.ppo_agent:act",
+  "params": {"ckpt": "model/artifacts/ppo-warm3/last.pt", "greedy": true},
+  "note": "PPO 訓練中的最新 checkpoint（market-temp 2、reward 只用我方現金、ent-coef 0）。⚠️ last.pt 每輪被覆寫，這支等於一直在換 agent —— 要比數字的話改指到 ckpt-000NN.pt。開發側專用（import torch）；要出貨走 serving.export_npz + agents/gen3_target.py。"
+}
