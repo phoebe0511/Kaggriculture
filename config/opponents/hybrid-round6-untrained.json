@@ -1,0 +1,9 @@
+{
+  "name": "hybrid-round6-untrained",
+  "entry": "agents.ppo_agent:act",
+  "params": {
+    "ckpt": "model/artifacts/ckpt-e2e-round6/best.pt",
+    "base": "config/params/cma1-g50-wt.json",
+    "greedy": true
+  }
+}
