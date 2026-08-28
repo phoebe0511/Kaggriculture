@@ -196,7 +196,7 @@ class Trajectory:
     期末。reward 由 `step_rewards` 從它算出來，不另外存。
     """
 
-    spatial: np.ndarray        # [T, N_SPATIAL, 10, 10] float32
+    spatial: np.ndarray        # [T, N_SPATIAL, 10, 10] float16（見 half_obs）
     scalar: np.ndarray         # [T, N_SCALAR] float32
     value: np.ndarray          # [T] float32
     logp: np.ndarray           # [T] float32（unit 加 market，整步的和）
@@ -330,7 +330,9 @@ class RolloutBatch:
             return torch.as_tensor(a, device=device)
 
         return {
-            "spatial": t(self.spatial[idx]),
+            # rollout 存的是 float16（見 `VecRollout.half_obs`）；還原成
+            # float32 之後跟 rollout 前向吃的位元完全一樣。
+            "spatial": t(self.spatial[idx].astype(np.float32, copy=False)),
             "scalar": t(self.scalar[idx]),
             "unit_board": t(ub),
             "unit_pos": t(self.unit_pos[u]),

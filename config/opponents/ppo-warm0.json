@@ -1,0 +1,6 @@
+{
+  "name": "ppo-warm0",
+  "entry": "agents.ppo_agent:act",
+  "params": {"ckpt": "model/artifacts/ppo-warm0/last.pt", "greedy": true},
+  "note": "PPO 訓練中的最新 checkpoint。⚠️ 每次 last.pt 被覆寫這支就換了一個 agent —— 拿它跟別的數字比之前先確認是同一個 iteration。開發側專用（import torch），不能出貨。"
+}

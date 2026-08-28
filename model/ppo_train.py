@@ -44,6 +44,7 @@ from tools._quiet import silenced                      # noqa: E402
 with silenced():
     import torch
     import contracts as C
+    from harness.ppo_pool import RolloutPool
     from harness.ppo_rollout import VecRollout, build_net, load_opponent
     from model import ppo
 
@@ -92,24 +93,55 @@ def train(args):
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "train.jsonl"
 
-    opp = load_opponent(args.opponent) if args.opponent else None
-    if opp is None:
+    if not args.opponent:
         print("  ⚠️ 自對局：隨機初始的兩邊會一起把 $3000 花光，全程 0 對 0，"
               "reward 幾乎沒有訊號（2026-08-28 實測非零步只有 1.9%）。"
               "先用 --opponent 打 gen0。")
 
+    pool = None
+    if args.workers:
+        # rollout 的 88% 是引擎和 gen0，純 CPU —— 多行程幾乎線性加速
+        # （2026-08-28 實測 2.21 -> 0.38 秒/局）。網路只佔 12%。
+        pool = RolloutPool(args.workers, args.envs, args.opponent,
+                           args.width, args.blocks, args.episode_steps)
+        games = args.workers * args.envs
+    else:
+        opp = load_opponent(args.opponent) if args.opponent else None
+        games = args.envs
+
+    try:
+        run_loop(args, net, opt, out, log_path, pool, games,
+                 None if args.workers else opp)
+    finally:
+        if pool is not None:
+            pool.close()
+    return 0
+
+
+def run_loop(args, net, opt, out, log_path, pool, games, opp):
+    from harness.ppo_rollout import VecRollout                # noqa: PLC0415
+    from model import ppo                                     # noqa: PLC0415
+
     for it in range(args.iters):
         t0 = time.perf_counter()
-        # 每一輪換一批 seed —— 固定 16 張地圖會學成背地圖。
-        vec = VecRollout(net, n_envs=args.envs,
-                         seed0=args.seed0 + it * args.envs,
-                         device=args.device,
-                         episode_steps=args.episode_steps,
-                         opponent=opp)
-        steps, cash, trajs = vec.run(collect=True)
+        # 每一輪換一批 seed —— 固定幾張地圖會學成背地圖。
+        seed0 = args.seed0 + it * games
+        if pool is not None:
+            steps, pairs, trajs = pool.collect(net, seed0)
+        else:
+            vec = VecRollout(net, n_envs=args.envs, seed0=seed0,
+                             device=args.device,
+                             episode_steps=args.episode_steps,
+                             opponent=opp)
+            steps, cash, trajs = vec.run(collect=True)
+            pairs = vec.our_cash(cash)
         t_roll = time.perf_counter() - t0
 
+        t1 = time.perf_counter()
+        # 122 MB 的 concatenate 不是免費的，單獨計時免得算進 rollout 或 update。
         batch = ppo.RolloutBatch(trajs, gamma=args.gamma, lam=args.lam)
+        del trajs
+        t_batch = time.perf_counter() - t1
         t1 = time.perf_counter()
         parts = ppo.update(net, opt, batch, epochs=args.epochs,
                            minibatch=args.minibatch, seed=args.seed + it,
@@ -119,7 +151,6 @@ def train(args):
                            target_kl=args.target_kl)
         t_upd = time.perf_counter() - t1
 
-        pairs = vec.our_cash(cash)
         ours = np.array([a for a, _ in pairs], dtype=np.float64)
         theirs = np.array([b for _, b in pairs], dtype=np.float64)
         units = len(batch.unit_step) / max(len(batch), 1)
@@ -134,6 +165,7 @@ def train(args):
             "adv_std": float(batch.adv.std()),
             "ret_mean": float(batch.ret.mean()),
             "roll_s": round(t_roll, 1),
+            "batch_s": round(t_batch, 1),
             "upd_s": round(t_upd, 1),
             **{k: round(v, 5) for k, v in parts.items()},
         }
@@ -145,7 +177,8 @@ def train(args):
               f"kl {parts['approx_kl']:+.4f}  clip {parts['clipfrac']:.3f}  "
               f"ep {int(parts['epochs_done'])}  "
               f"ent {parts['entropy']:>7.2f}  v {parts['value']:.3f}  "
-              f"rollout {t_roll:>5.1f}s  update {t_upd:>5.1f}s", flush=True)
+              f"rollout {t_roll:>5.1f}s  batch {t_batch:>4.1f}s  "
+              f"update {t_upd:>5.1f}s", flush=True)
 
         if args.save_every and (it + 1) % args.save_every == 0:
             save_checkpoint(out / f"ckpt-{it + 1:05d}.pt", net, args, row)
@@ -156,7 +189,10 @@ def train(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--iters", type=int, default=100)
-    ap.add_argument("--envs", type=int, default=16)
+    ap.add_argument("--workers", type=int, default=10,
+                    help="rollout 行程數。0 = 單行程（慢 5.8 倍，除錯用）")
+    ap.add_argument("--envs", type=int, default=2,
+                    help="每個 worker 幾個 env。一輪的局數 = workers × envs")
     ap.add_argument("--episode-steps", type=int, default=0,
                     help="0 = 用引擎預設的 720（一整季 30 天）")
     ap.add_argument("--width", type=int, default=64)
@@ -186,7 +222,8 @@ def main(argv=None):
                     help="兩輪、4 個 env、短局 —— 只確認接得起來")
     args = ap.parse_args(argv)
     if args.smoke:
-        args.iters, args.envs, args.episode_steps = 2, 4, 120
+        args.iters, args.workers, args.envs = 2, 0, 4
+        args.episode_steps = 120
         args.width, args.blocks, args.minibatch = 32, 2, 128
         args.out = args.out + "-smoke"
         args.save_every = 0

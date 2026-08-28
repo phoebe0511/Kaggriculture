@@ -259,9 +259,10 @@ class VecRollout:
     """
 
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
-                 episode_steps=None, opponent=None):
+                 episode_steps=None, opponent=None, half_obs=True):
         self.net = net.to(device).eval()
         self.device = device
+        self.half_obs = half_obs
         self.n_envs = n_envs
         self.seed0 = seed0
         self.episode_steps = episode_steps
@@ -313,6 +314,14 @@ class VecRollout:
         enc = [C.encode(o, c) for _, _, o, c in items]
         sp = np.stack([e[0] for e in enc])
         sc = np.stack([e[1] for e in enc])
+        # spatial 佔軌跡 98% 的位元組（15.2 KB/步）。存 float16 就少一半，
+        # 多行程把軌跡送回主行程時省的是同一半。
+        # 🩸 **前向也要吃 float16 還原後的值**，不然 update 重算的 logprob 跟
+        # rollout 存的會差一點點，ratio 一開始就不是 1。
+        sp16 = None
+        if collect and self.half_obs:
+            sp16 = sp.astype(np.float16)
+            sp = sp16.astype(np.float32)
         pos_list, feat_list, board_list = [], [], []
         for bi, (_, _, o, c) in enumerate(items):
             pos, feats = C.encode_units(o, c)
@@ -380,7 +389,8 @@ class VecRollout:
                 # 🩸 每個切片都要 `.copy()`：`sel` 是布林索引所以本來就是複本，
                 # 但 `sp[bi]` 是 view，整批 `sp` 會被下一步蓋掉。
                 rec.update(
-                    spatial=sp[bi].copy(), scalar=sc[bi].copy(),
+                    spatial=(sp16 if sp16 is not None else sp)[bi].copy(),
+                    scalar=sc[bi].copy(),
                     unit_pos=pos.copy(), unit_feats=feat_list[bi].copy(),
                     op_mask=op_mask_np[sel], tgt_mask=tgt_mask_np[sel],
                     op_idx=o_np[sel].astype(np.int64),
