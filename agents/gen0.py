@@ -461,9 +461,17 @@ def yield_per_tile_day(crop, days_left):
     return (full * cycle_units + partial_units(crop, rem)) / days_left
 
 
-def _crop_can_harvest(crop, days_left):
-    """現在種下後，是否至少還留有一個回合可收成並賣出。"""
-    return days_left > CROPS[crop]["first_yield_day"]
+def _crop_can_harvest(crop, days_left, margin=0):
+    """現在種下後，是否至少還留有一個回合可收成並賣出。
+
+    `margin` 是額外要求的緩衝天數（`plant_deadline_margin`）。收成不等於現金
+    —— 還要澆水、收成、搬回 shed、下市場單才變成錢。
+
+    2026-08-28 實測：CARROT 的 `first_yield_day` 是 2，所以剩 3 天還會種。
+    結果是 43% 的種植次數花在 CARROT 上，只換回 2.5% 的收入
+    （每次種植 1.2 個商品，模型預期 3 個），而且期末有 25 格作物收不回來。
+    """
+    return days_left > CROPS[crop]["first_yield_day"] + margin
 
 
 def town_demand(obs, config):
@@ -595,6 +603,12 @@ def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0):
                  for i in items)
 
 
+#: `KAGGRI_BASKET_DEBUG` 打開時 `_plan_basket` 每次算完往這裡塞一筆。
+#: 只有 `tools/` 底下的診斷工具在讀。
+#: 🩸 `_plan_basket` 有 lru_cache —— 同一組輸入只會記一次，不是每回合一筆。
+_BASKET_DEBUG = []
+
+
 @functools.lru_cache(maxsize=8192)
 def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_share,
                  params_oversupply=1.5, per_crop=(), per_share=()):
@@ -661,6 +675,24 @@ def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_sha
         if marginal(best) <= 0:
             break
         alloc[best] += 1
+
+    # 診斷用。`KAGGRI_BASKET_DEBUG` 沒設的時候是一次 dict 查表，不影響對局。
+    # 想看的是「為什麼停在這裡」—— 每個作物是撞到 max_crop_share、撞到
+    # 城鎮吸收上限、還是邊際價值本來就掉到 0。
+    if os.environ.get("KAGGRI_BASKET_DEBUG"):
+        _BASKET_DEBUG.append({
+            "days_left": days_left,
+            "n_crop_tiles": n_crop_tiles,
+            "alloc": dict(alloc),
+            "share_cap": dict(cap),
+            "demand_cap": dict(demand_cap),
+            "demand": {c: round(demand.get(c, 0.0), 2) for c in CROPS},
+            "ypd": {c: round(ypd[c], 3) for c in CROPS},
+            "inv": dict(inv0),
+            # 「再給一格」值多少 —— 0 代表已經被某個上限擋住或不值得
+            "next_marginal": {c: round(marginal(c), 2) for c in CROPS},
+            "used": sum(alloc.values()),
+        })
 
     left = n_crop_tiles - sum(alloc.values())
     if left > 0:                    # 賽季尾聲全部跑不完一輪，挑週期最短的
@@ -1188,7 +1220,9 @@ def _tile_tasks(
                     active_tiles is None or (x, y) in active_tiles
                 ):
                     crop = crop_for(x, y, params["basket"])
-                    if days_left is None or _crop_can_harvest(crop, days_left):
+                    if days_left is None or _crop_can_harvest(
+                            crop, days_left,
+                            params.get("plant_deadline_margin", 0)):
                         out.append((_PRI["PLANT"], "PLANT", x, y, None))
                 continue
 
