@@ -24,6 +24,28 @@ def test_entry_points_import(module):
     __import__(module)
 
 
+def test_market_temp_desaturates_only_the_present_head(tmp_path):
+    """key 名字改掉的話這個縮放會安靜地變成 no-op，market head 就又收不到梯度。"""
+    from harness.ppo_rollout import build_net
+    from model.ppo_train import load_init
+
+    torch.manual_seed(1)
+    net = build_net(width=16, blocks=1)
+    ckpt = tmp_path / "w.pt"
+    torch.save({"state_dict": net.state_dict()}, ckpt)
+    before = {k: v.clone() for k, v in net.state_dict().items()}
+
+    cold = build_net(width=16, blocks=1)
+    taken, skipped = load_init(cold, str(ckpt), market_temp=4.0)
+    assert not skipped
+    after = cold.state_dict()
+    scaled = {"market_present_out.weight", "market_present_out.bias"}
+    assert scaled <= set(before), "權重名字改了，縮放會變成 no-op"
+    for k, v in before.items():
+        want = v / 4.0 if k in scaled else v
+        assert torch.allclose(after[k], want), k
+
+
 @pytest.fixture(scope="module")
 def rollout():
     from harness.ppo_rollout import VecRollout, build_net

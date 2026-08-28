@@ -63,10 +63,33 @@ def save_checkpoint(path, net, args, meta):
     }, path)
 
 
-def load_init(net, path):
-    """熱啟動。只吃形狀對得上的張量，對不上的留隨機初始化並回報。"""
+def load_init(net, path, market_temp=1.0):
+    """熱啟動。只吃形狀對得上的張量，對不上的留隨機初始化並回報。
+
+    ## 🩸 `market_temp`：監督式的 market head 飽和到沒有梯度
+
+    `market_present_out` 是 BCE 訓出來的，logit 極端。實測
+    （`ckpt-e2e-round6`、seed 909、240 步、只看合法的 op）：
+
+        |logit| 中位數 11.83   p95 69.17
+        p < 0.01 或 > 0.99 的比例  81.4%
+        sigmoid 斜率 p(1−p) 中位數  0.00001
+
+    斜率 1e-5 等於**這個 head 收不到梯度**。而 market head 決定 HIRE /
+    BUY_LAND / BUY_SEED / SELL —— 錢幾乎全在它手上。實測 `ppo-warm2` 跑了
+    10 輪之後飽和比例還是 81.2%、斜率 0.00002，**完全沒動**。
+
+    所以熱啟動時把 `market_present_out` 的權重和 bias 除以一個溫度。
+
+    ⚠️ **greedy 的行為完全不變** —— `decode_market_orders` 的門檻是 0，
+    除以正數不改變 logit 的正負號。變的只有訓練時取樣的隨機性和梯度大小。
+    """
     blob = torch.load(path, map_location="cpu", weights_only=False)
-    src = blob["state_dict"] if "state_dict" in blob else blob
+    src = dict(blob["state_dict"] if "state_dict" in blob else blob)
+    if market_temp and market_temp != 1.0:
+        for k in ("market_present_out.weight", "market_present_out.bias"):
+            if k in src:
+                src[k] = src[k] / float(market_temp)
     own = net.state_dict()
     taken, skipped = [], []
     for k, v in src.items():
@@ -83,7 +106,7 @@ def train(args):
     torch.manual_seed(args.seed)
     net = build_net(args.width, args.blocks)
     if args.init:
-        taken, skipped = load_init(net, args.init)
+        taken, skipped = load_init(net, args.init, args.market_temp)
         print(f"  熱啟動 {args.init}：吃了 {len(taken)} 個張量，"
               f"跳過 {len(skipped)} 個")
     net = net.to(args.device)
@@ -233,6 +256,9 @@ def main(argv=None):
                     help="env 的 seed 起點。跟評估用的 seed 錯開")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--init", default="", help="熱啟動用的 .pt")
+    ap.add_argument("--market-temp", type=float, default=1.0,
+                    help="熱啟動時把 market present head 的 logit 除以它。"
+                         "監督式那份飽和到 sigmoid 斜率 1e-5，收不到梯度")
     ap.add_argument("--opponent", default="config/params/cma1-g50-wt.json",
                     help="固定對手的 spec。空字串 = 自對局（隨機初始時沒訊號）")
     ap.add_argument("--out", default="model/artifacts/ppo0")
