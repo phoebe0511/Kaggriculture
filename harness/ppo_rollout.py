@@ -107,7 +107,7 @@ def load_league(names):
     return [load_opponent(n) for n in picks], picks
 
 
-def masked_sample(logits, mask):
+def masked_sample(logits, mask, greedy=False):
     """一次對所有 unit 取樣。`logits` / `mask` 都是 `[n, K]`。
 
     回傳 `(idx [n], logprob [n])`，都還在 tensor 上 —— **不要在這裡 `.cpu()`**，
@@ -119,7 +119,12 @@ def masked_sample(logits, mask):
     不是 1。
     """
     logp = masked_log_softmax(logits, mask)
-    idx = torch.multinomial(logp.exp(), 1).squeeze(-1)
+    # greedy 是上場用的：直接取機率最高的那個，沒有隨機性。
+    # 🩸 **PPO 優化的是取樣版，上場跑的是 greedy 版，兩者不保證同方向。**
+    # 2026-08-28 實測：取樣現金 12,999 -> 31,772（在升），同一段訓練的 greedy
+    # 是 44,060 -> 30,740（在降）。所以挑 checkpoint 一定要看 greedy。
+    idx = (logp.argmax(-1) if greedy
+           else torch.multinomial(logp.exp(), 1).squeeze(-1))
     return idx, logp.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 
 
@@ -281,7 +286,7 @@ class VecRollout:
 
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
                  episode_steps=None, opponent=None, half_obs=True,
-                 opp_offset=0, base_policy=None):
+                 opp_offset=0, base_policy=None, greedy=False):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -312,6 +317,8 @@ class VecRollout:
         #: 21 個 categorical(18)」，而且起點是 `cma1-g50-wt` 那條線而不是
         #: 監督式網路。
         self.base_policy = base_policy
+        #: 上場用的解碼（argmax / logit>0）。訓練時是 False。
+        self.greedy = greedy
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
         self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
@@ -397,15 +404,16 @@ class VecRollout:
             [C.legal_target_mask(o, c) for _, _, o, c in items])
         op_mask = torch.as_tensor(op_mask_np, device=dev)
         tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
-        t_idx, t_lp = masked_sample(tgt_logits, tgt_mask)
-        o_idx, o_lp = masked_sample(op_logits, op_mask)
+        t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy)
+        o_idx, o_lp = masked_sample(op_logits, op_mask, self.greedy)
 
         # market 也要取樣，不能用 `decode_market_orders` 的門檻 + argmax ——
         # 那條路沒有 logprob，HIRE / BUY_LAND / BUY_SEED 就拿不到 gradient。
         mk_legal_np = np.stack(
             [C.legal_market_mask(o, c) for _, _, o, c in items])
         mk_legal = torch.as_tensor(mk_legal_np, device=dev)
-        mk_pres_act, mk_qty_act = sample_market(mk_present, mk_qty, mk_legal)
+        mk_pres_act, mk_qty_act = sample_market(mk_present, mk_qty, mk_legal,
+                                                self.greedy)
         mk_lp, _mk_ent = market_logp_entropy(
             mk_present, mk_qty, mk_legal, mk_pres_act, mk_qty_act)
 

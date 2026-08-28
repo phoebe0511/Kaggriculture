@@ -191,13 +191,19 @@ def market_logp_entropy(present_logits, qty_logits, legal_mask,
             (bern_ent + q_ent * p * legal).sum(-1))
 
 
-def sample_market(present_logits, qty_logits, legal_mask):
+def sample_market(present_logits, qty_logits, legal_mask, greedy=False):
     """從 market head 取樣。回傳 `(present [B, ops] bool, qty [B, ops] int64)`。
 
     非法的 op 直接設成不出手 —— `contracts.decode_market_orders` 反正也會擋，
     但這裡先擋掉才不會讓 logprob 算到一個根本送不出去的決策。
     qty 每個 op 都取樣（不管 present），沒被選中的那些 logprob 不計。
+
+    `greedy=True` 走機率大於一半（logit > 0）和 argmax —— 跟
+    `agents/ppo_agent.py` 和 `agents/gen3_target.py` 上場時的解碼**必須一致**。
     """
+    if greedy:
+        present = (present_logits > 0.0) & legal_mask.bool()
+        return present, qty_logits.argmax(dim=-1)
     p = torch.sigmoid(present_logits)
     present = (torch.rand_like(p) < p) & legal_mask.bool()
     probs = torch.softmax(qty_logits, dim=-1)

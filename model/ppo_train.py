@@ -138,17 +138,48 @@ def train(args):
     try:
         base = (load_base_policy(args.base_policy)
                 if args.base_policy and not args.workers else None)
+        # greedy 評估在主行程跑，所以不管有沒有 pool 都要自己載一份。
+        eval_opp = (load_league(args.opponent)[0][0] if args.opponent
+                    and args.eval_every else None)
+        eval_base = (load_base_policy(args.base_policy)
+                     if args.base_policy and args.eval_every else None)
         run_loop(args, net, opt, out, log_path, pool, games,
                  None if args.workers else opp,
-                 [] if args.workers else opp_names, base)
+                 [] if args.workers else opp_names, base,
+                 eval_opp, eval_base)
     finally:
         if pool is not None:
             pool.close()
     return 0
 
 
+def greedy_eval(args, net, opp, base, games, seed0):
+    """用**上場的解碼**（argmax / logit>0）跑幾局，回傳 (我方現金, 勝率)。
+
+    🩸 訓練曲線看的是取樣版，上場跑的是 greedy 版，**兩者不保證同方向**。
+    2026-08-28 實測 `ppo-warm3`：取樣現金 12,999 -> 31,772（升），同一段訓練的
+    greedy 是 44,060 -> 30,740（降）。所以 checkpoint 一定要用這個挑。
+
+    在主行程單獨跑（worker pool 沒有 greedy 模式）—— 10 局約 22 秒。
+    """
+    from harness.ppo_rollout import VecRollout                # noqa: PLC0415
+
+    was_training = net.training
+    net.eval()
+    vec = VecRollout(net, n_envs=games, seed0=seed0, device=args.device,
+                     episode_steps=args.episode_steps, opponent=opp,
+                     base_policy=base, greedy=True)
+    _steps, cash, _trajs = vec.run(collect=False)
+    pairs = vec.our_cash(cash)
+    ours = np.array([a for a, _ in pairs], dtype=np.float64)
+    theirs = np.array([b for _, b in pairs], dtype=np.float64)
+    if was_training:
+        net.train()
+    return float(ours.mean()), float(np.mean(ours > theirs))
+
+
 def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
-             base=None):
+             base=None, eval_opp=None, eval_base=None):
     from harness.ppo_rollout import VecRollout                # noqa: PLC0415
     from model import ppo                                     # noqa: PLC0415
 
@@ -225,6 +256,20 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
               f"rollout {t_roll:>5.1f}s  batch {t_batch:>4.1f}s  "
               f"update {t_upd:>5.1f}s", flush=True)
 
+        if args.eval_every and (it + 1) % args.eval_every == 0:
+            g_cash, g_win = greedy_eval(args, net, eval_opp, eval_base,
+                                        args.eval_games, args.eval_seed0)
+            row["greedy_cash"] = round(g_cash, 1)
+            row["greedy_win"] = round(g_win, 3)
+            best = getattr(run_loop, "_best", float("-inf"))
+            mark = ""
+            if g_cash > best:
+                run_loop._best = g_cash
+                save_checkpoint(out / "best.pt", net, args, row)
+                mark = "  <- best.pt"
+            print(f"        greedy {args.eval_games} 局  現金 {g_cash:>9,.0f}  "
+                  f"勝率 {g_win:.2f}{mark}", flush=True)
+
         if args.save_every and (it + 1) % args.save_every == 0:
             save_checkpoint(out / f"ckpt-{it + 1:05d}.pt", net, args, row)
         save_checkpoint(out / "last.pt", net, args, row)
@@ -272,6 +317,12 @@ def main(argv=None):
                     help="固定對手的 spec。空字串 = 自對局（隨機初始時沒訊號）")
     ap.add_argument("--out", default="model/artifacts/ppo0")
     ap.add_argument("--save-every", type=int, default=10)
+    ap.add_argument("--eval-every", type=int, default=10,
+                    help="每幾輪用 greedy 解碼評估一次。0 = 不評估。"
+                         "🩸 訓練曲線是取樣版，上場是 greedy 版，要分開看")
+    ap.add_argument("--eval-games", type=int, default=10)
+    ap.add_argument("--eval-seed0", type=int, default=900_000,
+                    help="評估用的 seed 起點，跟訓練的錯開")
     ap.add_argument("--smoke", action="store_true",
                     help="兩輪、4 個 env、短局 —— 只確認接得起來")
     args = ap.parse_args(argv)
@@ -281,6 +332,7 @@ def main(argv=None):
         args.width, args.blocks, args.minibatch = 32, 2, 128
         args.out = args.out + "-smoke"
         args.save_every = 0
+        args.eval_every, args.eval_games = 1, 2
     args.episode_steps = args.episode_steps or None
     return train(args)
 
