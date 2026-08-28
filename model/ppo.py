@@ -317,6 +317,23 @@ class RolloutBatch:
     def __len__(self):
         return self.n_steps
 
+    def explained_variance(self):
+        """`1 − Var(ret − value) / Var(ret)`，用 rollout 當下的 value 算。
+
+        這是判斷「advantage 到底有沒有內容」最直接的一個數字：
+
+            接近 0   value head 不比「猜平均」好，GAE 出來的 advantage 幾乎是
+                     報酬雜訊，policy gradient 在追隨機的東西
+            接近 1   value 抓得住報酬，advantage 是真的訊號
+
+        `ppo_loss` 那邊的 `value` 是損失，會隨報酬的量級變 —— 不能拿來判斷
+        「學到了沒」。這個可以。
+        """
+        var = float(self.ret.var())
+        if var <= 0:
+            return float("nan")
+        return 1.0 - float((self.ret - self.old_value).var()) / var
+
     def _pack(self, idx, device):
         counts = self.unit_count[idx]
         total = int(counts.sum())

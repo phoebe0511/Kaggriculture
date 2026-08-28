@@ -45,7 +45,7 @@ with silenced():
     import torch
     import contracts as C
     from harness.ppo_pool import RolloutPool
-    from harness.ppo_rollout import VecRollout, build_net, load_opponent
+    from harness.ppo_rollout import VecRollout, build_net, load_league
     from model import ppo
 
 
@@ -106,19 +106,21 @@ def train(args):
                            args.width, args.blocks, args.episode_steps)
         games = args.workers * args.envs
     else:
-        opp = load_opponent(args.opponent) if args.opponent else None
+        opp, opp_names = (load_league(args.opponent) if args.opponent
+                          else (None, []))
         games = args.envs
 
     try:
         run_loop(args, net, opt, out, log_path, pool, games,
-                 None if args.workers else opp)
+                 None if args.workers else opp,
+                 [] if args.workers else opp_names)
     finally:
         if pool is not None:
             pool.close()
     return 0
 
 
-def run_loop(args, net, opt, out, log_path, pool, games, opp):
+def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names):
     from harness.ppo_rollout import VecRollout                # noqa: PLC0415
     from model import ppo                                     # noqa: PLC0415
 
@@ -127,14 +129,17 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp):
         # 每一輪換一批 seed —— 固定幾張地圖會學成背地圖。
         seed0 = args.seed0 + it * games
         if pool is not None:
-            steps, pairs, trajs = pool.collect(net, seed0)
+            steps, pairs, trajs = pool.collect(net, seed0, game0=it * games)
+            names = pool.names
         else:
             vec = VecRollout(net, n_envs=args.envs, seed0=seed0,
                              device=args.device,
                              episode_steps=args.episode_steps,
-                             opponent=opp)
+                             opponent=opp, opp_offset=it * games)
             steps, cash, trajs = vec.run(collect=True)
-            pairs = vec.our_cash(cash)
+            pairs = [(a, b, vec.opp_index(ei))
+                     for ei, (a, b) in enumerate(vec.our_cash(cash))]
+            names = opp_names
         t_roll = time.perf_counter() - t0
 
         t1 = time.perf_counter()
@@ -151,8 +156,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp):
                            target_kl=args.target_kl)
         t_upd = time.perf_counter() - t1
 
-        ours = np.array([a for a, _ in pairs], dtype=np.float64)
-        theirs = np.array([b for _, b in pairs], dtype=np.float64)
+        ours = np.array([a for a, _b, _k in pairs], dtype=np.float64)
+        theirs = np.array([b for _a, b, _k in pairs], dtype=np.float64)
         units = len(batch.unit_step) / max(len(batch), 1)
         row = {
             "iter": it,
@@ -164,6 +169,15 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp):
             "units_per_step": float(units),
             "adv_std": float(batch.adv.std()),
             "ret_mean": float(batch.ret.mean()),
+            "explained_var": round(batch.explained_variance(), 4),
+            # league 每支各打了幾局、贏幾局 —— 只看總勝率的話，「克死其中一支、
+            # 其餘全輸」跟「平均進步」長得一樣。
+            "by_opp": {
+                names[k] if k < len(names) else str(k): [
+                    sum(1 for a, b, j in pairs if j == k and a > b),
+                    sum(1 for _a, _b, j in pairs if j == k)]
+                for k in sorted({j for _a, _b, j in pairs})
+            } if len(names) > 1 else {},
             "roll_s": round(t_roll, 1),
             "batch_s": round(t_batch, 1),
             "upd_s": round(t_upd, 1),
@@ -177,6 +191,7 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp):
               f"kl {parts['approx_kl']:+.4f}  clip {parts['clipfrac']:.3f}  "
               f"ep {int(parts['epochs_done'])}  "
               f"ent {parts['entropy']:>7.2f}  v {parts['value']:.3f}  "
+              f"ev {row['explained_var']:+.3f}  "
               f"rollout {t_roll:>5.1f}s  batch {t_batch:>4.1f}s  "
               f"update {t_upd:>5.1f}s", flush=True)
 

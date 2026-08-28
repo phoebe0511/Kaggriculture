@@ -86,6 +86,17 @@ def load_opponent(name):
     return fn
 
 
+def load_league(names):
+    """逗號分隔的 spec 名單 -> `(callable list, 名字 list)`。
+
+    🩸 `config/ladder-top.json` 那 8 支是**開迴路 replay**，不會對我們的行為
+    反應（`agents/replay.py` 的說明）。放進 league 是為了盤面和市場競爭的
+    多樣性，**不能只靠它們** —— 固定的動作序列是可以被背下來的。
+    """
+    picks = [n.strip() for n in str(names).split(",") if n.strip()]
+    return [load_opponent(n) for n in picks], picks
+
+
 def masked_sample(logits, mask):
     """一次對所有 unit 取樣。`logits` / `mask` 都是 `[n, K]`。
 
@@ -259,7 +270,8 @@ class VecRollout:
     """
 
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
-                 episode_steps=None, opponent=None, half_obs=True):
+                 episode_steps=None, opponent=None, half_obs=True,
+                 opp_offset=0):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -267,8 +279,17 @@ class VecRollout:
         self.seed0 = seed0
         self.episode_steps = episode_steps
         #: `None` = 自對局（兩邊都是 net，兩條軌跡都收）。
-        #: 給 callable `(obs, config) -> action` 就是打固定對手，只收我方那一條。
-        self.opponent = opponent
+        #: callable `(obs, config) -> action`，或一串 callable（league）——
+        #: 第 i 個 env 配 `opponents[i % len]`，只收我方那一條軌跡。
+        if opponent is None:
+            self.opponents = None
+        elif callable(opponent):
+            self.opponents = [opponent]
+        else:
+            self.opponents = list(opponent)
+            if not self.opponents:
+                raise ValueError("league 是空的")
+        self.opp_offset = opp_offset
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
         self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
@@ -300,7 +321,18 @@ class VecRollout:
         return items
 
     def _ours(self, ei, p):
-        return self.opponent is None or p == self.seats[ei]
+        return self.opponents is None or p == self.seats[ei]
+
+    def opp_of(self, ei):
+        """第 ei 個 env 配到 league 裡的哪一支。"""
+        return self.opponents[self.opp_index(ei)]
+
+    def opp_index(self, ei):
+        """🩸 要加 `opp_offset`（主行程給的全域局號）。只用 `ei % len` 的話，
+        每個 worker 只有 `envs` 個 env，league 再大也只會用到前面那幾支。"""
+        if not self.opponents:
+            return -1
+        return (self.opp_offset + ei) % len(self.opponents)
 
     @torch.no_grad()
     def _policy_batch(self, items, collect=False):
@@ -424,7 +456,7 @@ class VecRollout:
                 acts[ei][p] = action
             for ei, p, obs, cfg in active:
                 if not self._ours(ei, p):
-                    acts[ei][p] = self.opponent(obs, cfg)
+                    acts[ei][p] = self.opp_of(ei)(obs, cfg)
             if collect:
                 for (ei, p, obs, _c), (_ei, _p, _a, rec) in zip(items, decided):
                     # 🩸 期中的 `steps[-1][p]["reward"]` 是 0 —— 引擎只在 DONE
