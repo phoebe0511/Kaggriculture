@@ -1519,6 +1519,66 @@ def _assign(
             cost += zone_penalty
         return cost
 
+    # ------------------------------------------------------------------
+    # 整回合一次配完
+    # ------------------------------------------------------------------
+    #
+    # 預設是**照優先序一層一層發**：第 1 層先挑走離它最近的 unit，第 2 層
+    # 再從剩下的挑，`PLANT`（第 9 層，全表最低）輪到時常常沒人了。
+    # 每一層都是局部最佳，加起來可以離整體最佳很遠。
+    #
+    # 2026-08-28 實測（`tools/tasks_probe.py`，3 局 2,157 個決策回合）：
+    #
+    #     走路佔 unit-回合 57.2%（ladder 對手 ReCurSiON 是 43.4%）
+    #     每回合想做 33.46 件任務，只指派得到 7.91 件
+    #     PLANT 想種 5.39 格、只種到 0.75 格 —— 73.8% 的回合被擠掉
+    #     輪到 PLANT 那層時平均只剩 1.48 個閒置 unit
+    #
+    # 這個分支把硬性分層換成**一次全域最短配對**，優先序折成成本：
+    # 高一級 = 多走 `priority_step_cost` 步。所以「近的低優先」可以贏過
+    # 「遠的高優先」，而差距夠大時高優先仍然贏。
+    #
+    # 🩸 `PLANT` 的跨任務限制要先處理：引擎是原子驗證 —— 同一回合某作物的
+    # PLANT 請求數超過種子數，該作物的**所有** PLANT 全變 PASS
+    # （下面 tier 版本那段註解）。所以先裁到種子數以內再進矩陣。
+    if params.get("whole_turn_assignment", False) and tasks and free:
+        step_cost = float(params.get("priority_step_cost", 3.0))
+        pool, used = [], {}
+        for task in tasks:
+            if task[1] == "PLANT":
+                crop = crop_for(task[2], task[3], basket)
+                if used.get(crop, 0) >= seeds.get(crop, 0):
+                    continue
+                used[crop] = used.get(crop, 0) + 1
+            pool.append(task)
+
+        units = sorted(free)
+        idle_cost = 10_000
+        impossible_cost = 1_000_000
+        matrix = []
+        for unit in units:
+            row = []
+            for task in pool:
+                pri, op, _tx, _ty, arg = task
+                need = _requirement(op, arg)
+                if need is not None and unit_inv[unit].get(need, 0) <= 0:
+                    row.append(impossible_cost)
+                else:
+                    row.append(step_cost * (pri - 1) + assignment_cost(unit, task))
+            row.extend([idle_cost] * len(units))
+            matrix.append(row)
+
+        for row_index, col_index in enumerate(_minimum_cost_assignment(matrix)):
+            if col_index < 0 or col_index >= len(pool):
+                continue
+            if matrix[row_index][col_index] >= idle_cost:
+                continue
+            _pri, op, tx, ty, arg = pool[col_index]
+            unit = units[row_index]
+            free.discard(unit)
+            assigned[unit] = (op, tx, ty, arg)
+        return assigned, free
+
     tier = []
     current_pri = None
 
