@@ -165,3 +165,62 @@ def test_main_entry_matches_what_is_packaged():
         if line.startswith("from agents.") or line.startswith("from serving."):
             module = line.split()[1].split(".")[1]
             assert module in packaged, f"main.py 用了 {module}，但沒有打包進去"
+
+
+def test_every_packaged_file_only_imports_packaged_or_external(tmp_path):
+    """🩸 打包的檔案**遞迴**都不能 import 到沒打包的 repo 模組。
+
+    `test_main_entry_matches_what_is_packaged` 只看 `main.py` 自己那幾行，
+    看不到 `gen0.py` 又 import 了什麼。2026-08-28 就是這樣漏掉的：
+
+        FILE_MAP = {"main.py": ..., "agents/gen0.py": ...}   # 沒有 contracts.py
+        agents/gen0.py:48   from contracts import TASK_OPS, target_xy
+
+    上 Kaggle 直接死在
+
+        File "/kaggle_simulations/agent/gen0.py", line 48
+        ModuleNotFoundError: No module named 'contracts'
+
+    而本機驗收 640 局零錯誤 —— `eval/runner.py` 在 repo root 底下跑，
+    `contracts.py` 就在 root 上、cwd 又在 `sys.path` 裡。
+
+    判斷方式是「這個名字在 repo root 有沒有對應的檔案/目錄」，不是
+    `find_spec` —— 跑測試時 repo root 在 `sys.path` 上，`find_spec("contracts")`
+    一定找得到，那樣就驗不出來了。
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    dest = copy_files(tmp_path / "submission")
+    packaged = {flat.rsplit(".", 1)[0] for flat in FILES}
+
+    def is_repo_module(root):
+        return ((repo_root / f"{root}.py").is_file()
+                or (repo_root / root / "__init__.py").is_file())
+
+    offenders = []
+    for flat in FILES:
+        if not flat.endswith(".py"):
+            continue
+        tree = ast.parse((dest / flat).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(node, ast.ImportFrom) and node.level:
+                offenders.append(f"{flat}:{node.lineno} 相對 import（攤平後會壞）")
+                continue
+            names = ([node.module] if isinstance(node, ast.ImportFrom)
+                     else [a.name for a in node.names])
+            for name in names:
+                root = (name or "").split(".")[0]
+                if not root or root in packaged:
+                    continue
+                if is_repo_module(root):
+                    offenders.append(
+                        f"{flat}:{node.lineno} import {root} —— "
+                        f"repo 裡有 {root}，但沒打包進去")
+
+    assert not offenders, (
+        "打包的檔案 import 到沒打包的 repo 模組，上 Kaggle 會 "
+        "ModuleNotFoundError：\n  " + "\n  ".join(offenders))

@@ -59,13 +59,22 @@ OUTPUT = SUBMISSION_DIR / "submission.tar.gz"
 # 而 submission **不准 import torch**（`docs/CLAUDE.md`）。比賽端走
 # `npz_forward.py` 的純 numpy 前向。
 #: ⚠️ **這份清單跟著 `main.py` 走。** 2026-08-21 起 `main.py` 是規則式
-#: （`agents/gen0.py`），所以只要兩支檔案、**不需要權重**。
+#: （`agents/gen0.py`），不需要權重。
 #:
-#: 要換成網路版（`agents/gen2_model.py`）的話，這裡要加回
-#: `contracts.py` + `serving/npz_forward.py` + `agents/gen2_model.py`，
-#: 並且用 `--weights` 指定要打包的 `.npz`。
+#: 🩸 **`contracts.py` 是必要的，即使規則式版本也是。** `agents/gen0.py:48`
+#: 有 `from contracts import TASK_OPS, target_xy`。2026-08-21~08-28 這份清單
+#: 只有 main.py + gen0.py，**產出的包在 Kaggle 上會 `ModuleNotFoundError:
+#: No module named 'contracts'` 直接死掉**，而本機驗收完全驗不出來 ——
+#: `eval/runner.py` 的 builtin 路徑在 repo root 底下跑，`contracts.py` 就在
+#: root 上、cwd 又在 sys.path 裡，所以 import 一定成功。
+#: 唯一驗得到的方法見 `tools/submission_check.py`（從 repo 外的目錄跑）。
+#:
+#: 要換成網路版（`agents/gen2_model.py`）的話，還要加
+#: `serving/npz_forward.py` + `agents/gen2_model.py`，並且用 `--weights`
+#: 指定要打包的 `.npz`。
 FILE_MAP = {
     "main.py": "main.py",
+    "contracts.py": "contracts.py",
     "agents/gen0.py": "gen0.py",
 }
 
