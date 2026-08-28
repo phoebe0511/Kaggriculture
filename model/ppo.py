@@ -16,13 +16,15 @@ rollout 在 `harness/ppo_rollout.py`。這裡只吃它吐出來的軌跡。
 ## 報酬
 
 🩸 **只用期末現金差是 720 步的稀疏訊號，credit assignment 會死。**
-用每一步的「我方現金增量 − 對手現金增量」當 dense reward（零和），
-期末再加勝負 bonus：
+用每一步的現金增量當 dense reward，期末再加勝負 bonus：
 
-    r_t = (my_cash_t − my_cash_{t−1}) − (opp_cash_t − opp_cash_{t−1})
+    r_t = my_cash_t − my_cash_{t−1}
     r_T += terminal_bonus * sign(my_cash_T − opp_cash_T)
 
 現金的量級是 10^5，要除以 `REWARD_SCALE` 才不會讓 value loss 爆掉。
+
+🩸 **原本減掉對手的增量（零和），2026-08-28 量完改掉了** —— 那一項佔 reward
+變異數的 86.4%，而且我們幾乎控制不了。細節在 `step_rewards` 的 docstring。
 
 ## 動作的 logprob
 
@@ -104,11 +106,27 @@ def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
     }
 
 
-def step_rewards(cash_a, cash_b):
-    """逐步現金序列 -> 零和的 dense reward。`cash_*` 是 `[T+1]`。"""
+def step_rewards(cash_a, cash_b, zero_sum=False):
+    """逐步現金序列 -> dense reward。`cash_*` 是 `[T+1]`。
+
+    🩸 **預設不是零和的。** 2026-08-28 實測（`ppo-warm1` 的 last.pt、6 局、
+    4,314 步、對手 `cma1-g50-wt`）：
+
+        我方現金增量   var    212,497
+        對手現金增量   var  1,350,738     <- 6.4 倍
+        相關           +0.574
+        var(我方 − 對手) = 948,475        <- 比只用我方大 4.5 倍
+
+    對手的收入我們幾乎控制不了（只有市場價格那一點間接影響）。把它減進 reward
+    等於在 advantage 裡灌一個**佔 86.4% 變異數的不可控項** —— 相關 0.574 帶來的
+    control variate 效果遠遠補不回來。reward std 從 0.0974 降到 0.0461。
+
+    競爭性由期末的勝負 bonus 保留。`zero_sum=True` 是原本的形式，打自對局
+    或 league 時可能還是要用（那時對手的行為是我們自己的 policy）。
+    """
     da = np.diff(np.asarray(cash_a, dtype=np.float64))
     db = np.diff(np.asarray(cash_b, dtype=np.float64))
-    r = (da - db) / REWARD_SCALE
+    r = (da - db) / REWARD_SCALE if zero_sum else da / REWARD_SCALE
     if len(r):
         r[-1] += TERMINAL_BONUS * np.sign(cash_a[-1] - cash_b[-1])
     return r.astype(np.float32)
@@ -267,14 +285,14 @@ class RolloutBatch:
     把同一步的 unit 拆到不同 minibatch 會算出錯的 logprob。
     """
 
-    def __init__(self, trajs, gamma=0.997, lam=0.95):
+    def __init__(self, trajs, gamma=0.997, lam=0.95, zero_sum=False):
         trajs = [t for t in trajs if t is not None and len(t)]
         if not trajs:
             raise ValueError("沒有軌跡")
         advs, rets, offs, base = [], [], [], 0
         for tr in trajs:
             T = len(tr)
-            rew = step_rewards(tr.cash[:, 0], tr.cash[:, 1])
+            rew = step_rewards(tr.cash[:, 0], tr.cash[:, 1], zero_sum)
             dones = np.zeros(T, dtype=np.float32)
             dones[-1] = 1.0
             # 期末 bootstrap 是 0：這一局真的結束了，沒有後續價值。

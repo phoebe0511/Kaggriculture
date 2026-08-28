@@ -144,7 +144,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names):
 
         t1 = time.perf_counter()
         # 122 MB 的 concatenate 不是免費的，單獨計時免得算進 rollout 或 update。
-        batch = ppo.RolloutBatch(trajs, gamma=args.gamma, lam=args.lam)
+        batch = ppo.RolloutBatch(trajs, gamma=args.gamma, lam=args.lam,
+                                 zero_sum=args.zero_sum)
         del trajs
         t_batch = time.perf_counter() - t1
         t1 = time.perf_counter()
@@ -221,6 +222,9 @@ def main(argv=None):
     ap.add_argument("--vf-coef", type=float, default=0.5)
     ap.add_argument("--ent-coef", type=float, default=0.01)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
+    ap.add_argument("--zero-sum", action="store_true",
+                    help="reward 減掉對手的現金增量。實測那一項佔 86.4% 的"
+                         "變異數而且我們控制不了，所以預設關掉（§37）")
     ap.add_argument("--target-kl", type=float, default=0.0,
                     help="聯合動作的 approx_kl 超過 1.5 倍就停掉這一輪的 "
                          "epoch。0 = 不管")

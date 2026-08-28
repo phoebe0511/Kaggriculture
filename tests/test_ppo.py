@@ -14,6 +14,16 @@ import pytest
 torch = pytest.importorskip("torch", reason="torch 是開發側依賴，submission 不用")
 
 
+@pytest.mark.parametrize("module", [
+    "model.ppo", "model.ppo_train", "harness.ppo_rollout", "harness.ppo_pool",
+    "agents.ppo_agent", "agents.gen3_target",
+])
+def test_entry_points_import(module):
+    """🩸 2026-08-28：`model/ppo_train.py` 有語法錯誤，整套 123 項測試照樣全過
+    （沒有一項 import 它），過夜的訓練一啟動就死。這裡逐支 import 一次。"""
+    __import__(module)
+
+
 @pytest.fixture(scope="module")
 def rollout():
     from harness.ppo_rollout import VecRollout, build_net
@@ -64,12 +74,31 @@ def test_market_head_is_part_of_the_distribution(rollout):
     assert any(t.mk_present.any() for t in trajs)
 
 
+def test_rewards_default_to_own_cash_only():
+    """對手的現金增量佔 86.4% 的變異數而且我們控制不了，所以預設不減它。"""
+    from model.ppo import REWARD_SCALE, TERMINAL_BONUS, step_rewards
+
+    a = np.linspace(3000, 90000, 11)
+    b = np.linspace(3000, 70000, 11)
+    own = step_rewards(a, b)
+    zs = step_rewards(a, b, zero_sum=True)
+    da, db = np.diff(a), np.diff(b)
+    assert np.allclose(own[:-1], da[:-1] / REWARD_SCALE)
+    assert np.allclose(zs[:-1], (da - db)[:-1] / REWARD_SCALE)
+    # 勝負 bonus 兩種形式都要有 —— 競爭性靠它保留。
+    assert own[-1] == pytest.approx(da[-1] / REWARD_SCALE + TERMINAL_BONUS)
+    # 輸的一方拿到 −bonus。
+    assert step_rewards(b, a)[-1] == pytest.approx(
+        np.diff(b)[-1] / REWARD_SCALE - TERMINAL_BONUS)
+
+
 def test_gae_and_rewards_are_zero_sum():
     from model.ppo import compute_gae, step_rewards
 
     a = np.linspace(3000, 90000, 11)
     b = np.linspace(3000, 70000, 11)
-    ra, rb = step_rewards(a, b), step_rewards(b, a)
+    ra = step_rewards(a, b, zero_sum=True)
+    rb = step_rewards(b, a, zero_sum=True)
     assert np.allclose(ra, -rb)
 
     values = np.zeros(11, dtype=np.float32)
