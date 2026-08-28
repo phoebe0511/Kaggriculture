@@ -216,3 +216,42 @@ def test_hybrid_mode_only_credits_the_market_head():
             lp, ent, _v = evaluate_actions(net, mb)
             assert (lp - mb["old_logp"]).abs().max().item() < 1e-3
             assert torch.isfinite(ent).all()
+
+
+def test_hybrid_agent_takes_units_from_base_and_market_from_net(tmp_path):
+    """混合模式的 agent：工人動作**逐一等於** base policy 的輸出，market 不等於。
+
+    🩸 這兩件事任一個反了都不會報錯 —— 只會表現成「分數跟 gen0 一模一樣」
+    （market 沒換到）或「工人亂走」（base 沒接上）。
+    """
+    import numpy as np
+
+    from agents.ppo_agent import act
+    from harness.ppo_rollout import build_net, load_base_policy
+
+    spec = "config/params/cma1-g50-wt.json"
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    ckpt = tmp_path / "h.pt"
+    torch.save({"state_dict": net.state_dict(), "width": 16, "blocks": 2}, ckpt)
+
+    import contracts as C
+    from kaggle_environments import make
+
+    env = make("kaggriculture", debug=False)
+    env.reset(2)
+    obs = env.steps[0][0]["observation"]
+    cfg = env.configuration
+
+    base = load_base_policy(spec)(obs, cfg)
+    got = act(obs, cfg, {"ckpt": str(ckpt), "base": spec, "greedy": True})
+
+    assert got["farmer"] == base["farmer"], "farmer 沒有沿用 base"
+    assert got["hands"] == base["hands"], "hands 沒有沿用 base"
+    assert set(got) == set(base), "回傳的 key 集合變了"
+    # market 來自隨機權重的網路，跟 gen0 自己的訂單重合的機率極低。
+    assert got["market"] != base["market"], "market 沒有換成網路的"
+
+    # 不給 base 就是純網路那條，工人動作不該再等於 gen0。
+    pure = act(obs, cfg, {"ckpt": str(ckpt), "greedy": True})
+    assert set(pure) == set(base)

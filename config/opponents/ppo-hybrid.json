@@ -1,0 +1,9 @@
+{
+  "name": "ppo-hybrid",
+  "entry": "agents.ppo_agent:act",
+  "params": {
+    "ckpt": "model/artifacts/ppo-hybrid/best.pt",
+    "base": "config/params/cma1-g50-wt.json",
+    "greedy": true
+  }
+}

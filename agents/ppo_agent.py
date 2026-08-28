@@ -13,6 +13,18 @@ spec 長這樣：
 它 import torch。submission 那條路是 `agents/gen2_model.py` +
 `serving/npz_forward.py`（純 numpy）。要上場的話得先 `serving.export_npz`。
 
+## 混合模式（`base`）
+
+`params` 給了 `base` 就換一條路：**工人動作由 base policy 出，網路只出
+market**，跟 `harness/ppo_rollout.py` 的 `--base-policy` 完全同一個組合。
+
+    {"name": "ppo-hybrid", "entry": "agents.ppo_agent:act",
+     "params": {"ckpt": "model/artifacts/ppo-hybrid/best.pt",
+                "base": "config/params/cma1-g50-wt.json", "greedy": true}}
+
+🩸 混合模式**用不到 op / target head**，所以 `labels` 是 `immediate` 還是
+`target` 在這條路上不影響結果（純網路那條差 31%，§44）。
+
 ## greedy 還是取樣
 
 PPO 優化的是**隨機** policy，但上場要交一個確定的動作。兩個都留：
@@ -35,6 +47,18 @@ import contracts as C                                   # noqa: E402
 
 #: 每個行程一份，key 是 checkpoint 路徑。eval/runner 的 worker 會重複呼叫。
 _CACHE = {}
+
+#: 混合模式的骨幹 policy，key 是 spec 路徑。同樣是每個行程一份。
+_BASE = {}
+
+
+def _load_base(spec):
+    """混合模式的骨幹。跟 `harness/ppo_rollout.load_base_policy` 同一條路徑。"""
+    if spec not in _BASE:
+        from harness.ppo_rollout import load_base_policy   # noqa: PLC0415
+
+        _BASE[spec] = load_base_policy(spec)
+    return _BASE[spec]
 
 
 def _load(path):
@@ -76,6 +100,7 @@ def act(obs, config=None, params=None):
         raise SystemExit("要給 ckpt（params 或 KAGGRI_PPO_CKPT）")
     net = _load(path)
     greedy = bool(p.get("greedy", True))
+    base_spec = p.get("base") or ""
 
     spatial, scalar = C.encode(obs, config)
     pos, feats = C.encode_units(obs, config)
@@ -109,7 +134,7 @@ def act(obs, config=None, params=None):
     board = len(obs["farms"][obs["player"]]["tiles"])
     t_np, o_np = t_idx.numpy(), o_idx.numpy()
     units = []
-    for i in range(n):
+    for i in range(n) if not base_spec else ():
         tx, ty = C.target_xy(int(t_np[i]), board)
         cur = tuple(pos[i])
         if (int(cur[0]), int(cur[1])) != (tx, ty):
@@ -121,6 +146,9 @@ def act(obs, config=None, params=None):
     qty_onehot[np.arange(C.N_MARKET_OPS), mk_q.numpy()] = 1.0
     market = C.decode_market_orders(
         np.where(mk_pres.numpy(), 1.0, -1.0), qty_onehot, obs, config)
+    if base_spec:
+        # 🩸 只換 market。工人動作整個沿用 base，包含它自己的 farmer/hands 拆法。
+        return {**_load_base(base_spec)(obs, config), "market": market}
     return {"farmer": units[0], "hands": units[1:], "market": market}
 
 
