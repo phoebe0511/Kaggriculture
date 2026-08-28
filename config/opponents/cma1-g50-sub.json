@@ -1,0 +1,5 @@
+{
+  "name": "cma1-g50-sub",
+  "builtin": "submission/cma1-g50/main.py",
+  "note": "打包好的那一份（submission/cma1-g50/），不是 config/params/cma1-g50.json。走 builtin 分支 —— build_agent 直接把這個字串交給 env.run，用 Kaggle 自己的 exec + sys.path.append(exec_dir) 載入，攤平後的 `from gen0 import act` 才找得到同目錄的檔案。`--a submission/cma1-g50/main.py` 那種寫法會炸（load_spec 走 __import__，找不到 gen0）。 存在的理由是驗打包有沒有出錯：引擎是決定性的，所以這一支對 ladder 的結果必須跟 `config/params/cma1-g50.json` **逐位元組相同**，不同就代表攤平或 PARAMS 有問題。 ⚠️ 打包出來的 main.py 自己帶 PARAMS（含 _replace_defaults: True），不吃任何環境變數；這一版是規則式，沒有 weights.npz，所以不用清 KAGGRI_WEIGHTS。"
+}

@@ -55,3 +55,24 @@ SystemExit**，錯誤訊息看起來像 `contracts.py` 的問題。不要當成�
 2. **一份權重進 git 之後就不再改那個檔** —— 新的一輪用新檔名。
    binary 沒有 delta 壓縮，改一次等於在 history 裡多存一份 3.1 MB
 3. 產物寫進 `artifacts/`，那整個目錄是擋掉的
+
+## CMA-ES 的狀態檔（`cma1-*.pkl`）
+
+⚠️ **這些不是網路權重**，是規則式 `agents/gen0.py` 那 51 項參數的搜尋狀態
+（`tools/param_search.py` 產的 `cma.CMAEvolutionStrategy` pickle）。放在這裡是
+因為 `model/` 已經有「大的二進位產物 + `.gitignore` 逐檔放行」的慣例。
+
+| 檔 | 是什麼 | 為什麼留 |
+|---|---|---|
+| `cma1-g50.pkl` | run `temp/cma/20260827-164222` 第 50 代 | **holdout / 九隊最好的那一組**。落地的參數在 `config/params/cma1-g50.json` |
+| `cma1-g68.pkl` | 同一輪第 68 代 | train 分數最好（−8,654）但 holdout 輸給第 50 代。留著當對照 |
+
+**要用參數的話讀 `config/params/*.json` 就好**，那裡 51 項完整展開。pkl 只有
+兩個用途：
+
+1. `--warm-start`：借它的 `es.best.x` 當下一輪的起點（covariance 不沿用）
+2. 重現：`es.countiter` / `es.sigma` / covariance 都在裡面
+
+`.pkl` 不在 `.gitignore` 的擋掉清單裡，所以是預設進版控的。**一份進 git 之後
+就不要再改那個檔**（同上面那條，binary 沒有 delta 壓縮）—— 新的一輪用新檔名
+（`cma2-*`）。單檔 ~310 KB。
