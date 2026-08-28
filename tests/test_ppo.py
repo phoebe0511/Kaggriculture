@@ -24,6 +24,25 @@ def test_entry_points_import(module):
     __import__(module)
 
 
+@pytest.mark.parametrize("module", ["model.ppo_train", "harness.ppo_pool"])
+def test_argparse_help_renders(module, capsys):
+    """🩸 2026-08-28：`--zero-sum` 的 help 裡有「86.4% 的」，argparse 會對 help
+    字串做 `% params`，`%的` 不是合法的格式碼 —— `--help` 直接拋
+    `ValueError: unsupported format character`。
+
+    正常訓練不受影響（argparse 只在印 help 時展開），所以這個 bug **只會在你想
+    先驗一下指令對不對的時候咬你**，正是最不該壞掉的時機。help 裡的 `%` 要寫
+    成 `%%`。
+    """
+    import importlib
+
+    mod = importlib.import_module(module)
+    with pytest.raises(SystemExit) as e:
+        mod.main(["--help"])
+    assert e.value.code == 0
+    assert "usage:" in capsys.readouterr().out
+
+
 def test_market_temp_desaturates_only_the_present_head(tmp_path):
     """key 名字改掉的話這個縮放會安靜地變成 no-op，market head 就又收不到梯度。"""
     from harness.ppo_rollout import build_net

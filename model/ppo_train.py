@@ -297,7 +297,7 @@ def main(argv=None):
     ap.add_argument("--ent-coef", type=float, default=0.01)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
     ap.add_argument("--zero-sum", action="store_true",
-                    help="reward 減掉對手的現金增量。實測那一項佔 86.4% 的"
+                    help="reward 減掉對手的現金增量。實測那一項佔 86.4%% 的"
                          "變異數而且我們控制不了，所以預設關掉（§37）")
     ap.add_argument("--target-kl", type=float, default=0.0,
                     help="聯合動作的 approx_kl 超過 1.5 倍就停掉這一輪的 "
