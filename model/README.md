@@ -28,9 +28,17 @@
 | `weights-e2e-round6.npz` | **目前最好的**。2026-08-24 換規格重練（`--epochs 24 --width 128 --blocks 8`，1,599,159 參數）。對 `gen1` 現金比 **93%**（81,802 / 87,877）、得分率 20.0% [10.5%, 34.8%]，40 局配對（`temp/20260824-124546_e2e_vs_gen1`）。同日 `weights-e2e-big24.npz`（同架構、少 200 局資料）配對比較 Wilcoxon p=0.599 —— **兩者判不出高下**，留 round6 是因為資料較多、`op` 0.8996 與 market recall 0.9345 略高 |
 
 其餘的（`v4` / `v5-round*` / `dagger*` / `kawashigi`）在 `artifacts/` 裡。
-🩸 **它們現在載不起來** —— 對應的 agent（`gen3_target.py` / `gen4_demand.py`）
-已於 2026-08-21 刪除，而且 op head 的語意是 `target` 不是 `immediate`
-（`agents/gen2_model.require_labels()` 會擋下來）。留著只是歷史。
+它們的 op head 語意是 `target` 不是 `immediate`，所以
+`agents/gen2_model.require_labels()` 會擋下來。
+
+⚠️ **2026-08-28 更新**：`agents/gen3_target.py` 又寫回來了（PPO 的動作語意就是
+`target`），所以 `v5-round0` / `v5-round1` 這兩份 v5 的 `target` 權重現在**載得
+起來**。`v4` / `dagger*` / `kawashigi` 仍然載不起來（ENCODER_VERSION 2 或 4）。
+
+不過 PPO 的熱啟動實測**不該用它們**：6 局對 `cma1-g50-wt`，`v5-round1` 期末
+現金 0、`v5-round0` 是 53，而 `e2e-round7` 是 35,492、`e2e-round6` 是 18,836。
+語意對得上沒有用 —— 錢幾乎全由 market head 決定，那兩份的 market f1 只有
+0.811 / 0.846（e2e 是 0.92 以上）。細節見 journal 2026-08-28 §36.2。
 
 `artifacts/weights.npz` 是 ENCODER_VERSION 2 的舊檔，**載進去會在第一回合
 SystemExit**，錯誤訊息看起來像 `contracts.py` 的問題。不要當成預設值。
@@ -76,3 +84,40 @@ SystemExit**，錯誤訊息看起來像 `contracts.py` 的問題。不要當成�
 `.pkl` 不在 `.gitignore` 的擋掉清單裡，所以是預設進版控的。**一份進 git 之後
 就不要再改那個檔**（同上面那條，binary 沒有 delta 壓縮）—— 新的一輪用新檔名
 （`cma2-*`）。單檔 ~310 KB。
+
+## PPO 的產物（2026-08-28 起）
+
+```
+model/ppo.py         GAE / clipped surrogate / Trajectory / RolloutBatch / update
+model/ppo_train.py   訓練迴圈（rollout -> update -> checkpoint）
+harness/ppo_rollout.py  VecRollout：K 個 env 一次批次前向
+harness/ppo_pool.py     10 個 worker 行程，0.38 秒/局
+```
+
+跑出來的東西都在 `artifacts/ppo-*/`（照慣例，整個目錄擋在 `.gitignore` 外）：
+
+```
+artifacts/ppo-warm3/last.pt        每輪覆寫
+artifacts/ppo-warm3/ckpt-000NN.pt  --save-every
+artifacts/ppo-warm3/train.jsonl    每輪一行，含 explained_var / by_opp
+artifacts/ppo-warm3.log            stdout
+```
+
+**checkpoint 的形狀跟 `model/train.py` 一樣**（`encoder_version` / `state_dict`
+/ `width` / `blocks` / `argv`），多一個 `trainer: "ppo"`，`labels` 固定是
+`"target"` —— PPO 的動作語意是「target head 選格子、`gen0.step_toward` 走路」。
+
+怎麼用：
+
+```
+評估   config/opponents/ppo-warm3.json -> agents/ppo_agent.py（開發側，吃 .pt）
+出貨   python -m serving.export_npz --ckpt ...last.pt --out submission/weights.npz
+       python -m serving.build_submission --profile net
+       （⚠️ net profile 還缺一支自己的 main.py，見那支的 PROFILES 註解）
+```
+
+🩸 **熱啟動一定要帶 `--market-temp 2`**。監督式的 `market_present_out` 是 BCE
+訓的，81.4% 的合法決策 sigmoid 已經飽和到斜率 1e-5，PPO 完全推不動它 ——
+而 HIRE / BUY_LAND / BUY_SEED / SELL 全在那個 head 上。溫度只改訓練時的取樣
+隨機性，**greedy 行為完全不變**（門檻是 0，除以正數不改正負號）。
+掃描結果和懸崖位置見 journal 2026-08-28 §38。
