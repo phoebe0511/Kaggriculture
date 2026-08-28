@@ -76,6 +76,7 @@ def check(folder, seeds=(41001,)):
         (dest / "_check.py").write_text(script, encoding="utf-8")
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
+        env["KAGGRI_LOG_LEVEL"] = "0"      # 不然 agent 每回合噴一行 JSON
         proc = subprocess.run(
             [sys.executable, "_check.py"], cwd=str(dest), env=env,
             capture_output=True, text=True, errors="replace")

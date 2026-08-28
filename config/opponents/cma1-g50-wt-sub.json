@@ -1,0 +1,5 @@
+{
+  "name": "cma1-g50-wt-sub",
+  "builtin": "submission/cma1-g50-wt/main.py",
+  "note": "打包好的那一份（submission/cma1-g50-wt/），不是 config/params/cma1-g50-wt.json。走 builtin 分支 —— build_agent 直接把這個字串交給 env.run，用 Kaggle 自己的 exec + sys.path.append(exec_dir) 載入。 存在的理由是驗打包有沒有出錯：引擎是決定性的，所以這一支對 ladder 的結果必須跟 config/params/cma1-g50-wt.json **逐位元組相同**。 ⚠️ 逐位元組相同**驗不到「少放檔案」** —— builtin 分支在 repo root 底下跑，contracts.py 就在 root 上。那一類錯誤只有 `python -m tools.submission_check submission/cma1-g50-wt` 抓得到（2026-08-28 上榜炸過一次）。"
+}
