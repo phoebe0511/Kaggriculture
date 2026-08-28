@@ -52,12 +52,15 @@ def _init(cfg):
     """在 worker 行程裡跑一次。import 都留在這裡面，主行程不受影響。"""
     import torch                                          # noqa: PLC0415
 
-    from harness.ppo_rollout import build_net, load_league     # noqa: PLC0415
+    from harness.ppo_rollout import (build_net, load_base_policy,  # noqa: PLC0415
+                                     load_league)
 
     torch.set_num_threads(1)
     _W["cfg"] = cfg
     _W["net"] = build_net(cfg["width"], cfg["blocks"])
     _W["opps"] = load_league(cfg["opponent"])[0] if cfg["opponent"] else None
+    _W["base"] = (load_base_policy(cfg["base_policy"])
+                  if cfg.get("base_policy") else None)
 
 
 def _run(job):
@@ -72,7 +75,8 @@ def _run(job):
     with torch.no_grad():
         vec = VecRollout(_W["net"], n_envs=cfg["envs"], seed0=seed0,
                          episode_steps=cfg["episode_steps"],
-                         opponent=_W["opps"], opp_offset=game0)
+                         opponent=_W["opps"], opp_offset=game0,
+                         base_policy=_W["base"])
         steps, cash, trajs = vec.run(collect=True)
     pairs = [(a, b, vec.opp_index(ei))
              for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -86,13 +90,14 @@ class RolloutPool:
     """
 
     def __init__(self, workers=10, envs=2, opponent="", width=64, blocks=4,
-                 episode_steps=None):
+                 episode_steps=None, base_policy=""):
         self.workers = workers
         self.envs = envs
         # 主行程只留名字，不 import agent 模組 —— 那是 worker 的事。
         self.names = [n.strip() for n in str(opponent).split(",") if n.strip()]
         cfg = {"width": width, "blocks": blocks, "opponent": opponent,
-               "envs": envs, "episode_steps": episode_steps}
+               "envs": envs, "episode_steps": episode_steps,
+               "base_policy": base_policy}
         # 🩸 不要包在 silenced() 裡（見模組說明）。
         self.pool = mp.Pool(workers, initializer=_init, initargs=(cfg,))
 
@@ -131,6 +136,8 @@ def main(argv=None):
     ap.add_argument("--blocks", type=int, default=4)
     ap.add_argument("--episode-steps", type=int, default=0)
     ap.add_argument("--opponent", default="config/params/cma1-g50-wt.json")
+    ap.add_argument("--base-policy", default="",
+                    help="混合模式的骨幹 spec（工人動作用它，網路只出 market）")
     ap.add_argument("--rounds", type=int, default=2,
                     help="跑幾輪。第一輪含 worker 啟動成本，看第二輪")
     args = ap.parse_args(argv)
@@ -140,7 +147,8 @@ def main(argv=None):
     net = build_net(args.width, args.blocks)
     games = args.workers * args.envs
     with RolloutPool(args.workers, args.envs, args.opponent, args.width,
-                     args.blocks, args.episode_steps or None) as pool:
+                     args.blocks, args.episode_steps or None,
+                     args.base_policy) as pool:
         for r in range(args.rounds):
             t0 = time.perf_counter()
             steps, pairs, trajs = pool.collect(net, 5000 + r * games,

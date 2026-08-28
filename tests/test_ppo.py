@@ -166,3 +166,34 @@ def test_ragged_minibatch_gather_picks_the_right_units():
             + [start[3] + i for i in range(counts[3])])
     assert got == want
     assert mb["unit_board"].numpy().tolist() == [0] * counts[1] + [1] * counts[3]
+
+
+def test_hybrid_mode_only_credits_the_market_head():
+    """混合模式：`gen0.act` 出工人動作，網路只出 market。
+
+    🩸 unit head 的 logprob **不能算進去** —— 那些動作不是網路選的，算進去等於
+    在對別人的選擇做 policy gradient，而且 update 重算時會加回來，ratio 就錯了。
+    所以軌跡裡的 unit 數必須是 0，logprob 往返照樣要對得上。
+    """
+    from harness.ppo_rollout import (VecRollout, build_net, load_base_policy,
+                                     load_opponent)
+    from model.ppo import RolloutBatch, evaluate_actions
+
+    spec = "config/params/cma1-g50-wt.json"
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    vec = VecRollout(net, n_envs=2, seed0=88_000, episode_steps=72,
+                     opponent=load_opponent(spec),
+                     base_policy=load_base_policy(spec))
+    steps, _cash, trajs = vec.run(collect=True)
+    assert len(trajs) == 2, "打固定對手時一個 env 只收我方那一條"
+    assert sum(len(t.unit_step) for t in trajs) == 0, "混合模式不該存 unit"
+    assert steps == sum(len(t) for t in trajs)
+
+    batch = RolloutBatch(trajs)
+    rng = np.random.default_rng(0)
+    with torch.no_grad():
+        for mb in batch.minibatches(64, rng):
+            lp, ent, _v = evaluate_actions(net, mb)
+            assert (lp - mb["old_logp"]).abs().max().item() < 1e-3
+            assert torch.isfinite(ent).all()

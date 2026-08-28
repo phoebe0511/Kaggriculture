@@ -45,7 +45,8 @@ with silenced():
     import torch
     import contracts as C
     from harness.ppo_pool import RolloutPool
-    from harness.ppo_rollout import VecRollout, build_net, load_league
+    from harness.ppo_rollout import (VecRollout, build_net,
+                                     load_base_policy, load_league)
     from model import ppo
 
 
@@ -126,7 +127,8 @@ def train(args):
         # rollout 的 88% 是引擎和 gen0，純 CPU —— 多行程幾乎線性加速
         # （2026-08-28 實測 2.21 -> 0.38 秒/局）。網路只佔 12%。
         pool = RolloutPool(args.workers, args.envs, args.opponent,
-                           args.width, args.blocks, args.episode_steps)
+                           args.width, args.blocks, args.episode_steps,
+                           args.base_policy)
         games = args.workers * args.envs
     else:
         opp, opp_names = (load_league(args.opponent) if args.opponent
@@ -134,16 +136,19 @@ def train(args):
         games = args.envs
 
     try:
+        base = (load_base_policy(args.base_policy)
+                if args.base_policy and not args.workers else None)
         run_loop(args, net, opt, out, log_path, pool, games,
                  None if args.workers else opp,
-                 [] if args.workers else opp_names)
+                 [] if args.workers else opp_names, base)
     finally:
         if pool is not None:
             pool.close()
     return 0
 
 
-def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names):
+def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
+             base=None):
     from harness.ppo_rollout import VecRollout                # noqa: PLC0415
     from model import ppo                                     # noqa: PLC0415
 
@@ -158,7 +163,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names):
             vec = VecRollout(net, n_envs=args.envs, seed0=seed0,
                              device=args.device,
                              episode_steps=args.episode_steps,
-                             opponent=opp, opp_offset=it * games)
+                             opponent=opp, opp_offset=it * games,
+                             base_policy=base)
             steps, cash, trajs = vec.run(collect=True)
             pairs = [(a, b, vec.opp_index(ei))
                      for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -256,6 +262,9 @@ def main(argv=None):
                     help="env 的 seed 起點。跟評估用的 seed 錯開")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--init", default="", help="熱啟動用的 .pt")
+    ap.add_argument("--base-policy", default="",
+                    help="混合模式：工人動作交給這個 spec（例如 "
+                         "config/params/cma1-g50-wt.json），網路只出 market")
     ap.add_argument("--market-temp", type=float, default=1.0,
                     help="熱啟動時把 market present head 的 logit 除以它。"
                          "監督式那份飽和到 sigmoid 斜率 1e-5，收不到梯度")

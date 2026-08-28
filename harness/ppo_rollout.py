@@ -59,8 +59,18 @@ with silenced():
     from kaggle_environments import make
     from agents.gen0 import step_toward
     from model.net import KaggricultureNet
+    from agents import gen0 as _gen0
     from model.ppo import (TrajectoryWriter, market_logp_entropy,
                            masked_log_softmax, sample_market)
+
+
+def load_base_policy(name):
+    """混合模式用的骨幹：`gen0.act` 帶一組凍結參數。
+
+    回傳 `(obs, config) -> action`，跟 `load_opponent` 同一條載入路徑，
+    所以「骨幹」和「對手」可以指到同一份 spec。
+    """
+    return load_opponent(name)
 
 
 def build_net(width=64, blocks=4, unit_hidden=256):
@@ -271,7 +281,7 @@ class VecRollout:
 
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
                  episode_steps=None, opponent=None, half_obs=True,
-                 opp_offset=0):
+                 opp_offset=0, base_policy=None):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -290,6 +300,18 @@ class VecRollout:
             if not self.opponents:
                 raise ValueError("league 是空的")
         self.opp_offset = opp_offset
+        #: 混合模式：`gen0.act` 出工人動作，網路只出 market 訂單。
+        #:
+        #: 🩸 這個切法之所以乾淨，是因為 `gen0.act` 的 `_market(...)` 是在
+        #: `unit_actions` **算完之後**才呼叫的（`agents/gen0.py:2543`）——
+        #: 工人排程不依賴這一回合的訂單。耦合是延遲一回合的：這回合買了什麼
+        #: 種子，下一回合 `_plan_basket` / `tasks` 才看得到。那個回饋迴路正是
+        #: 要讓 PPO 學的東西。
+        #:
+        #: 動作空間從「9 個 unit × (100 格 + 44 op)」縮到「21 個 Bernoulli +
+        #: 21 個 categorical(18)」，而且起點是 `cma1-g50-wt` 那條線而不是
+        #: 監督式網路。
+        self.base_policy = base_policy
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
         self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
@@ -400,6 +422,7 @@ class VecRollout:
             sel = ub_np == bi
             board = len(o["farms"][p]["tiles"])
             pos = pos_list[bi]
+            base = self.base_policy(o, c) if self.base_policy else None
             units = []
             for k, (ti, oi) in enumerate(zip(t_np[sel], o_np[sel])):
                 tx, ty = C.target_xy(int(ti), board)
@@ -414,19 +437,33 @@ class VecRollout:
             qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
             qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
             market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
-            action = {"farmer": units[0], "hands": units[1:], "market": market}
-            rec = {"logp": float(lp_np[sel].sum()) + float(mk_lp_np[bi]),
+            if base is None:
+                action = {"farmer": units[0], "hands": units[1:],
+                          "market": market}
+                unit_logp = float(lp_np[sel].sum())
+            else:
+                # 混合：工人動作用骨幹的，只換 market。unit head 的 logprob
+                # **不能算進去** —— 那些動作不是網路選的，算了就是在對別人的
+                # 選擇做 policy gradient。
+                action = dict(base)
+                action["market"] = market
+                unit_logp = 0.0
+            rec = {"logp": unit_logp + float(mk_lp_np[bi]),
                    "value": float(v_np[bi])}
             if collect:
                 # 🩸 每個切片都要 `.copy()`：`sel` 是布林索引所以本來就是複本，
                 # 但 `sp[bi]` 是 view，整批 `sp` 會被下一步蓋掉。
+                # 混合模式存 0 個 unit —— update 重算時 `index_add` 就不會把
+                # 骨幹選的動作算進 logprob（見上面 unit_logp 那段）。
+                keep = sel if base is None else np.zeros_like(sel)
+                mine = keep[sel]              # 這個盤面要留哪幾個 unit
                 rec.update(
                     spatial=(sp16 if sp16 is not None else sp)[bi].copy(),
                     scalar=sc[bi].copy(),
-                    unit_pos=pos.copy(), unit_feats=feat_list[bi].copy(),
-                    op_mask=op_mask_np[sel], tgt_mask=tgt_mask_np[sel],
-                    op_idx=o_np[sel].astype(np.int64),
-                    tgt_idx=t_np[sel].astype(np.int64),
+                    unit_pos=pos[mine], unit_feats=feat_list[bi][mine],
+                    op_mask=op_mask_np[keep], tgt_mask=tgt_mask_np[keep],
+                    op_idx=o_np[keep].astype(np.int64),
+                    tgt_idx=t_np[keep].astype(np.int64),
                     mk_legal=mk_legal_np[bi], mk_present=mp_np[bi],
                     mk_qty=mq_np[bi].astype(np.int64))
             out.append((ei, p, action, rec))
