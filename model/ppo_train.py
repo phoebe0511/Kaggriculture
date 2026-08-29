@@ -128,7 +128,7 @@ def train(args):
         # （2026-08-28 實測 2.21 -> 0.38 秒/局）。網路只佔 12%。
         pool = RolloutPool(args.workers, args.envs, args.opponent,
                            args.width, args.blocks, args.episode_steps,
-                           args.base_policy)
+                           args.base_policy, args.base_side)
         games = args.workers * args.envs
     else:
         opp, opp_names = (load_league(args.opponent) if args.opponent
@@ -168,7 +168,8 @@ def greedy_eval(args, net, opp, base, games, seed0):
     net.eval()
     vec = VecRollout(net, n_envs=games, seed0=seed0, device=args.device,
                      episode_steps=args.episode_steps, opponent=opp,
-                     base_policy=base, greedy=True)
+                     base_policy=base, greedy=True,
+                     base_side=args.base_side)
     _steps, cash, _trajs = vec.run(collect=False)
     pairs = vec.our_cash(cash)
     ours = np.array([a for a, _ in pairs], dtype=np.float64)
@@ -195,7 +196,7 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                              device=args.device,
                              episode_steps=args.episode_steps,
                              opponent=opp, opp_offset=it * games,
-                             base_policy=base)
+                             base_policy=base, base_side=args.base_side)
             steps, cash, trajs = vec.run(collect=True)
             pairs = [(a, b, vec.opp_index(ei))
                      for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -308,8 +309,12 @@ def main(argv=None):
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--init", default="", help="熱啟動用的 .pt")
     ap.add_argument("--base-policy", default="",
-                    help="混合模式：工人動作交給這個 spec（例如 "
-                         "config/params/cma1-g50-wt.json），網路只出 market")
+                    help="混合模式的骨幹 spec（例如 "
+                         "config/params/cma1-g50-wt.json）")
+    ap.add_argument("--base-side", default="units", choices=("units", "market"),
+                    help="骨幹負責哪一半。units＝骨幹出工人、PPO 只練 market "
+                         "head；market＝骨幹出 market、PPO 只練 unit head。"
+                         "固定一邊才分得出分數變化是哪一個 head 造成的")
     ap.add_argument("--market-temp", type=float, default=1.0,
                     help="熱啟動時把 market present head 的 logit 除以它。"
                          "監督式那份飽和到 sigmoid 斜率 1e-5，收不到梯度")

@@ -334,19 +334,56 @@ def shed_tiles(board):
     return [(half - 1, half - 1), (half, half - 1), (half - 1, half), (half, half)]
 
 
-def structure_tiles(board, n):
-    """留給動物的格子：NW 象限裡離 shed 最近的 n 格，由近到遠排序。
-
-    回傳有序 tuple —— 順序要固定，`animal_for` 靠索引決定哪一格養哪一種。
-    """
+def _quadrant_ranked(board, q):
+    """單一象限的格子，離中央 shed 近的優先。同距離固定 y/x，保證可重現。"""
     half = board // 2
-    cx, cy = half - 1, half - 1
-    ranked = sorted(
-        (abs(x - cx) + abs(y - cy), y, x)
-        for y in range(half)
-        for x in range(half)
-    )
-    return tuple((x, y) for _d, y, x in ranked[:n])
+    xs = range(half) if q.endswith("W") else range(half, board)
+    ys = range(half) if q.startswith("N") else range(half, board)
+    inner_x = half - 1 if q.endswith("W") else half
+    inner_y = half - 1 if q.startswith("N") else half
+    ranked = sorted((abs(x - inner_x) + abs(y - inner_y), y, x)
+                    for y in ys for x in xs)
+    return [(x, y) for _d, y, x in ranked]
+
+
+def structure_tiles(board, n, spread=0.0):
+    """留給動物的格子，由近到遠排序。
+
+    回傳有序 tuple —— 順序要固定，`animal_for` 靠索引決定哪一格養哪一種，
+    而且 `PLACE` / `FETCH` / `BUILD` 三個決定必須看到同一份配置。**順序只由
+    `board` / `n` / `spread` 決定，跟當下解鎖了哪些象限無關**，所以買地不會
+    讓已經蓋好的建物換索引。
+
+    `spread=0.0`（預設）＝ 舊行為：12 格全部在 NW。
+    `spread>0`：先給 NW `round(n * (1 - spread))` 格，其餘在 NW/NE/SW 之間
+    輪流分配。還沒解鎖的象限照樣可以被預留 —— 蓋建物那段遇到 `LOCKED` 會
+    `continue`（`agents/gen0.py` 的 `if tile == "LOCKED": continue`），
+    等買下來才蓋。
+
+    🩸 2026-08-29 量到：ladder 八個對手的建物分佈都是 NW/NE/SW 約 6/6/2，
+    我們是 **1,280 局全部 12/0/0**。我們每局 276 次 FEED 全都要走回 NW，
+    MOVE 佔動作的 57.5%（全場最高，對手 42~56%）。這個參數是為了驗那件事，
+    **還沒證實改了會比較好** —— `seed_backlog` 也是機制講得通但實測更差。
+    """
+    if spread <= 0:
+        return tuple(_quadrant_ranked(board, "NW")[:n])
+    order = {q: _quadrant_ranked(board, q) for q in ("NW", "NE", "SW")}
+    out = list(order["NW"][:max(0, min(n, round(n * (1.0 - spread))))])
+    taken = {q: 0 for q in order}
+    taken["NW"] = len(out)
+    while len(out) < n:
+        progressed = False
+        for q in ("NW", "NE", "SW"):
+            if len(out) >= n:
+                break
+            queue = order[q]
+            if taken[q] < len(queue):
+                out.append(queue[taken[q]])
+                taken[q] += 1
+                progressed = True
+        if not progressed:
+            break
+    return tuple(out)
 
 
 def crop_for(x, y, basket):
@@ -2461,7 +2498,11 @@ def act(obs, config=None, params=None, return_plan=False, demand=None):
     days_left = _days_left(obs, config)
     final_day = days_left == 1
 
-    struct_order = structure_tiles(board, p["n_structures"])
+    # 🩸 `structure_spread` 故意不進 DEFAULT_PARAMS —— `tests/test_frozen_reference.py`
+    # 的 test_ref_v11_expands_every_gen1_default 是「ref-v11 == DEFAULT_PARAMS」的
+    # tripwire，加進去會弄壞它（2026-08-28 `seed_backlog` 踩過）。
+    struct_order = structure_tiles(board, p["n_structures"],
+                                   float(p.get("structure_spread", 0.0) or 0.0))
 
     # 雇幾個人由價格決定，種幾格用同一個數字 —— 種下去沒人澆水就是白種。
     #

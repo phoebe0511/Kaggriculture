@@ -76,7 +76,8 @@ def _run(job):
         vec = VecRollout(_W["net"], n_envs=cfg["envs"], seed0=seed0,
                          episode_steps=cfg["episode_steps"],
                          opponent=_W["opps"], opp_offset=game0,
-                         base_policy=_W["base"])
+                         base_policy=_W["base"],
+                         base_side=cfg.get("base_side", "units"))
         steps, cash, trajs = vec.run(collect=True)
     pairs = [(a, b, vec.opp_index(ei))
              for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -90,14 +91,14 @@ class RolloutPool:
     """
 
     def __init__(self, workers=10, envs=2, opponent="", width=64, blocks=4,
-                 episode_steps=None, base_policy=""):
+                 episode_steps=None, base_policy="", base_side="units"):
         self.workers = workers
         self.envs = envs
         # 主行程只留名字，不 import agent 模組 —— 那是 worker 的事。
         self.names = [n.strip() for n in str(opponent).split(",") if n.strip()]
         cfg = {"width": width, "blocks": blocks, "opponent": opponent,
                "envs": envs, "episode_steps": episode_steps,
-               "base_policy": base_policy}
+               "base_policy": base_policy, "base_side": base_side}
         # 🩸 不要包在 silenced() 裡（見模組說明）。
         self.pool = mp.Pool(workers, initializer=_init, initargs=(cfg,))
 
@@ -137,7 +138,10 @@ def main(argv=None):
     ap.add_argument("--episode-steps", type=int, default=0)
     ap.add_argument("--opponent", default="config/params/cma1-g50-wt.json")
     ap.add_argument("--base-policy", default="",
-                    help="混合模式的骨幹 spec（工人動作用它，網路只出 market）")
+                    help="混合模式的骨幹 spec")
+    ap.add_argument("--base-side", default="units", choices=("units", "market"),
+                    help="骨幹負責哪一半：units=骨幹出工人（PPO 練 market head）、"
+                         "market=骨幹出 market（PPO 練 unit head）")
     ap.add_argument("--rounds", type=int, default=2,
                     help="跑幾輪。第一輪含 worker 啟動成本，看第二輪")
     args = ap.parse_args(argv)
@@ -148,7 +152,7 @@ def main(argv=None):
     games = args.workers * args.envs
     with RolloutPool(args.workers, args.envs, args.opponent, args.width,
                      args.blocks, args.episode_steps or None,
-                     args.base_policy) as pool:
+                     args.base_policy, args.base_side) as pool:
         for r in range(args.rounds):
             t0 = time.perf_counter()
             steps, pairs, trajs = pool.collect(net, 5000 + r * games,

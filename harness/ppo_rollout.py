@@ -286,7 +286,8 @@ class VecRollout:
 
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
                  episode_steps=None, opponent=None, half_obs=True,
-                 opp_offset=0, base_policy=None, greedy=False):
+                 opp_offset=0, base_policy=None, greedy=False,
+                 base_side="units"):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -317,6 +318,15 @@ class VecRollout:
         #: 21 個 categorical(18)」，而且起點是 `cma1-g50-wt` 那條線而不是
         #: 監督式網路。
         self.base_policy = base_policy
+        #: 骨幹負責哪一半 —— `"units"` 骨幹出工人（PPO 只練 market head），
+        #: `"market"` 骨幹出 market（PPO 只練 unit head）。
+        #:
+        #: 為什麼要固定一邊：兩邊都讓網路出的話（warm0/1/3）greedy 每次都退，
+        #: 而且退了也分不出是哪一個 head 的錯。固定一邊之後分數變化只能來自
+        #: 另一邊，梯度也只進那一組 head。
+        if base_side not in ("units", "market"):
+            raise ValueError(f"base_side 只能是 units / market，收到 {base_side!r}")
+        self.base_side = base_side
         #: 上場用的解碼（argmax / logit>0）。訓練時是 False。
         self.greedy = greedy
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
@@ -445,25 +455,33 @@ class VecRollout:
             qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
             qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
             market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
+            # 🩸 骨幹選的動作，logprob **不能算進去** —— 那些不是網路選的，
+            # 算了就是在對別人的選擇做 policy gradient，而且 update 重算時會
+            # 加回來，ratio 就錯了。所以哪一邊是骨幹，那一邊的 logprob 歸 0。
             if base is None:
                 action = {"farmer": units[0], "hands": units[1:],
                           "market": market}
-                unit_logp = float(lp_np[sel].sum())
-            else:
-                # 混合：工人動作用骨幹的，只換 market。unit head 的 logprob
-                # **不能算進去** —— 那些動作不是網路選的，算了就是在對別人的
-                # 選擇做 policy gradient。
+                unit_logp, mk_logp = float(lp_np[sel].sum()), float(mk_lp_np[bi])
+                keep, keep_market = sel, True
+            elif self.base_side == "units":
+                # 骨幹出工人，網路只出 market。
                 action = dict(base)
                 action["market"] = market
-                unit_logp = 0.0
-            rec = {"logp": unit_logp + float(mk_lp_np[bi]),
+                unit_logp, mk_logp = 0.0, float(mk_lp_np[bi])
+                keep, keep_market = np.zeros_like(sel), True
+            else:
+                # 反向：骨幹出 market，網路只出工人。
+                action = {"farmer": units[0], "hands": units[1:],
+                          "market": base["market"]}
+                unit_logp, mk_logp = float(lp_np[sel].sum()), 0.0
+                keep, keep_market = sel, False
+            rec = {"logp": unit_logp + mk_logp,
                    "value": float(v_np[bi])}
             if collect:
                 # 🩸 每個切片都要 `.copy()`：`sel` 是布林索引所以本來就是複本，
                 # 但 `sp[bi]` 是 view，整批 `sp` 會被下一步蓋掉。
                 # 混合模式存 0 個 unit —— update 重算時 `index_add` 就不會把
                 # 骨幹選的動作算進 logprob（見上面 unit_logp 那段）。
-                keep = sel if base is None else np.zeros_like(sel)
                 mine = keep[sel]              # 這個盤面要留哪幾個 unit
                 rec.update(
                     spatial=(sp16 if sp16 is not None else sp)[bi].copy(),
@@ -472,7 +490,12 @@ class VecRollout:
                     op_mask=op_mask_np[keep], tgt_mask=tgt_mask_np[keep],
                     op_idx=o_np[keep].astype(np.int64),
                     tgt_idx=t_np[keep].astype(np.int64),
-                    mk_legal=mk_legal_np[bi], mk_present=mp_np[bi],
+                    # 🩸 反向混合把 mk_legal 整列設成 False —— `market_logp_entropy`
+                    # 的每一項都乘 `legal`，所以 market 對 logprob 和 entropy 的
+                    # 貢獻剛好是 0，update 重算時自然不會把骨幹的訂單算進來。
+                    mk_legal=(mk_legal_np[bi] if keep_market
+                              else np.zeros_like(mk_legal_np[bi])),
+                    mk_present=mp_np[bi],
                     mk_qty=mq_np[bi].astype(np.int64))
             out.append((ei, p, action, rec))
         return out

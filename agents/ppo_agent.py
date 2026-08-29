@@ -22,8 +22,15 @@ market**，跟 `harness/ppo_rollout.py` 的 `--base-policy` 完全同一個組�
      "params": {"ckpt": "model/artifacts/ppo-hybrid/best.pt",
                 "base": "config/params/cma1-g50-wt.json", "greedy": true}}
 
-🩸 混合模式**用不到 op / target head**，所以 `labels` 是 `immediate` 還是
-`target` 在這條路上不影響結果（純網路那條差 31%，§44）。
+`base_side` 決定骨幹負責哪一半：
+
+    "units"（預設）  骨幹出工人動作，網路只出 market
+    "market"         骨幹出 market，網路只出工人動作
+
+🩸 `base_side="units"` **用不到 op / target head**，所以 `labels` 是
+`immediate` 還是 `target` 在那條路上不影響結果（純網路那條差 31%，§44）。
+`base_side="market"` 剛好相反 —— 它**只**用 op / target head，所以 `labels`
+一定要跟 checkpoint 對得上。
 
 ## greedy 還是取樣
 
@@ -101,6 +108,9 @@ def act(obs, config=None, params=None):
     net = _load(path)
     greedy = bool(p.get("greedy", True))
     base_spec = p.get("base") or ""
+    base_side = p.get("base_side", "units")
+    if base_side not in ("units", "market"):
+        raise SystemExit(f"base_side 只能是 units / market，收到 {base_side!r}")
 
     spatial, scalar = C.encode(obs, config)
     pos, feats = C.encode_units(obs, config)
@@ -134,7 +144,7 @@ def act(obs, config=None, params=None):
     board = len(obs["farms"][obs["player"]]["tiles"])
     t_np, o_np = t_idx.numpy(), o_idx.numpy()
     units = []
-    for i in range(n) if not base_spec else ():
+    for i in range(n) if (not base_spec or base_side == "market") else ():
         tx, ty = C.target_xy(int(t_np[i]), board)
         cur = tuple(pos[i])
         if (int(cur[0]), int(cur[1])) != (tx, ty):
@@ -147,8 +157,14 @@ def act(obs, config=None, params=None):
     market = C.decode_market_orders(
         np.where(mk_pres.numpy(), 1.0, -1.0), qty_onehot, obs, config)
     if base_spec:
-        # 🩸 只換 market。工人動作整個沿用 base，包含它自己的 farmer/hands 拆法。
-        return {**_load_base(base_spec)(obs, config), "market": market}
+        base = _load_base(base_spec)(obs, config)
+        if base_side == "units":
+            # 🩸 只換 market。工人動作整個沿用 base，包含它自己的
+            # farmer/hands 拆法。
+            return {**base, "market": market}
+        # 反向：只換 market 以外的部分 —— 工人是網路的，訂單沿用 base。
+        return {"farmer": units[0], "hands": units[1:],
+                "market": base["market"]}
     return {"farmer": units[0], "hands": units[1:], "market": market}
 
 

@@ -255,3 +255,78 @@ def test_hybrid_agent_takes_units_from_base_and_market_from_net(tmp_path):
     # 不給 base 就是純網路那條，工人動作不該再等於 gen0。
     pure = act(obs, cfg, {"ckpt": str(ckpt), "greedy": True})
     assert set(pure) == set(base)
+
+
+def test_reverse_hybrid_only_credits_the_unit_heads():
+    """反向混合：骨幹出 market、網路只出工人動作。
+
+    要守的是 `base_side="units"` 的鏡像：
+    - unit 樣本**要**存（那些動作是網路選的）
+    - `mk_legal` 整列必須是 False —— `market_logp_entropy` 每一項都乘 `legal`，
+      所以 market 對 logprob 的貢獻剛好 0，update 重算時不會把骨幹的訂單
+      算進來。少了這一步，ratio 從第一輪就不是 1，樣本會被 clip 掉。
+    """
+    from harness.ppo_rollout import (VecRollout, build_net, load_base_policy,
+                                     load_opponent)
+    from model.ppo import RolloutBatch, evaluate_actions
+
+    spec = "config/params/cma1-g50-wt.json"
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    vec = VecRollout(net, n_envs=2, seed0=91_000, episode_steps=72,
+                     opponent=load_opponent(spec),
+                     base_policy=load_base_policy(spec),
+                     base_side="market")
+    steps, _cash, trajs = vec.run(collect=True)
+    assert len(trajs) == 2
+    assert sum(len(t.unit_step) for t in trajs) > 0, "反向混合要存 unit"
+    for t in trajs:
+        assert not t.mk_legal.any(), "mk_legal 沒清掉，market 會被算進 logprob"
+    assert steps == sum(len(t) for t in trajs)
+
+    batch = RolloutBatch(trajs)
+    rng = np.random.default_rng(0)
+    with torch.no_grad():
+        for mb in batch.minibatches(64, rng):
+            lp, ent, _v = evaluate_actions(net, mb)
+            assert (lp - mb["old_logp"]).abs().max().item() < 1e-3
+            assert torch.isfinite(ent).all()
+
+
+def test_base_side_rejects_a_typo():
+    """打錯字要當場炸掉，不要安靜地退回預設值。"""
+    from harness.ppo_rollout import build_net
+
+    torch.manual_seed(0)
+    with pytest.raises(ValueError, match="base_side"):
+        from harness.ppo_rollout import VecRollout
+
+        VecRollout(build_net(width=16, blocks=1), n_envs=1,
+                   base_side="markets")
+
+
+def test_reverse_hybrid_agent_takes_market_from_base(tmp_path):
+    """agent 側的鏡像：market 逐項等於 base，工人動作不等於。"""
+    from agents.ppo_agent import act
+    from harness.ppo_rollout import build_net, load_base_policy
+
+    spec = "config/params/cma1-g50-wt.json"
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    ckpt = tmp_path / "r.pt"
+    torch.save({"state_dict": net.state_dict(), "width": 16, "blocks": 2}, ckpt)
+
+    from kaggle_environments import make
+
+    env = make("kaggriculture", debug=False)
+    env.reset(2)
+    obs = env.steps[0][0]["observation"]
+    cfg = env.configuration
+
+    base = load_base_policy(spec)(obs, cfg)
+    got = act(obs, cfg, {"ckpt": str(ckpt), "base": spec,
+                         "base_side": "market", "greedy": True})
+    assert got["market"] == base["market"], "market 沒有沿用 base"
+    assert set(got) == set(base)
+    # 隨機權重的網路跟 gen0 選到完全相同的工人動作，機率極低。
+    assert (got["farmer"], got["hands"]) != (base["farmer"], base["hands"])
