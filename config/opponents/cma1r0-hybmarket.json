@@ -1,0 +1,9 @@
+{
+  "name": "cma1r0-hybmarket",
+  "entry": "agents.ppo_agent:act",
+  "params": {
+    "base": "config/params/cma1-g50-wt.json", "base_side": "units",
+    "ckpt": "model/artifacts/ckpt-cma1-round0-tgt/best.pt",
+    "greedy": true
+  }
+}

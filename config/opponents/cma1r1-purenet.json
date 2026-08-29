@@ -1,0 +1,2 @@
+{ "name": "cma1r1-purenet", "entry": "agents.ppo_agent:act",
+  "params": {  "ckpt": "model/artifacts/ckpt-cma1-round1-tgt/best.pt", "greedy": true } }
