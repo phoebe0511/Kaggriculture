@@ -228,6 +228,17 @@ def _load(name):
     return fn, dict(spec.get("params") or {})
 
 
+def _tag(name):
+    """policy 名字 -> 能當檔名的短標籤。
+
+    🩸 `--policy` 吃得下 `config/params/cma1-g50-wt.json` 這種**路徑**，
+    直接拼進檔名的話斜線會被當成目錄，`np.savez_compressed` 就丟
+    `FileNotFoundError`（父目錄不存在）—— 而且是在跑完整局之後才丟，
+    那一局的計算全部白費。
+    """
+    return Path(name).stem if ("/" in name or "\\" in name) else name
+
+
 def _play(job):
     """跑一局並錄下 expert 的答案。top-level 才 pickle 得動（Windows spawn）。"""
     policy_name, expert_name, opponent, seed, out_dir = job
@@ -261,7 +272,7 @@ def _play(job):
                 f"{type(exc).__name__}: {exc}", "cash": 0.0, "boards": 0}
 
     arrays = rec.finish(rewards, episode_id=seed)
-    dest = Path(out_dir) / f"{policy_name}-{opponent}-{seed:06d}.npz"
+    dest = Path(out_dir) / f"{_tag(policy_name)}-{opponent}-{seed:06d}.npz"
     np.savez_compressed(dest, **arrays)
     return {"seed": seed, "opponent": opponent, "error": err,
             "cash": rewards[0], "opp_cash": rewards[1],
