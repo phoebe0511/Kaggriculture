@@ -1,0 +1,2 @@
+{ "name": "cma1r2-drive", "entry": "agents.ppo_agent:act",
+  "params": { "ckpt": "model/artifacts/ckpt-cma1-round2-tgt/best.pt", "greedy": true } }
