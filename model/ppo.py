@@ -70,16 +70,33 @@ def compute_gae(rewards, values, dones, gamma=0.997, lam=0.95):
     0.997 的半衰期約 230 步（差不多 10 天），是這個遊戲的合理尺度。
 
     `values` 要有 T+1 個元素（最後一個是 bootstrap）。
+
+    `lam` 可以是純量，也可以是 `[T]` 的陣列 —— **每一步用不同的 λ**。
+    λ 控制「往後看多遠的實際 reward，之後才交給 value head 猜」：等效視窗是
+    `1/(1 - gamma*lam)`。這個遊戲前 10 天現金幾乎不動（§55.1），收穫在第 240
+    步才來，所以前段需要大 λ、後段不需要。用 `phased_lam()` 產那個陣列。
     """
     T = len(rewards)
+    lam_t = np.broadcast_to(np.asarray(lam, dtype=np.float64), (T,))
     adv = np.zeros(T, dtype=np.float32)
     last = 0.0
     for t in reversed(range(T)):
         nonterminal = 1.0 - dones[t]
         delta = rewards[t] + gamma * values[t + 1] * nonterminal - values[t]
-        last = delta + gamma * lam * nonterminal * last
+        last = delta + gamma * lam_t[t] * nonterminal * last
         adv[t] = last
     return adv, adv + values[:T]
+
+
+def phased_lam(T, split, lam_early, lam_late):
+    """`[T]` 的 λ 陣列：前 `split` 步用 `lam_early`，之後用 `lam_late`。
+
+    `split <= 0` 回傳整條都是 `lam_late` 的陣列（等於沒分段）。
+    """
+    out = np.full(T, float(lam_late), dtype=np.float64)
+    k = max(0, min(int(split), T))
+    out[:k] = float(lam_early)
+    return out
 
 
 def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
@@ -106,27 +123,70 @@ def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
     }
 
 
-def step_rewards(cash_a, cash_b, zero_sum=False):
+def step_rewards(cash_a, cash_b, zero_sum=False, settle_step=0,
+                 plants_a=None, plants_b=None, plant_weight=0.0,
+                 gamma=0.997):
     """逐步現金序列 -> dense reward。`cash_*` 是 `[T+1]`。
 
-    🩸 **預設不是零和的。** 2026-08-28 實測（`ppo-warm1` 的 last.pt、6 局、
-    4,314 步、對手 `cma1-g50-wt`）：
+    ## `settle_step`：前段不逐步發分，到那一步一次結算
+
+    §55.1 量到 ladder 頂端**前 10 天現金都在 2,000 以下**（步 257 才回到起始
+    的 3,000）。逐步 reward 在那段是把「正確地把錢花光」當成扣分：第一個回合
+    `(22-3000)/10000 = -0.298`，是整場勝負訊號（`0.997^718 = 0.1156`）的
+    2.58 倍。
+
+    `settle_step=N` 把前 N 步的逐步 reward 全部歸零，改成在第 N-1 步一次付
+    它們的和。**總和不變**（逐步差值會 telescope），變的是中途看不看得到。
+
+    🩸 這只拿掉「假的扣分」，**不會**把 credit 傳回去 —— 第 239 步的一筆錢，
+    GAE 在 lam=0.95 下（等效視窗 19 步）一樣傳不到第 0 步。要傳回去得配
+    `phased_lam()`。兩件事是分開的，可以各自開關。
+
+    ## `plant_weight`：把「種著作物的格子數」加進來
+
+    §55.6 量到（6 局 ladder 頂端重播）：我們第 0 天的作物格是 5，頂端 9~19
+    （差 -11.3，sd 4.3）；第 5 天 13 對 18~19（差 -5.7，**sd 0.5**）。中後期
+    看不出差別（sd 14 左右）。
+
+    用的是 potential-based shaping：`gamma*Φ(s') - Φ(s)`，`Φ = w × 作物格數`。
+    這個形式**不會改變最佳策略**（Ng et al. 1999）—— 整條軌跡加起來只剩
+    `gamma^T Φ(s_T) - Φ(s_0)`，所以它不是在教「格子多就是好」，只是把「種下去」
+    的功勞提前發，不用等 240 步後收穫。給 `plants_b` 就用雙方的差。
+
+    ## `zero_sum`：⚠️ 預設值還是 False，但那個決定已經被推翻
+
+    §37（2026-08-28）把預設改成只看自己，理由是實測（`ppo-warm1` 的 last.pt、
+    6 局、4,314 步、對手 `cma1-g50-wt`）對手項佔 86.4% 的變異數：
 
         我方現金增量   var    212,497
         對手現金增量   var  1,350,738     <- 6.4 倍
         相關           +0.574
         var(我方 − 對手) = 948,475        <- 比只用我方大 4.5 倍
 
-    對手的收入我們幾乎控制不了（只有市場價格那一點間接影響）。把它減進 reward
-    等於在 advantage 裡灌一個**佔 86.4% 變異數的不可控項** —— 相關 0.574 帶來的
-    control variate 效果遠遠補不回來。reward std 從 0.0974 降到 0.0461。
+    **§54 的 A/B 證明那個決定是錯的**（兩組同 seed、除 reward 外全同，第 0 輪
+    取樣現金都是 63,239）：own-cash 後 10 輪掉到 23,861，zero-sum 是 56,789，
+    差 +26,612（t=+6.5）。§37 的兩個前提都不成立 —— 「控制不了」被 §49 的
+    sp100 推翻（只改自己建物位置，對手現金動 +11,158），變異數的擔憂也沒發生。
 
-    競爭性由期末的勝負 bonus 保留。`zero_sum=True` 是原本的形式，打自對局
-    或 league 時可能還是要用（那時對手的行為是我們自己的 policy）。
+    預設值先留著不動（會影響所有既有的重現腳本），但**新的跑一律要
+    `zero_sum=True`**。
     """
     da = np.diff(np.asarray(cash_a, dtype=np.float64))
     db = np.diff(np.asarray(cash_b, dtype=np.float64))
     r = (da - db) / REWARD_SCALE if zero_sum else da / REWARD_SCALE
+    if plant_weight and plants_a is not None:
+        pa = np.asarray(plants_a, dtype=np.float64)
+        phi = pa - np.asarray(plants_b, dtype=np.float64) \
+            if plants_b is not None else pa
+        phi = phi * float(plant_weight)
+        # potential-based shaping：gamma*Φ(s_{t+1}) - Φ(s_t)
+        r = r + gamma * phi[1:] - phi[:-1]
+    if settle_step:
+        k = max(0, min(int(settle_step), len(r)))
+        if k:
+            acc = r[:k].sum()
+            r[:k] = 0.0
+            r[k - 1] = acc
     if len(r):
         r[-1] += TERMINAL_BONUS * np.sign(cash_a[-1] - cash_b[-1])
     return r.astype(np.float32)
@@ -244,13 +304,17 @@ class Trajectory:
     tgt_mask: np.ndarray       # [U, N_TARGET_CELLS] bool
     op_idx: np.ndarray         # [U] int64
     tgt_idx: np.ndarray        # [U] int64
+    #: [T+1, 2]（我方, 對手）種著作物的格子數。跟 `cash` 一樣多一格期末。
+    #: 舊的呼叫端不給就是 None，`step_rewards` 的 shaping 自動關掉。
+    plants: np.ndarray = None
 
     def __len__(self):
         return len(self.value)
 
     def nbytes(self):
         return sum(getattr(self, f.name).nbytes
-                   for f in dataclasses.fields(self))
+                   for f in dataclasses.fields(self)
+                   if getattr(self, f.name) is not None)
 
 
 class TrajectoryWriter:
@@ -263,15 +327,26 @@ class TrajectoryWriter:
     def __init__(self):
         self.rows = []
         self.cash = []
+        self.plants = []
 
-    def add(self, rec, my_cash, opp_cash):
+    def add(self, rec, my_cash, opp_cash, my_plants=None, opp_plants=None):
         self.rows.append(rec)
         self.cash.append((my_cash, opp_cash))
+        if my_plants is not None:
+            self.plants.append((my_plants, opp_plants or 0))
 
-    def finish(self, final_my_cash, final_opp_cash):
+    def finish(self, final_my_cash, final_opp_cash,
+               final_my_plants=None, final_opp_plants=None):
         rows = self.rows
         if not rows:
             return None
+        # 格子數要跟 cash 一樣有 T+1 個。中途有一步沒給就整條關掉，
+        # 免得長度對不上在 step_rewards 裡才炸。
+        plants = None
+        if len(self.plants) == len(rows) and final_my_plants is not None:
+            plants = np.array(
+                self.plants + [(final_my_plants, final_opp_plants or 0)],
+                dtype=np.float32)
         counts = [len(r["op_idx"]) for r in rows]
         return Trajectory(
             spatial=np.stack([r["spatial"] for r in rows]),
@@ -290,6 +365,7 @@ class TrajectoryWriter:
             tgt_mask=np.concatenate([r["tgt_mask"] for r in rows]),
             op_idx=np.concatenate([r["op_idx"] for r in rows]),
             tgt_idx=np.concatenate([r["tgt_idx"] for r in rows]),
+            plants=plants,
         )
 
 
@@ -300,19 +376,29 @@ class RolloutBatch:
     把同一步的 unit 拆到不同 minibatch 會算出錯的 logprob。
     """
 
-    def __init__(self, trajs, gamma=0.997, lam=0.95, zero_sum=False):
+    def __init__(self, trajs, gamma=0.997, lam=0.95, zero_sum=False,
+                 settle_step=0, plant_weight=0.0,
+                 lam_early=0.0, lam_split=0):
         trajs = [t for t in trajs if t is not None and len(t)]
         if not trajs:
             raise ValueError("沒有軌跡")
         advs, rets, offs, base = [], [], [], 0
         for tr in trajs:
             T = len(tr)
-            rew = step_rewards(tr.cash[:, 0], tr.cash[:, 1], zero_sum)
+            p = tr.plants
+            rew = step_rewards(
+                tr.cash[:, 0], tr.cash[:, 1], zero_sum,
+                settle_step=settle_step,
+                plants_a=None if p is None else p[:, 0],
+                plants_b=None if p is None else p[:, 1],
+                plant_weight=plant_weight, gamma=gamma)
             dones = np.zeros(T, dtype=np.float32)
             dones[-1] = 1.0
             # 期末 bootstrap 是 0：這一局真的結束了，沒有後續價值。
             v = np.concatenate([tr.value, np.zeros(1, np.float32)])
-            a, r = compute_gae(rew, v, dones, gamma, lam)
+            lam_t = (phased_lam(T, lam_split, lam_early, lam)
+                     if lam_early and lam_split else lam)
+            a, r = compute_gae(rew, v, dones, gamma, lam_t)
             advs.append(a)
             rets.append(r)
             offs.append(base)

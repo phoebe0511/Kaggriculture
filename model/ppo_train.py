@@ -262,7 +262,11 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
         t1 = time.perf_counter()
         # 122 MB 的 concatenate 不是免費的，單獨計時免得算進 rollout 或 update。
         batch = ppo.RolloutBatch(trajs, gamma=args.gamma, lam=args.lam,
-                                 zero_sum=args.zero_sum)
+                                 zero_sum=args.zero_sum,
+                                 settle_step=args.settle_step,
+                                 plant_weight=args.plant_weight,
+                                 lam_early=args.lam_early,
+                                 lam_split=args.lam_split)
         del trajs
         t_batch = time.perf_counter() - t1
         t1 = time.perf_counter()
@@ -361,6 +365,24 @@ def main(argv=None):
     ap.add_argument("--zero-sum", action="store_true",
                     help="reward 減掉對手的現金增量。實測那一項佔 86.4%% 的"
                          "變異數而且我們控制不了，所以預設關掉（§37）")
+    ap.add_argument("--settle-step", type=int, default=0,
+                    help="前 N 步不逐步發 reward，改成在第 N-1 步一次結算它們"
+                         "的和。總和不變。ladder 頂端前 10 天（240 步）現金都"
+                         "在 2,000 以下（§55.1），逐步發等於把「正確地把錢花"
+                         "光」當扣分。0 = 關掉")
+    ap.add_argument("--plant-weight", type=float, default=0.0,
+                    help="把「種著作物的格子數」用 potential-based shaping 加"
+                         "進 reward（Φ = w × 我方格數 − 對方格數）。這個形式"
+                         "不改變最佳策略，只是把種下去的功勞提前發。§55.6 量"
+                         "到我們第 5 天比 ladder 頂端少 5.7 格（sd 0.5）。"
+                         "0 = 關掉")
+    ap.add_argument("--lam-early", type=float, default=0.0,
+                    help="前 --lam-split 步改用這個 lam（後段仍用 --lam）。"
+                         "等效視窗是 1/(1-gamma*lam)：0.95 是 19 步、0.998 是"
+                         "200 步。收穫在第 240 步，所以前段需要大 lam、後段不"
+                         "需要。0 = 整局同一個 lam")
+    ap.add_argument("--lam-split", type=int, default=0,
+                    help="--lam-early 管到第幾步。建議 240（第 10 天）")
     ap.add_argument("--target-kl", type=float, default=0.0,
                     help="聯合動作的 approx_kl 超過 1.5 倍就停掉這一輪的 "
                          "epoch。0 = 不管")

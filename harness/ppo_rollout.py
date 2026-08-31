@@ -107,6 +107,19 @@ def load_league(names):
     return [load_opponent(n) for n in picks], picks
 
 
+def count_plants(farm):
+    """一個 farm 上種著作物的格子數。
+
+    判定條件跟 `agents/gen0.py:2250` 的 `crop_count` 一樣（`kind == "PLANT"`）
+    —— 兩邊要一致，不然 reward shaping 量的東西跟 agent 看的不是同一個。
+
+    §55.6：6 局 ladder 頂端重播，我們第 0 天是 5 格、頂端 9~19（差 -11.3），
+    第 5 天 13 對 18~19（差 -5.7，sd 0.5）。
+    """
+    return sum(1 for row in farm["tiles"] for t in row
+               if isinstance(t, dict) and t.get("kind") == "PLANT")
+
+
 def masked_sample(logits, mask, greedy=False, gen=None):
     """一次對所有 unit 取樣。`logits` / `mask` 都是 `[n, K]`。
 
@@ -526,6 +539,10 @@ class VecRollout:
         writers = {(ei, p): TrajectoryWriter()
                    for ei in range(self.n_envs) for p in range(2)
                    if self._ours(ei, p)}
+        # 期末的 farms 拿不到（引擎結束後只剩 reward），所以用最後一次觀測到的
+        # 格子數當 Φ(s_T)。potential-based shaping 只要 Φ 一致就成立，這樣做
+        # 等於期末那一步不發 shaping —— 剛好是我們要的。
+        last_plants = {}
         for _ in range(max_steps):
             active = self._gather()
             if not active:
@@ -544,9 +561,12 @@ class VecRollout:
                     # 那一步才填 reward（kaggriculture.py:963）。現金要從
                     # observation 的 farms 拿。
                     farms = obs["farms"]
+                    pl = (count_plants(farms[p]),
+                          count_plants(farms[1 - p]))
+                    last_plants[(ei, p)] = pl
                     writers[(ei, p)].add(
                         rec, float(farms[p]["money"]),
-                        float(farms[1 - p]["money"]))
+                        float(farms[1 - p]["money"]), pl[0], pl[1])
             # 引擎自己不印東西，不用每一步都 dup2 —— `silenced()` 一次要 4 個
             # syscall，720 步 × K 個 env 加起來很可觀。
             for ei, pair in acts.items():
@@ -556,7 +576,8 @@ class VecRollout:
         trajs = []
         if collect:
             for (ei, p), w in writers.items():
-                tr = w.finish(cash[ei][p], cash[ei][1 - p])
+                pl = last_plants.get((ei, p), (None, None))
+                tr = w.finish(cash[ei][p], cash[ei][1 - p], pl[0], pl[1])
                 if tr is not None:
                     trajs.append(tr)
         return steps, cash, trajs
