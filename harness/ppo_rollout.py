@@ -107,7 +107,7 @@ def load_league(names):
     return [load_opponent(n) for n in picks], picks
 
 
-def masked_sample(logits, mask, greedy=False):
+def masked_sample(logits, mask, greedy=False, gen=None):
     """一次對所有 unit 取樣。`logits` / `mask` 都是 `[n, K]`。
 
     回傳 `(idx [n], logprob [n])`，都還在 tensor 上 —— **不要在這裡 `.cpu()`**，
@@ -123,8 +123,9 @@ def masked_sample(logits, mask, greedy=False):
     # 🩸 **PPO 優化的是取樣版，上場跑的是 greedy 版，兩者不保證同方向。**
     # 2026-08-28 實測：取樣現金 12,999 -> 31,772（在升），同一段訓練的 greedy
     # 是 44,060 -> 30,740（在降）。所以挑 checkpoint 一定要看 greedy。
+    # 🩸 `gen` 不給就走全域 RNG，整段 rollout 不可重現（見 VecRollout.__init__）。
     idx = (logp.argmax(-1) if greedy
-           else torch.multinomial(logp.exp(), 1).squeeze(-1))
+           else torch.multinomial(logp.exp(), 1, generator=gen).squeeze(-1))
     return idx, logp.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 
 
@@ -329,6 +330,18 @@ class VecRollout:
         self.base_side = base_side
         #: 上場用的解碼（argmax / logit>0）。訓練時是 False。
         self.greedy = greedy
+        #: 🩸 動作取樣專用的 RNG，種子從 `seed0` 來。
+        #:
+        #: 沒有這個的話 `torch.multinomial` / `torch.rand` 走全域 RNG，而
+        #: `harness/ppo_pool.py` 的 worker 只呼叫 `torch.set_num_threads(1)`、
+        #: **沒有 seed torch** —— 每個 worker 行程拿到的是它啟動時碰巧的種子。
+        #:
+        #: 2026-08-31 踩到的後果：同一個 checkpoint、同樣的參數跑兩次，
+        #: 第 0 輪現金 63,543 vs 60,704、第 10 輪 greedy 77,628 vs 46,490
+        #: （差 4.4 個評估標準誤）。**兩次單獨的訓練沒辦法拿來 A/B。**
+        #: `--seed0` 本來只餵給環境（決定地圖），沒餵給動作取樣。
+        self.gen = torch.Generator(device=device)
+        self.gen.manual_seed(int(seed0))
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
         self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
@@ -414,8 +427,8 @@ class VecRollout:
             [C.legal_target_mask(o, c) for _, _, o, c in items])
         op_mask = torch.as_tensor(op_mask_np, device=dev)
         tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
-        t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy)
-        o_idx, o_lp = masked_sample(op_logits, op_mask, self.greedy)
+        t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy, self.gen)
+        o_idx, o_lp = masked_sample(op_logits, op_mask, self.greedy, self.gen)
 
         # market 也要取樣，不能用 `decode_market_orders` 的門檻 + argmax ——
         # 那條路沒有 logprob，HIRE / BUY_LAND / BUY_SEED 就拿不到 gradient。
@@ -423,7 +436,7 @@ class VecRollout:
             [C.legal_market_mask(o, c) for _, _, o, c in items])
         mk_legal = torch.as_tensor(mk_legal_np, device=dev)
         mk_pres_act, mk_qty_act = sample_market(mk_present, mk_qty, mk_legal,
-                                                self.greedy)
+                                                self.greedy, self.gen)
         mk_lp, _mk_ent = market_logp_entropy(
             mk_present, mk_qty, mk_legal, mk_pres_act, mk_qty_act)
 

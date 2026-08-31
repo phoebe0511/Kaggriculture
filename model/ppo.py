@@ -191,7 +191,8 @@ def market_logp_entropy(present_logits, qty_logits, legal_mask,
             (bern_ent + q_ent * p * legal).sum(-1))
 
 
-def sample_market(present_logits, qty_logits, legal_mask, greedy=False):
+def sample_market(present_logits, qty_logits, legal_mask, greedy=False,
+                  gen=None):
     """從 market head 取樣。回傳 `(present [B, ops] bool, qty [B, ops] int64)`。
 
     非法的 op 直接設成不出手 —— `contracts.decode_market_orders` 反正也會擋，
@@ -200,15 +201,23 @@ def sample_market(present_logits, qty_logits, legal_mask, greedy=False):
 
     `greedy=True` 走機率大於一半（logit > 0）和 argmax —— 跟
     `agents/ppo_agent.py` 和 `agents/gen3_target.py` 上場時的解碼**必須一致**。
+
+    🩸 `gen` 是取樣用的 `torch.Generator`。**不給的話走全域 RNG，整段 rollout
+    就不可重現** —— 2026-08-31 踩到：同一個 checkpoint、同樣的 seed 跑兩次，
+    第 0 輪的現金就差 2,839，第 10 輪差 31,138（10 局評估的 SE 才 ~7,000）。
+    兩次單獨的訓練沒辦法拿來 A/B，因為 run-to-run 的差異比要量的效果還大。
     """
     if greedy:
         present = (present_logits > 0.0) & legal_mask.bool()
         return present, qty_logits.argmax(dim=-1)
     p = torch.sigmoid(present_logits)
-    present = (torch.rand_like(p) < p) & legal_mask.bool()
+    # `torch.rand_like` 收不到 generator，要寫成 `torch.rand`。
+    u = torch.rand(p.shape, dtype=p.dtype, device=p.device, generator=gen)
+    present = (u < p) & legal_mask.bool()
     probs = torch.softmax(qty_logits, dim=-1)
     b, o, k = probs.shape
-    qty = torch.multinomial(probs.reshape(-1, k), 1).reshape(b, o)
+    qty = torch.multinomial(probs.reshape(-1, k), 1,
+                            generator=gen).reshape(b, o)
     return present, qty
 
 
