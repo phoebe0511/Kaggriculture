@@ -438,6 +438,7 @@ def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
     acc, n, done_epochs = {}, 0, 0
     for _ in range(epochs):
         done_epochs += 1
+        ep_kl, ep_n = 0.0, 0
         for mb in batch.minibatches(minibatch, rng, device):
             new_logp, ent, value = evaluate_actions(net, mb)
             loss, parts = ppo_loss(new_logp, mb["old_logp"], mb["adv"],
@@ -453,7 +454,17 @@ def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
             for k, v in parts.items():
                 acc[k] = acc.get(k, 0.0) + v
             n += 1
-        if target_kl and acc["approx_kl"] / n > 1.5 * target_kl:
+            ep_kl += parts["approx_kl"]
+            ep_n += 1
+        # 🩸 2026-08-31：這裡本來是 `acc["approx_kl"] / n`，也就是**所有 epoch
+        # 累積起來**的平均。第 0 個 epoch 的 KL 幾乎是 0（實測 0.00136），把
+        # 平均一路拉低 —— 8 個 epoch 跑完累積平均只到 0.0272，永遠碰不到
+        # `1.5 * 0.02 = 0.03`，而第 7 個 epoch 的實際 KL 已經是 0.0487。
+        #
+        # 後果：`--target-kl` 在 `ppo-hybrid` / `ppo-cma1-market` 兩次跑裡
+        # **一次都沒觸發**（300/300 輪都跑滿 8 個 epoch），信賴區域形同不存在。
+        # 反而是從零那次（KL 大到累積平均也超標）一直在觸發。
+        if target_kl and ep_kl / max(ep_n, 1) > 1.5 * target_kl:
             break
     net.eval()
     out = {k: v / max(n, 1) for k, v in acc.items()}
