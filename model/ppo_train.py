@@ -28,6 +28,7 @@ bonus）。從那裡熱啟動的話 value loss 一開始會很大，前幾輪的
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import time
@@ -179,6 +180,61 @@ def greedy_eval(args, net, opp, base, games, seed0):
     return float(ours.mean()), float(np.mean(ours > theirs))
 
 
+def watch(dirs):
+    """看一或多個訓練目錄的進度，不用等它跑完。
+
+        python -m model.ppo_train --watch model/artifacts/ppo-a model/artifacts/ppo-b
+
+    多給幾個目錄就並排比 —— 這是拿來做 A/B 的。**比之前先確認兩邊的
+    `--seed` 一樣**，不然比到的是 run-to-run 的隨機差異（2026-08-31 踩過：
+    同設定跑兩次，第 10 輪 greedy 差 31,138，而評估的 SE 只有約 7,000）。
+
+    greedy 才是挑 checkpoint 的依據 —— 取樣現金會跟它反向（§44）。
+    """
+    rows = {}
+    for d in dirs:
+        f = Path(d) / "train.jsonl"
+        if not f.is_file():
+            print("  " + str(d) + "：沒有 train.jsonl")
+            continue
+        rows[Path(d).name] = [json.loads(l) for l in
+                              io.open(f, encoding="utf-8") if l.strip()]
+    if not rows:
+        return 1
+    for name, R in rows.items():
+        last = R[-1]
+        g = [r for r in R if "greedy_cash" in r]
+        print("")
+        tail = ("   greedy 評估 %d 次" % len(g)) if g else "   （還沒有 greedy）"
+        print("%s   %d 輪%s" % (name, len(R), tail))
+        print("  最後一輪  取樣現金 %9s  勝率 %.2f  ent %6.2f  ev %+.3f"
+              % (format(last["cash_mean"], ",.0f"), last["win_rate"],
+                 last["entropy"], last["explained_var"]))
+        kl = last.get("kl_last_epoch")
+        klc = ("KL(末 epoch) %.4f  " % kl) if kl is not None else ""
+        print("  最後一輪  epochs %d  %sclipfrac %.3f"
+              % (int(last["epochs_done"]), klc, last["clipfrac"]))
+        if g:
+            print("  %5s%13s%7s" % ("輪", "greedy 現金", "勝率"))
+            for r in g[-12:]:
+                print("  %5d%13s%7.2f" % (r["iter"],
+                                          format(r["greedy_cash"], ",.0f"),
+                                          r["greedy_win"]))
+    if len(rows) > 1:
+        names = list(rows)
+        print("")
+        print("並排（greedy 現金）—— 只有 --seed 相同才比得了")
+        print("  " + "輪".rjust(5) + "".join(n[:16].rjust(18) for n in names))
+        by = {n: {r["iter"]: r["greedy_cash"]
+                  for r in R if "greedy_cash" in r} for n, R in rows.items()}
+        for it in sorted({i for d in by.values() for i in d}):
+            cells = "".join(
+                (format(by[n][it], ",.0f") if it in by[n] else "-").rjust(18)
+                for n in names)
+            print("  %5d%s" % (it, cells))
+    return 0
+
+
 def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
              base=None, eval_opp=None, eval_base=None):
     from harness.ppo_rollout import VecRollout                # noqa: PLC0415
@@ -245,12 +301,10 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
             "upd_s": round(t_upd, 1),
             **{k: round(v, 5) for k, v in parts.items()},
         }
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row) + "\n")
         print(f"  it {it:>4}  現金 {row['cash_mean']:>9,.0f} vs "
               f"{row['opp_cash_mean']:>9,.0f}  勝率 {row['win_rate']:.2f}  "
               f"unit/步 {units:>5.2f}  "
-              f"kl {parts['approx_kl']:+.4f}  clip {parts['clipfrac']:.3f}  "
+              f"kl {parts['approx_kl']:+.4f}/{parts['kl_last_epoch']:.4f}  clip {parts['clipfrac']:.3f}  "
               f"ep {int(parts['epochs_done'])}  "
               f"ent {parts['entropy']:>7.2f}  v {parts['value']:.3f}  "
               f"ev {row['explained_var']:+.3f}  "
@@ -270,6 +324,13 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                 mark = "  <- best.pt"
             print(f"        greedy {args.eval_games} 局  現金 {g_cash:>9,.0f}  "
                   f"勝率 {g_win:.2f}{mark}", flush=True)
+
+
+        # 🩸 寫檔一定要在 greedy 評估**之後** —— 原本在之前，所以
+        # greedy_cash / greedy_win 從來沒進過 train.jsonl，只留在 stdout，
+        # 分析時得用 regex 去剖 log。greedy 才是挑 checkpoint 的依據。
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
 
         if args.save_every and (it + 1) % args.save_every == 0:
             save_checkpoint(out / f"ckpt-{it + 1:05d}.pt", net, args, row)
@@ -328,9 +389,14 @@ def main(argv=None):
     ap.add_argument("--eval-games", type=int, default=10)
     ap.add_argument("--eval-seed0", type=int, default=900_000,
                     help="評估用的 seed 起點，跟訓練的錯開")
+    ap.add_argument("--watch", nargs="+", metavar="RUN_DIR",
+                    help="看一或多個訓練目錄的進度（不用等跑完）。多給幾個就"
+                         "並排比 —— 比之前先確認兩邊 --seed 一樣")
     ap.add_argument("--smoke", action="store_true",
                     help="兩輪、4 個 env、短局 —— 只確認接得起來")
     args = ap.parse_args(argv)
+    if getattr(args, "watch", None):
+        return watch(args.watch)
     if args.smoke:
         args.iters, args.workers, args.envs = 2, 0, 4
         args.episode_steps = 120

@@ -330,3 +330,37 @@ def test_reverse_hybrid_agent_takes_market_from_base(tmp_path):
     assert set(got) == set(base)
     # 隨機權重的網路跟 gen0 選到完全相同的工人動作，機率極低。
     assert (got["farmer"], got["hands"]) != (base["farmer"], base["hands"])
+
+
+def test_watch_reads_greedy_from_train_jsonl(tmp_path, capsys):
+    """🩸 `greedy_cash` / `greedy_win` 本來寫在 `json.dumps(row)` **之後**，
+    所以從來沒進過 train.jsonl，只留在 stdout —— 分析得用 regex 去剖 log，
+    而 greedy 才是挑 checkpoint 的依據（§44）。
+    """
+    import json as _json
+
+    from model.ppo_train import watch
+
+    d = tmp_path / "run"
+    d.mkdir()
+    rows = [{"iter": 0, "cash_mean": 1000.0, "win_rate": 0.0, "entropy": 2.0,
+             "explained_var": 0.5, "epochs_done": 8, "clipfrac": 0.1,
+             "kl_last_epoch": 0.031},
+            {"iter": 9, "cash_mean": 2000.0, "win_rate": 0.1, "entropy": 1.9,
+             "explained_var": 0.6, "epochs_done": 5, "clipfrac": 0.2,
+             "kl_last_epoch": 0.033, "greedy_cash": 55555.0, "greedy_win": 0.3}]
+    (d / "train.jsonl").write_text(
+        "\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    assert watch([str(d)]) == 0
+    out = capsys.readouterr().out
+    assert "55,555" in out, "greedy 現金沒被讀出來"
+    assert "0.033" in out, "逐 epoch KL 沒顯示 —— 看不出護欄逼不逼近門檻"
+    assert "epochs 5" in out
+
+
+def test_watch_survives_a_missing_dir(tmp_path, capsys):
+    from model.ppo_train import watch
+
+    assert watch([str(tmp_path / "nope")]) == 1
+    assert "train.jsonl" in capsys.readouterr().out

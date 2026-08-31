@@ -478,6 +478,9 @@ def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
     net.eval()
     out = {k: v / max(n, 1) for k, v in acc.items()}
     out["epochs_done"] = float(done_epochs)
+    # 最後一個 epoch 的 KL —— `approx_kl` 是所有 epoch 的平均，會被前面那些
+    # 接近 0 的值拉低，看不出信賴區域有沒有被逼近。提早停止看的是這個。
+    out["kl_last_epoch"] = ep_kl / max(ep_n, 1)
     return out
 
 
