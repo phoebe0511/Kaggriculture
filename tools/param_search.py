@@ -1,9 +1,21 @@
-"""CMA-ES 聯合最佳化 `gen0` 的 34 個連續參數。
+"""CMA-ES 聯合最佳化 `gen0` 的連續參數（維度看 `tools.param_space.DIM`）。
 
     python -m tools.param_search --seeds 20 --workers 24            # 開新的
     python -m tools.param_search --resume temp/cma/<時間戳>          # 續跑
     python -m tools.param_search --watch  temp/cma/<時間戳>          # 只看進度
     python -m tools.param_search --smoke                            # 2 代小 smoke
+
+    # 聚焦重搜：起點是出貨的那組參數，只動 14 個維度
+    python -m tools.param_search --warm-start config/params/cma1-g50-wt.json         --only s65 --seeds 20 --workers 10
+
+## 子空間（`--only`）
+
+`--only` 只讓 CMA-ES 看見一部分維度，其餘留在 `--warm-start` 那個起點上。
+存檔裡多兩個欄位：`config.json` 的 `active_keys`（搜哪幾維）和 `x_base`
+（沒搜的維度停在哪）—— `--resume` 靠這兩個把短向量展開回去。
+
+🩸 **`--only` 不配 `--warm-start` 等於把上一輪丟掉**：沒搜的維度會停在 gen0 的
+預設值，而不是搜出來的那組。
 
 ## 目標函數
 
@@ -60,8 +72,10 @@ import statistics
 import time
 from pathlib import Path
 
+from agents.gen0 import DEFAULT_PARAMS
 from eval.runner import _play, build_jobs, load_spec, run
-from tools.param_space import DIM, decode, to_json_params, x0
+from tools.param_space import (DIM, KEYS, decode, encode, resolve_subset,
+                               to_json_params, x0)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -112,8 +126,60 @@ def load_team_specs(names=HOLDOUT_TEAMS):
     return out
 
 
-def candidate_spec(x, name):
-    return {"name": name, "entry": "agents.gen0:act", "params": decode(x)}
+def candidate_spec(x, name, base=None):
+    return {"name": name, "entry": "agents.gen0:act", "params": decode(x, base)}
+
+
+# --------------------------------------------------------------------------
+# 起點與子空間
+# --------------------------------------------------------------------------
+
+def load_start(path):
+    """`--warm-start` 的三種來源 -> 一個長度 `DIM` 的完整向量。
+
+    - `gen_*.pkl`：CMA-ES 存檔的 `es.best.x`
+    - `best.json`：那一輪的最佳 x
+    - **參數 config**（`config/params/*.json`，有 `"params"` 那層）：走
+      `encode()`
+
+    🩸 第三種是 2026-09-01 加的，而且是 `SEARCH_SPACE` 換過之後**唯一**還能用的
+    起點。前兩種存的是向量，維度一變就對不上（下面那個長度檢查會擋）；參數
+    config 存的是有名字的 key，`encode()` 認得，換維度照樣落在同一組行為上。
+    """
+    wp = Path(path)
+    if wp.suffix == ".pkl":
+        with open(wp, "rb") as f:
+            return [float(v) for v in pickle.load(f).best.x], None, "es.best.x"
+    with open(wp, encoding="utf-8") as f:
+        blob = json.load(f)
+    if "params" in blob:
+        # 🩸 params 也一起帶回去當 `decode` 的 base —— 那份 config 可能有
+        # `DEFAULT_PARAMS` 沒有的 key（`cma1-g50-wt.json` 就有兩個），
+        # 只取 x 的話那些 key 會在 decode 時消失。理由見 `param_space.decode`。
+        base = {k: v for k, v in blob["params"].items() if k != "_replace_defaults"}
+        return encode(base), base, f"params（{blob.get('name', wp.stem)}）"
+    if "x" in blob:
+        return [float(v) for v in blob["x"]], None, "best.json 的 x"
+    raise SystemExit(f"{wp} 裡沒有 params 也沒有 x，不知道怎麼當起點")
+
+
+def subspace(active_keys):
+    """回傳 `(索引, expand)`。`active_keys` 是 None 就是全空間。
+
+    `expand(z, base)` 把 CMA-ES 的短向量塞回長度 `DIM` 的完整向量，沒搜的維度
+    留在 `base`。
+    """
+    if not active_keys:
+        return None, (lambda z, _base: list(map(float, z)))
+    idx = [KEYS.index(k) for k in active_keys]
+
+    def expand(z, base):
+        x = list(base)
+        for i, v in zip(idx, z):
+            x[i] = float(v)
+        return x
+
+    return idx, expand
 
 
 # --------------------------------------------------------------------------
@@ -159,12 +225,12 @@ def _score_rows(rows, objective="cash"):
 
 
 def evaluate_batch(xs, opponent_spec, games, seed0, workers, swap, tag="cand",
-                   objective="cash"):
+                   objective="cash", base=None):
     """一整代的候選，共用一個 pool。回傳 `[(平均分數, 作廢局數), ...]`。"""
     per = games * (2 if swap else 1)
     jobs = []
     for i, x in enumerate(xs):
-        jobs.extend(build_jobs(candidate_spec(x, f"{tag}{i}"), opponent_spec,
+        jobs.extend(build_jobs(candidate_spec(x, f"{tag}{i}", base), opponent_spec,
                                games, seed0, swap, None))
 
     if workers <= 1:
@@ -178,9 +244,9 @@ def evaluate_batch(xs, opponent_spec, games, seed0, workers, swap, tag="cand",
 
 
 def evaluate_one(x, opponent_spec, games, seed0, workers, swap, name="cand",
-                 objective="cash"):
+                 objective="cash", base=None):
     """單一候選走 `eval.runner.run()`（公開 API，但每次都開新的 pool）。"""
-    _summary, results = run(candidate_spec(x, name), opponent_spec,
+    _summary, results = run(candidate_spec(x, name, base), opponent_spec,
                             games, workers, seed0=seed0, swap=swap, progress=False)
     return _score_rows(results, objective)
 
@@ -189,19 +255,20 @@ def evaluate_one(x, opponent_spec, games, seed0, workers, swap, name="cand",
 # checkpoint
 # --------------------------------------------------------------------------
 
-def checkpoint(x, args, opponent_spec, teams):
+def checkpoint(x, args, opponent_spec, teams, base=None):
     """當代最佳去打 holdout seed + `HOLDOUT_TEAMS` 的每一支。"""
     out = {}
     out["holdout"], out["holdout_dropped"] = evaluate_one(
         x, opponent_spec, args.holdout_seeds, args.holdout_seed0,
-        args.workers, args.swap, name="best-holdout", objective=args.objective)
+        args.workers, args.swap, name="best-holdout", objective=args.objective,
+        base=base)
 
     per_team = {}
     for team in teams:
         score, _dropped = evaluate_one(
             x, team, args.team_seeds, args.holdout_seed0,
             args.workers, args.swap, name=f"best-vs-{team['name']}",
-            objective=args.objective)
+            objective=args.objective, base=base)
         per_team[team["name"]] = score
     out["teams"] = per_team
     out["teams_mean"] = statistics.fmean(per_team.values()) if per_team else 0.0
@@ -256,6 +323,14 @@ def watch(state_dir):
 
     # 🩸 歷來最佳卡住 = sigma 已經小到 `--seeds` 排不動相鄰候選。那時候該重開
     # 一輪把 seeds 拉高，繼續等不會有東西。
+    start_score = cfg.get("start_score")
+    if start_score is not None:
+        gap = rows[-1]["best_so_far"] - start_score
+        verdict = ("還沒超過起點" if gap <= 0 else f"超過起點 {gap:,.0f}")
+        print(f"  起點（暖啟動的那組參數）{start_score:>11,.0f}   ——   {verdict}")
+        if gap <= 0:
+            print("  🩸 歷來最佳還低於起點 —— 現在收工的話應該維持原本的出貨版")
+
     best = [r["best_so_far"] for r in rows]
     stale = 0
     for x in reversed(best[:-1]):
@@ -340,22 +415,34 @@ def watch(state_dir):
 
     bp = d / "best.json"
     if bp.is_file():
-        from tools.param_space import KEYS, decode, x0
+        from tools.param_space import (KEYS, SEARCH_SPACE, decode, read_key,
+                                       x0)
         with open(bp, encoding="utf-8") as f:
             b = json.load(f)
-        base, cur = decode(x0()), decode(b["x"])
+        # 起點：子空間那一輪比的是 `x_base`（暖啟動的那組），不是 gen0 預設值
+        # —— 拿預設值比的話，26 個根本沒搜的維度會排在「動最多」的前面。
+        start = cfg.get("x_base") or x0()
+        bp_params = cfg.get("base_params") or None
+        base, cur = decode(start, bp_params), decode(b["x"], bp_params)
+        shown = cfg.get("active_keys") or KEYS
         diffs = []
-        for k in KEYS:
-            v0, v1 = base.get(k), cur.get(k)
-            if isinstance(v0, (int, float)) and isinstance(v1, (int, float)) and v0:
-                diffs.append((abs((v1 - v0) / v0), k, v0, v1))
+        for k in shown:
+            v0, v1 = read_key(base, k), read_key(cur, k)
+            lo, hi, _kind = SEARCH_SPACE[k]
+            # 🩸 用「佔搜尋範圍的幾成」排，不是相對變化。相對變化在起點是 0
+            # 的維度會除以 0 —— 舊版用 `and v0` 把它們整個跳過，於是
+            # `structure_spread` / `seed_backlog` 這兩個**起點就是 0、正是這一輪
+            # 要看的**維度永遠不會出現在表上。
+            diffs.append((abs(v1 - v0) / (hi - lo), k, v0, v1))
         diffs.sort(reverse=True)
+        n_show = min(10, len(diffs))
         print()
         print(f"## 目前最佳（第 {b['generation']} 代，{b['score']:,.0f}）"
-              "動最多的 8 個參數")
-        print(f"  {'參數':<28}{'預設':>12}{'現在':>12}{'變化':>9}")
-        for frac, k, v0, v1 in diffs[:8]:
-            print(f"  {k:<28}{v0:>12,.4g}{v1:>12,.4g}{(v1 - v0) / v0:>+9.0%}")
+              f"動最多的 {n_show} 個參數")
+        print(f"  {'參數':<28}{'起點':>12}{'現在':>12}{'走了範圍的':>11}")
+        for frac, k, v0, v1 in diffs[:n_show]:
+            arrow = "+" if v1 > v0 else ("-" if v1 < v0 else " ")
+            print(f"  {k:<28}{v0:>12,.4g}{v1:>12,.4g}{arrow}{frac:>10.0%}")
     return 0
 
 
@@ -386,8 +473,14 @@ def main(argv=None):
     ap.add_argument("--resume", help="續跑：指向 temp/cma/<時間戳>")
     ap.add_argument("--watch", metavar="STATE_DIR",
                     help="只看某一輪的進度，不跑新的")
+    ap.add_argument("--only", metavar="KEYS",
+                    help="只搜這幾個維度，其餘留在起點的值。收 param_space 的 "
+                         "SUBSETS 名字（例如 s65）或逗號分隔的 key 清單。"
+                         "🩸 只有跟 --warm-start 一起用才有意義 —— 沒搜的維度會"
+                         "停在起點，起點是 gen0 預設值的話等於丟掉上一輪的成果。")
     ap.add_argument("--warm-start", metavar="PATH",
-                    help="用這個 gen_*.pkl 的 es.best.x（或 best.json 的 x）"
+                    help="用這個 gen_*.pkl 的 es.best.x、best.json 的 x、或"
+                         "**參數 config 的 params**（走 encode()）"
                          "當初始平均，而不是 gen0 的預設參數。"
                          "🩸 covariance **不**沿用、sigma 用 --sigma0 重設 —— "
                          "上一輪的 covariance 是在雜訊很大的排序下學出來的，"
@@ -435,24 +528,40 @@ def main(argv=None):
         with open(pkls[-1], "rb") as f:
             es = pickle.load(f)
         gen0_idx = int(pkls[-1].stem.split("_")[1])
+        # 🩸 子空間的 pickle 只有短向量，展開要靠 config.json 存的
+        # `active_keys` + `x_base`。不讀回來的話續跑會把沒搜的 26 維
+        # 悄悄倒回 gen0 預設值 —— 分數會斷崖，但不會報錯。
+        with open(state_dir / "config.json", encoding="utf-8") as f:
+            saved = json.load(f)
+        active_keys = tuple(saved.get("active_keys") or ()) or None
+        base_params = saved.get("base_params") or None
+        x_base = [float(v) for v in (saved.get("x_base") or x0())]
+        if len(x_base) != DIM:
+            raise SystemExit(
+                f"{state_dir}/config.json 的 x_base 長度是 {len(x_base)}，"
+                f"這一版的維度是 {DIM} —— param_space 的 SEARCH_SPACE 換過了")
         print(f"從 {pkls[-1].name} 續跑（已完成 {gen0_idx} 代）")
     else:
         state_dir = REPO_ROOT / "temp" / "cma" / time.strftime("%Y%m%d-%H%M%S")
         state_dir.mkdir(parents=True, exist_ok=True)
-        x_init = x0()
+        x_base, base_params = x0(), None
         if args.warm_start:
-            wp = Path(args.warm_start)
-            if wp.suffix == ".pkl":
-                with open(wp, "rb") as f:
-                    x_init = [float(v) for v in pickle.load(f).best.x]
-            else:
-                with open(wp, encoding="utf-8") as f:
-                    x_init = [float(v) for v in json.load(f)["x"]]
-            if len(x_init) != DIM:
+            x_base, base_params, how = load_start(args.warm_start)
+            if len(x_base) != DIM:
                 raise SystemExit(
-                    f"{wp} 的 x 長度是 {len(x_init)}，這一版的維度是 {DIM} —— "
-                    "param_space 的 SEARCH_SPACE 換過了，起點不能用")
-            print(f"暖啟動：起點取自 {wp}（covariance 重來、sigma {args.sigma0}）")
+                    f"{args.warm_start} 的 x 長度是 {len(x_base)}，這一版的維度是"
+                    f" {DIM} —— param_space 的 SEARCH_SPACE 換過了，這個起點不能"
+                    "用。改指 config/params/*.json（存的是有名字的 key）。")
+            print(f"暖啟動：起點取自 {args.warm_start} 的 {how}"
+                  f"（covariance 重來、sigma {args.sigma0}）")
+            if base_params:
+                extra = sorted(set(base_params) - set(DEFAULT_PARAMS))
+                print(f"  沒搜到的 {len(base_params)} 個 key 以那份 config 為底"
+                      + (f"，其中 {len(extra)} 個不在 DEFAULT_PARAMS："
+                         f"{', '.join(extra)}" if extra else ""))
+        active_keys = resolve_subset(args.only) if args.only else None
+        _idx, _expand = subspace(active_keys)
+        x_init = [x_base[i] for i in _idx] if _idx else x_base
         es = cma.CMAEvolutionStrategy(
             x_init, args.sigma0,
             {"bounds": [0, 1], "popsize": args.popsize, "seed": args.cma_seed,
@@ -462,12 +571,22 @@ def main(argv=None):
         with open(state_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump({"argv": vars(args), "dim": DIM,
                        "warm_start": args.warm_start,
+                       "active_keys": list(active_keys) if active_keys else None,
+                       "x_base": x_base,
+                       "base_params": base_params,
                        "opponent": opponent_spec.get("name"),
                        "teams": [t["name"] for t in teams]},
                       f, ensure_ascii=False, indent=2)
 
+    idx, expand = subspace(active_keys)
+    if active_keys:
+        print(f"子空間 {len(active_keys)}/{DIM} 維："
+              f"{', '.join(active_keys)}")
+        print(f"其餘 {DIM - len(active_keys)} 維留在起點的值")
+
     games_per_gen = args.popsize * args.seeds * (2 if args.swap else 1)
-    print(f"維度 {DIM}   popsize {args.popsize}   train seed {args.seed0}~"
+    print(f"維度 {len(idx) if idx else DIM}   popsize {args.popsize}"
+          f"   train seed {args.seed0}~"
           f"{args.seed0 + args.seeds - 1}   對手 {opponent_spec.get('name')}"
           f"   目標 {args.objective}")
     print(f"一代 {games_per_gen} 局   狀態在 {state_dir}\n")
@@ -486,6 +605,36 @@ def main(argv=None):
     log_path = state_dir / "log.jsonl"
     ck_path = state_dir / "checkpoints.jsonl"
 
+    # --- 起點自己的分數：第 0 代 ---
+    #
+    # 🩸 CMA-ES 只評估**取樣出來的候選**，平均值本身從來沒被評估過。所以
+    # 「歷來最佳」是候選之間的比較，跟起點無關 —— 整輪跑完的最佳解**可能比
+    # 起點還差**，而 log 裡沒有任何一欄看得出來。暖啟動時這件事特別要命：
+    # 起點是現在出貨的那組參數，搜出來的東西沒有超過它就不該換。
+    #
+    # 一次 train + holdout + 各隊，約 220 局 ≈ 2 分鐘，相對整輪可以忽略。
+    if not args.resume:
+        t_start = time.perf_counter()
+        start_score, _dropped = evaluate_one(
+            x_base, opponent_spec, args.seeds, args.seed0, args.workers,
+            args.swap, name="start", objective=args.objective, base=base_params)
+        ck0 = checkpoint(x_base, args, opponent_spec, teams, base=base_params)
+        ck0.update({"generation": 0, "train": start_score, "is_start": True})
+        with open(ck_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(ck0, ensure_ascii=False) + "\n")
+        # config.json 補一欄，`--watch` / `--resume` 才看得到這條基準線
+        cfg_path = state_dir / "config.json"
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg_blob = json.load(f)
+        cfg_blob["start_score"] = start_score
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg_blob, f, ensure_ascii=False, indent=2)
+        print(f"起點（第 0 代）  train {start_score:>10,.0f}   "
+              f"holdout {ck0['holdout']:>10,.0f}   各隊平均 "
+              f"{ck0['teams_mean']:>10,.0f}   "
+              f"{time.perf_counter() - t_start:.0f}s")
+        print("  ⬆️ 這是要超過的線。搜出來的東西沒有明顯高過它就不要換出貨版。\n")
+
     for gen in range(gen0_idx + 1, args.generations + 1):
         if (state_dir / "STOP").exists():
             print("看到 STOP 檔，收工。")
@@ -495,29 +644,35 @@ def main(argv=None):
             break
 
         t0 = time.perf_counter()
-        xs = [list(map(float, x)) for x in es.ask()]
+        # `zs` 是 CMA-ES 看得到的向量（子空間時比 DIM 短），`xs` 是展開後的
+        # 完整參數向量。🩸 `es.tell` 一定要餵 `zs`，餵 `xs` 會靜靜地維度不符。
+        zs = [list(map(float, z)) for z in es.ask()]
+        xs = [expand(z, x_base) for z in zs]
 
         if args.no_batch:
             scored = [evaluate_one(x, opponent_spec, args.seeds, args.seed0,
                                    args.workers, args.swap, f"cand{i}",
-                                   objective=args.objective)
+                                   objective=args.objective, base=base_params)
                       for i, x in enumerate(xs)]
         else:
             scored = evaluate_batch(xs, opponent_spec, args.seeds, args.seed0,
                                     args.workers, args.swap,
-                                    objective=args.objective)
+                                    objective=args.objective, base=base_params)
 
         scores = [s for s, _d in scored]
         dropped = sum(d for _s, d in scored)
-        es.tell(xs, [-s for s in scores])            # CMA-ES 最小化
+        es.tell(zs, [-s for s in scores])            # CMA-ES 最小化
         wall = time.perf_counter() - t0
 
         gen_best = max(scores)
         if gen_best > best_score:
+            # 🩸 存的是**展開後的完整向量**。存短的會讓 `--watch`、
+            # `tools/freeze_params.py` 和「拿 best.json 當下一輪起點」三條路
+            # 全部拿到一個長度不對的 x。
             best_score, best_x = gen_best, xs[scores.index(gen_best)]
             with open(best_path, "w", encoding="utf-8") as f:
                 json.dump({"generation": gen, "score": best_score, "x": best_x,
-                           "params": to_json_params(decode(best_x))},
+                           "params": to_json_params(decode(best_x, base_params))},
                           f, ensure_ascii=False, indent=2)
 
         with open(state_dir / f"gen_{gen:04d}.pkl", "wb") as f:
@@ -535,7 +690,7 @@ def main(argv=None):
               f"sigma {es.sigma:.4f}  {wall:5.1f}s{flag}")
 
         if args.checkpoint_every and gen % args.checkpoint_every == 0:
-            ck = checkpoint(best_x, args, opponent_spec, teams)
+            ck = checkpoint(best_x, args, opponent_spec, teams, base=base_params)
             ck.update({"generation": gen, "train": best_score})
             with open(ck_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ck, ensure_ascii=False) + "\n")

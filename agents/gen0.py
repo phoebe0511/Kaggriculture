@@ -191,10 +191,15 @@ DEFAULT_PARAMS = {
     # 種子存幾天份。目標量 = 該作物每天要種幾顆 × 這個天數，不是固定顆數 ——
     # 固定 6 顆的話光 STRAWBERRY($100) + MELON($80) 開局就要 $1,080。
     "seed_buffer_days": 2,
-    # ⚠️ `seed_backlog` 是實驗性的開關，**故意不放進這張表** ——
-    # `tests/test_frozen_reference.py` 守著「`ref-v11` 等於這張表的完整展開」，
-    # 加預設值會讓那個凍結參照漂掉。用 `params.get()` 讀，說明在 `_market()`
-    # 買種子那一段。
+    # 除了上面那個**流量**目標，另外看「現在有幾格等著種」這個一次性缺口。
+    # 0 = 完全不看（舊行為）。算式和實測見 `_market()` 買種子那一段。
+    #
+    # 🩸 2026-09-01 從「故意不進這張表」改成 0.0 進表 —— 要進 CMA-ES 的
+    # `SEARCH_SPACE` 就必須在 `DEFAULT_PARAMS` 裡（`tools/param_space.py`
+    # 的 `_check_space` 會擋）。`tests/test_frozen_reference.py` 的
+    # `_ADDED_AFTER_REF_V11` 白名單負責讓 ref-v11 的 sha256 不受影響，
+    # 那裡另有一條測試釘住「新加的 key 預設值必須不改變行為」。
+    "seed_backlog": 0.0,
     # 現金底線 = 維持現有規模的日常開銷（雇工 + 飼料 + 種子）× 這個天數。
     # 低於底線就不買動物、不買地。
     "cash_reserve_days": 3,
@@ -241,6 +246,10 @@ DEFAULT_PARAMS = {
     # 第二輪在新分派器上重掃 13/14/15 格，各 24 局都由 12 格明顯勝出
     # （平均 +$6,264 / +$11,997 / +$12,771），所以仍維持 12。
     "n_structures": 12,
+    # 建物散到幾個象限。0 = 全部擠在 NW（舊行為），1 = 盡量攤平到 NW/NE/SW。
+    # 說明和實測見 `structure_tiles`。同樣是 2026-09-01 為了進 CMA-ES 才加進
+    # 這張表的，理由見上面 `seed_backlog`。
+    "structure_spread": 0.0,
     # 不能因為對手先養了某物種就把整個市場讓出去。只折算一半對手產能，
     # 並確保自己至少規劃城鎮需求的 40%。
     "opponent_supply_weight": 0.5,
@@ -2374,8 +2383,8 @@ def _market(
     #     target = max(流量目標, 等著種的格數 × 該作物佔比 × seed_backlog)
     #
     # 等著種的格數直接數 `tasks` 裡的 PLANT —— 需求本來就算好了。
-    # 0（不給就是 0）完全維持舊行為。**故意不進 `DEFAULT_PARAMS`**，理由見
-    # 那裡的註解。
+    # 0（不給就是 0）完全維持舊行為。同 `structure_spread`，讀法保持
+    # `params.get(...)`，凍結的舊 config 沒有這個 key。
     #
     # 單局追蹤（seed 4242）：day 0 種 5 -> 10 格，day 1 結束 7 -> 11 格。
     # ⚠️ **只有一局，還沒做 640 局驗收**（2026-08-28 夜，機器在跑 PPO）。
@@ -2548,9 +2557,9 @@ def act(obs, config=None, params=None, return_plan=False, demand=None):
     days_left = _days_left(obs, config)
     final_day = days_left == 1
 
-    # 🩸 `structure_spread` 故意不進 DEFAULT_PARAMS —— `tests/test_frozen_reference.py`
-    # 的 test_ref_v11_expands_every_gen1_default 是「ref-v11 == DEFAULT_PARAMS」的
-    # tripwire，加進去會弄壞它（2026-08-28 `seed_backlog` 踩過）。
+    # 🩸 讀法保持 `p.get(...)` 而不是 `p["structure_spread"]` —— 凍結的
+    # config（`"frozen"` -> `_replace_defaults`）是那一天的完整快照，
+    # 2026-09-01 之前凍的每一份都沒有這個 key，用下標會直接 KeyError。
     struct_order = structure_tiles(board, p["n_structures"],
                                    float(p.get("structure_spread", 0.0) or 0.0))
 

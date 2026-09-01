@@ -126,7 +126,15 @@ def test_ref_v10_stays_frozen_at_its_original_params():
 #: ref-v11 凍結之後才加進 DEFAULT_PARAMS 的 key。ref 檔的 sha256 是釘死的，
 #: 不能回頭補 —— 跟 v9 少 `avoid_last_hour_planting`、v10 少
 #: `sell_same_turn_returns` 是同一回事。加新預設值的人要往這裡補一筆。
-_ADDED_AFTER_REF_V11 = ("per_crop_lookahead",)
+#: key -> 「不改變行為」的那個值。
+_ADDED_AFTER_REF_V11 = {
+    "per_crop_lookahead": False,
+    # 2026-09-01：這兩個原本刻意不進 `DEFAULT_PARAMS`（就是為了不動這個
+    # 凍結參照），但要進 CMA-ES 的 `SEARCH_SPACE` 就必須在預設表裡
+    # （`tools/param_space.py` 的 `_check_space` 會擋）。0.0 = 舊行為。
+    "structure_spread": 0.0,
+    "seed_backlog": 0.0,
+}
 
 
 def test_ref_v11_expands_every_gen1_default_it_predates():
@@ -144,8 +152,10 @@ def test_ref_v11_expands_every_gen1_default_it_predates():
 def test_keys_added_after_ref_v11_are_off_by_default():
     """ref-v11 少的那些 key，預設值必須是「不改變行為」的那一側 ——
     否則 ref-v11 展開出來的對手行為會跟它凍結當下不同。"""
-    for k in _ADDED_AFTER_REF_V11:
-        assert DEFAULT_PARAMS[k] is False, k
+    for k, neutral in _ADDED_AFTER_REF_V11.items():
+        got = DEFAULT_PARAMS[k]
+        assert got == neutral and type(got) is type(neutral), (
+            f"{k} 預設 {got!r}，不改變行為的值是 {neutral!r}")
 
 
 def test_engine_rule_fingerprint():
