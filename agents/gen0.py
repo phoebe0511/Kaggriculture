@@ -818,7 +818,17 @@ def _plan_basket(days_left, demand_key, inv_key, n_crop_tiles, fallback, max_sha
 
     left = n_crop_tiles - sum(alloc.values())
     if left > 0:                    # 賽季尾聲全部跑不完一輪，挑週期最短的
-        alloc[min(CROPS, key=lambda c: crop_cycle(c)[0])] += left
+        # 🩸 這條補位原本是 `min(CROPS, ...)`，**繞過上面所有上限**。
+        # 2026-09-01 量到：`crop_share` 設 CARROT=0 之後配額確實掉到 1 格，
+        # 但 day 21 之後 STRAWBERRY / MELON 因為 `ypd=0` 被排除，配額只用掉
+        # 20 格，剩下 43 格全部倒給週期最短的 CARROT（4 天，WHEAT 是 5 天）
+        # -> basket 變成 CARROT 44，day 29 是 54 格全部胡蘿蔔。
+        # 所以「不要種這個」講不出來。改成只在 `crop_share > 0` 的作物裡挑。
+        #
+        # ⚠️ 預設 `crop_share` 只列了 STRAWBERRY，其餘走 `max_crop_share`
+        # （> 0），所以 `pool` 等於全部作物、行為逐項不變 —— 不需要開關。
+        pool = [c for c in CROPS if share.get(c, max_share) > 0] or list(CROPS)
+        alloc[min(pool, key=lambda c: crop_cycle(c)[0])] += left
 
     basket = []
     for crop in sorted(CROPS, key=lambda c: (-alloc[c], c)):
