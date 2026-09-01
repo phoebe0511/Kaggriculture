@@ -177,7 +177,14 @@ def greedy_eval(args, net, opp, base, games, seed0):
     theirs = np.array([b for _, b in pairs], dtype=np.float64)
     if was_training:
         net.train()
-    return float(ours.mean()), float(np.mean(ours > theirs))
+    # 🩸 `ours.mean()` 的噪音幾乎全來自地圖難易：`cma1-g50-wt` 自打 40 局實測
+    # 單局現金 sd 19,880，同局相減後 sd 只剩 2,567（10 局 SE 6,287 -> 812）。
+    # 地圖好兩邊都好，相減就消掉。`margin` 也正好是 `--zero-sum` 的訓練目標
+    # （`ppo.step_rewards` 的 `da - db`），所以評估指標跟訓練目標一致。
+    # 既有欄位 `greedy_cash` 保留不動 —— ab-zs / ab-lam / ab-settle240 /
+    # ab-lamsplit240 都是用它量的，換掉就不能比。
+    return (float(ours.mean()), float(np.mean(ours > theirs)),
+            float((ours - theirs).mean()))
 
 
 def watch(dirs):
@@ -316,10 +323,12 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
               f"update {t_upd:>5.1f}s", flush=True)
 
         if args.eval_every and (it + 1) % args.eval_every == 0:
-            g_cash, g_win = greedy_eval(args, net, eval_opp, eval_base,
-                                        args.eval_games, args.eval_seed0)
+            g_cash, g_win, g_margin = greedy_eval(
+                args, net, eval_opp, eval_base,
+                args.eval_games, args.eval_seed0)
             row["greedy_cash"] = round(g_cash, 1)
             row["greedy_win"] = round(g_win, 3)
+            row["greedy_margin"] = round(g_margin, 1)
             best = getattr(run_loop, "_best", float("-inf"))
             mark = ""
             if g_cash > best:
@@ -327,7 +336,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                 save_checkpoint(out / "best.pt", net, args, row)
                 mark = "  <- best.pt"
             print(f"        greedy {args.eval_games} 局  現金 {g_cash:>9,.0f}  "
-                  f"勝率 {g_win:.2f}{mark}", flush=True)
+                  f"差額 {g_margin:>+9,.0f}  勝率 {g_win:.2f}{mark}",
+                  flush=True)
 
 
         # 🩸 寫檔一定要在 greedy 評估**之後** —— 原本在之前，所以

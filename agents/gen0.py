@@ -156,6 +156,10 @@ DEFAULT_PARAMS = {
     # 估價時往前看幾天的在途產量（自己的田 + **對手的田**）。
     # 0 = 只看當下庫存。市場共用，對手種一樣的東西時實際崩盤速度是兩倍。
     "supply_lookahead_days": 6,
+    # True = 每個作物改用自己的 first_yield_day 當推算天數（動物產品仍用上面
+    # 那個全域值）。全域值調不動這件事：調大會高估 WHEAT 的在途供給、調小就
+    # 看不到 MELON 的崩盤，CMA-ES 只能在兩者之間妥協。見 `_item_lookahead`。
+    "per_crop_lookahead": False,
     # 養什麼。GOOSE：interval=1 每天產、EGG 的 glut 曲線是 log（`above_target=0.20`），
     # 賣 400 個單價還有 $40，是唯一能長期大量出貨的動物產品。
     "animal": "GOOSE",
@@ -657,7 +661,27 @@ def incoming_supply(obs, days, only_player=None):
     return out
 
 
-def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0):
+def _item_lookahead(item, default):
+    """估這個 item 的價格時，市場庫存要往前推幾天。
+
+    今天種下去的一格，產出要 `first_yield_day` 天後才進市場 —— 決定成交價的是
+    **那時候**的庫存，不是今天的。`supply_lookahead_days` 對所有作物用同一個
+    數字，必然是妥協：CMA-ES 把 `cma1-g50-wt` 調到 3，對 WHEAT / CARROT
+    （`first_yield_day` 2）剛好，對 MELON（10）就少看了 8 天。
+
+    而 MELON 的 glut 曲線是 `sq`、`above_target=3.6` —— 從 $250 起倒 150 個
+    就掉到 $25。那 8 天的在途產量正好是崩盤的主體：2026-09-01 量 ladder 頂端
+    的 replay，雙方各 12 格 MELON 在步 48 就種好、步 ~284 同時收成，價格
+    271 -> 76。那 24 格從步 48 起就在 `obs["farms"]` 裡看得到。
+
+    不是作物的（MILK / EGG / WOOL 這些動物產品）沿用全域值。
+    """
+    cd = CROPS.get(item)
+    return int(cd["first_yield_day"]) if cd else int(default)
+
+
+def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0,
+             per_crop=False):
     """把當下的市場庫存分桶當 cache key。
 
     ⚠️ 必須用**當下庫存**而不是 `MARKET_I0` 起算。城鎮一直在消耗，實測期末
@@ -668,7 +692,21 @@ def _inv_key(obs, items, market_aware=True, bucket=25, lookahead=0):
     if not market_aware:
         return tuple((i, MARKET_I0) for i in items)
     inv = obs["market"]["inventory"]
-    soon = incoming_supply(obs, lookahead) if lookahead > 0 else {}
+    if per_crop:
+        # 同一個 horizon 的 item 合併成一次 incoming_supply —— CROPS 只有
+        # {2, 8, 10} 三種 first_yield_day，所以最多三次。
+        by_days = {}
+        for i in items:
+            by_days.setdefault(_item_lookahead(i, lookahead), []).append(i)
+        soon = {}
+        for days, group in by_days.items():
+            if days <= 0:
+                continue
+            got = incoming_supply(obs, days)
+            for i in group:
+                soon[i] = got.get(i, 0.0)
+    else:
+        soon = incoming_supply(obs, lookahead) if lookahead > 0 else {}
     return tuple((i, int((inv[i] + soon.get(i, 0.0)) / bucket) * bucket)
                  for i in items)
 
@@ -1032,7 +1070,8 @@ def dynamic_basket(obs, config, params, n_crop_tiles):
     demand_key = tuple(sorted((c, round(demand[c], 3)) for c in CROPS))
     return _plan_basket(_days_left(obs, config), demand_key,
                         _inv_key(obs, sorted(CROPS), params["market_aware_pricing"],
-                                 lookahead=params["supply_lookahead_days"]),
+                                 lookahead=params["supply_lookahead_days"],
+                                 per_crop=params.get("per_crop_lookahead", False)),
                         n_crop_tiles,
                         params["fallback_crop"], params["max_crop_share"],
                         params["oversupply_factor"],
@@ -1130,7 +1169,8 @@ def dynamic_animals(obs, config, params, n_structures):
         days_left,
         demand_key,
         _inv_key(obs, products, params["market_aware_pricing"],
-                 lookahead=params["supply_lookahead_days"]),
+                 lookahead=params["supply_lookahead_days"],
+                 per_crop=params.get("per_crop_lookahead", False)),
         n_structures,
         params["max_animal_share"],
         params["oversupply_factor"],

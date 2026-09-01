@@ -123,12 +123,29 @@ def test_ref_v10_stays_frozen_at_its_original_params():
     assert "sell_same_turn_returns" not in spec["params"]
 
 
-def test_ref_v11_expands_every_gen1_default():
+#: ref-v11 凍結之後才加進 DEFAULT_PARAMS 的 key。ref 檔的 sha256 是釘死的，
+#: 不能回頭補 —— 跟 v9 少 `avoid_last_hour_planting`、v10 少
+#: `sell_same_turn_returns` 是同一回事。加新預設值的人要往這裡補一筆。
+_ADDED_AFTER_REF_V11 = ("per_crop_lookahead",)
+
+
+def test_ref_v11_expands_every_gen1_default_it_predates():
     path = REPO_ROOT / "config/opponents/ref-v11.json"
     spec = json.loads(path.read_text(encoding="utf-8"))
     assert _sha256(path) == "dce255a627d788de33a036892a78de660e93504ef4781e1ff96362d8db729a39"
     assert spec["engine_version"] == "1.32.7"
-    assert spec["params"] == _json_value(DEFAULT_PARAMS)
+    expected = {k: v for k, v in _json_value(DEFAULT_PARAMS).items()
+                if k not in _ADDED_AFTER_REF_V11}
+    assert spec["params"] == expected
+    for k in _ADDED_AFTER_REF_V11:
+        assert k not in spec["params"]
+
+
+def test_keys_added_after_ref_v11_are_off_by_default():
+    """ref-v11 少的那些 key，預設值必須是「不改變行為」的那一側 ——
+    否則 ref-v11 展開出來的對手行為會跟它凍結當下不同。"""
+    for k in _ADDED_AFTER_REF_V11:
+        assert DEFAULT_PARAMS[k] is False, k
 
 
 def test_engine_rule_fingerprint():
