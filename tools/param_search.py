@@ -594,6 +594,7 @@ def main(argv=None):
     # 🩸 續跑一定要把歷來最佳讀回來。不讀的話 best_score 是 -inf，續跑後第一代
     # 不管多爛都會覆寫 best.json —— 重啟一次就把先前找到的最佳解弄丟，而且不報錯。
     prev_holdout = None
+    prev_train = None
     best_score, best_x = float("-inf"), None
     best_path = state_dir / "best.json"
     if args.resume and best_path.is_file():
@@ -698,10 +699,23 @@ def main(argv=None):
             print(f"    checkpoint  train {best_score:>10,.0f}   "
                   f"holdout {ck['holdout']:>10,.0f}   各隊平均 "
                   f"{ck['teams_mean']:>10,.0f}   ({teams_txt})")
-            if prev_holdout is not None and ck["holdout"] <= prev_holdout:
-                print(f"    ⚠️ holdout 沒有進步（上次 {prev_holdout:,.0f}）—— "
-                      f"train 還在升的話就是 overfit 那組 seed，考慮收工。")
+            # 🩸 原本只看 holdout 有沒有掉，於是 `best_so_far` 整段沒動的時候
+            # （checkpoint 逐字元相同）也會跳警告，還說「train 還在升」——
+            # train 根本沒升。overfit 的定義是**train 升而 holdout 沒升**，
+            # 兩個都要看。2026-09-02 第四輪 gen 50/60 兩筆完全相同時踩到。
+            if prev_holdout is not None:
+                train_up = prev_train is None or best_score > prev_train
+                holdout_up = ck["holdout"] > prev_holdout
+                if not train_up:
+                    print(f"    best_so_far 這一段沒動（train 仍是 "
+                          f"{best_score:,.0f}）—— 沒有新的最佳解，不是 overfit。")
+                elif not holdout_up:
+                    print(f"    ⚠️ train 升了（{prev_train:,.0f} -> "
+                          f"{best_score:,.0f}）但 holdout 沒有"
+                          f"（{prev_holdout:,.0f} -> {ck['holdout']:,.0f}）"
+                          f" —— 這就是在 overfit 那組 train seed，考慮收工。")
             prev_holdout = ck["holdout"]
+            prev_train = best_score
 
     if best_x is not None:
         print(f"\n最佳 {best_score:,.0f}（train seed {args.seed0}~"
