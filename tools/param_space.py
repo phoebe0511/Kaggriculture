@@ -272,6 +272,21 @@ SEARCH_SPACE = {
     # active tiles 上限 = (1 + planned_hands) x 這個值。08-16 實測 4 最好，
     # 4.5 / 5 / 無上限的勝率是 42.5% / 12.5% / 17.5%。
     "tiles_per_unit": (2, 8, "int"),
+
+    # --- 排工（2026-09-02 才進來，前三輪完全沒搜過）---
+    # 優先序折成距離的匯率：高一級 = 值得多走幾步。`_PRI` 從 0（FEED）到
+    # 9（PLANT），盤面最大曼哈頓距離 18。
+    #   0   完全不看優先序，純比誰近
+    #   1   現值。PLANT 比緊鄰的 WATER 貴 8 步
+    #   8   PLANT 貴 64 步 -> 只有全部人都閒著才輪得到它
+    # 這一維直接決定「把作物澆完」對「把空地填滿」的匯率，而 2026-09-02
+    # 量到 day 20 的 unit-turn 已用掉 97.7%、PLANT 一天只種到 4 格。
+    "priority_step_cost": (0.0, 8.0, "float"),
+    # 跨 home 象限做 PLANT/DIG 要加幾步。0 = 等於沒有分區（成本 += 0），
+    # 所以暖啟動點放 0、讓它連續往上走；`quadrant_zoning` 與
+    # `zone_planting_only` 由起始 config 釘成 True，不進搜尋 —— 布林維在
+    # sigma0 小的時候翻不過 0.5 那個門檻（`seed_backlog` 的教訓，§71）。
+    "zone_penalty": (0, 12, "int"),
 }
 
 #: 向量順序。

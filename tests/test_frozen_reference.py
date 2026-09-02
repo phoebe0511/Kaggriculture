@@ -134,6 +134,14 @@ _ADDED_AFTER_REF_V11 = {
     # （`tools/param_space.py` 的 `_check_space` 會擋）。0.0 = 舊行為。
     "structure_spread": 0.0,
     "seed_backlog": 0.0,
+    # 2026-09-02：排工那一層。四個值全部等於原本 code 裡 `params.get()` 的
+    # fallback，所以 ref-v11 展開出來的行為不變。只有 priority_step_cost 和
+    # zone_penalty 進 SEARCH_SPACE；另外兩個是為了讓 zone_penalty 有作用才
+    # 進表的（zone_penalty=0 與 quadrant_zoning=False 完全等價）。
+    "priority_step_cost": 3.0,
+    "quadrant_zoning": False,
+    "zone_penalty": 10,
+    "zone_planting_only": False,
 }
 
 

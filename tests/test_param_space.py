@@ -105,10 +105,14 @@ def test_decode_without_base_drops_keys_that_predefaults_does_not_have():
     **不在預設表**的 key 會安靜地消失。
 
     2026-09-01 踩到：`cma1-g50-wt.json` 有 `whole_turn_assignment: True`
-    和 `priority_step_cost: 1`（`agents/gen0.py:1724` 用 `params.get()` 讀，
+    和 `priority_step_cost: 1`（`agents/gen0.py` 用 `params.get()` 讀，
     不放進 `DEFAULT_PARAMS` 是因為那會改掉 `gen1` / `ref-v11` 的行為）。
     暖啟動忘了帶 base 的話，整輪 CMA-ES 會在搜一個**沒有**那個 +7pp 演算法的
     agent，分數只是低一截、不會報錯。
+
+    2026-09-02：`priority_step_cost` 進了 `DEFAULT_PARAMS`（要進 SEARCH_SPACE
+    就必須進），所以剩 `whole_turn_assignment` 一個。少一個能安靜消失的 key
+    是好事，但這條測試的前提也就跟著變了 —— 名單縮短時要來改這裡。
 
     這條測試釘住的是「差別確實存在」，不是「decode 應該怎麼做」——
     所以 base 要給，`tools/param_search.py` 的 `load_start` 負責帶。
@@ -120,7 +124,7 @@ def test_decode_without_base_drops_keys_that_predefaults_does_not_have():
     with open(root / "config/params/cma1-g50-wt.json", encoding="utf-8") as f:
         shipped = _json.load(f)["params"]
     extra = set(shipped) - set(DEFAULT_PARAMS)
-    assert extra == {"whole_turn_assignment", "priority_step_cost"}, extra
+    assert extra == {"whole_turn_assignment"}, extra
 
     x = encode(shipped)
     assert set(decode(x)) & extra == set(), "沒給 base 卻留住了，斷言的前提變了"
@@ -212,7 +216,7 @@ def test_search_space_has_no_bool_or_container():
 
 def test_search_space_covers_exactly_the_numeric_keys():
     """搜尋 key（展開的算它的 base）+ 凍結 key = `DEFAULT_PARAMS` 的全部。"""
-    assert DIM == 40
+    assert DIM == 42
     bases = {split_key(k)[0] for k in KEYS}
     assert bases | set(param_space.FROZEN_KEYS) == set(DEFAULT_PARAMS)
     assert not bases & set(param_space.FROZEN_KEYS)

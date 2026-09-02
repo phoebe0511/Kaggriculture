@@ -278,6 +278,29 @@ DEFAULT_PARAMS = {
     # 同一優先序的任務做全域最短配對，不用固定象限。直接對打舊的逐筆貪婪
     # 分派器 60 局為 58 勝 2 負，平均現金 +$8,686，買地時點完全相同。
     "optimal_assignment": True,
+    # --- 排工那一層（2026-09-02 才進這張表，理由見下面的 🩸）-------------
+    # `whole_turn_assignment` 把優先序折成距離：高一級 = 值得多走
+    # `priority_step_cost` 步。PLANT 是 `_PRI` 裡最低的第 9 級，所以它比
+    # 一個緊鄰的 WATER 貴 `8 × priority_step_cost` 步，而 10×10 盤面的最大
+    # 曼哈頓距離只有 18 —— 這個數字就是「全部澆完」對「把地填滿」的匯率。
+    #
+    # 🩸 這四個 key 一直用 `params.get(..., 內建預設)` 讀，不在這張表裡，
+    # 於是 `tools/param_space.py` 的 `_check_space` 擋著它們進 SEARCH_SPACE，
+    # CMA-ES 從第一輪到第三輪都沒搜過任何一個。2026-09-02 追 day 20 之後的
+    # 空地率追到這裡：unit-turn 已用掉 97.7%（291/298），PLANT 排在最後，
+    # 一天 361 筆任務只種下 4 格。四十維全在「種什麼、買什麼、雇幾個」，
+    # 沒有一維在「同一批人怎麼排工」。詳見 journal §75。
+    #
+    # 這裡填的值全部等於原本 code 裡的 fallback，所以加進表不改任何行為
+    # （`tests/test_frozen_reference.py` 的 `_ADDED_AFTER_REF_V11` 釘住這點）。
+    "priority_step_cost": 3.0,
+    # 分區：每個 unit 依 index 認一個 home 象限，跨區的任務加 `zone_penalty`
+    # 步。`zone_penalty = 0` 與關掉分區完全等價（成本 += 0），所以搜尋時把
+    # `quadrant_zoning` 開著、讓 `zone_penalty` 從 0 連續往上走，避免布林維
+    # 在小 sigma 下永遠翻不過 0.5 這個門檻（`seed_backlog` 踩過，§71）。
+    "quadrant_zoning": False,
+    "zone_penalty": 10,
+    "zone_planting_only": False,
     # 閒置 unit 若攜帶至少 $300 的非 WHEAT 成品，且距 shed 不超過 4 步，
     # 白天就以指定品項 PLACE 回倉，不必等日終自動卸貨。兩批獨立 paired seeds：
     #   seeds 0-19：29 勝 11 負，平均現金 +$1,946

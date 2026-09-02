@@ -3,9 +3,10 @@
 盯的是三件「錯了不會報錯，只會安靜地搜錯東西」的事：
 
 1. **沒搜的維度要留在起點**，不能倒回 `gen0` 的預設值。
-2. **起點要帶得動 `DEFAULT_PARAMS` 沒有的 key**。`config/params/*.json` 有兩個
-   （`whole_turn_assignment` / `priority_step_cost`），掉了的話整輪 CMA-ES 是在
-   搜一個沒有那個 +7pp 演算法的 agent。
+2. **起點要帶得動 `DEFAULT_PARAMS` 沒有的 key**。`config/params/*.json` 有
+   `whole_turn_assignment`（2026-09-02 之前還有 `priority_step_cost`，那個
+   已經進預設表了），掉了的話整輪 CMA-ES 是在搜一個沒有那個 +7pp 演算法的
+   agent。
 3. **`--only` 的順序由 `KEYS` 決定**，不是使用者打字的順序 —— 向量位置對不上
    就全錯，而且看起來一切正常。
 
@@ -76,7 +77,7 @@ def test_load_start_from_a_params_config_carries_the_extra_keys():
     assert len(x) == DIM
     assert "params" in how
     extra = set(base) - set(DEFAULT_PARAMS)
-    assert extra == {"whole_turn_assignment", "priority_step_cost"}, extra
+    assert extra == {"whole_turn_assignment"}, extra
     assert decode(x, base)["whole_turn_assignment"] is True
 
 
