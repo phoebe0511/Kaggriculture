@@ -1,0 +1,5 @@
+{
+  "name": "cma2-g119-sub",
+  "builtin": "submission/cma2-g119/main.py",
+  "note": "打包好的 cma2-g119（第二輪 CMA-ES、40 維全搜、第 119 代）。走 kaggle_environments 的 file-path agent 載入 —— 跟 Kaggle 上場同一條路徑，不是 import repo 的 agents/。⚠️ 內容由 submission/cma2-g119/ 的檔案決定，改了 agents/gen0.py 不重打包的話這裡量到的還是舊版。⚠️ 執行時 cwd 必須是 repo root。"
+}
