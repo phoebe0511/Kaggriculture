@@ -1,0 +1,60 @@
+{
+  "name": "ladder-top-202609",
+  "note": "2026-09-03 從 Kaggle 現役 leaderboard 爬下來的六支。\n\n取樣：從 Dmitry Larko 的 submission 55967068 出發爬對局圖（`--crawl`，ListEpisodes 端點免認證），收「雙方 rating 都 >= 2800」的 400 局，撈 metadata，再篩「至少 10 局且中位現金 >= $94,000」——我們自己是 $80k~95k，中位數低於這條的對手學不到東西。\n\n🩸 **不要用小樣本篩隊伍。** 第一版只爬了 60 局就篩，把 Atakan Aldemir（當時看到 6 局最高 $16,297，實際 11 局最高 $151,750）、Yuan800、Saravanan Jaichandaran 都誤刷掉了。中位數要有 10 局以上才有意義。\n\n刻意排除：Yuan800 / Atakan Aldemir / Mohammad Alnajdawi —— 這三支的下四分位是 $9,767 / $0 / $0，一半以上的局崩掉或超時，偶爾爆一局。rating 只看勝負，所以這種隊伍分數還是很高。\n\n🩸 **選局規則跟 config/ladder-top.json 不同。** 舊的是「每隊挑期末現金最高的那一局」，它自己的 note 承認那偏向市場競爭弱的局。這裡挑「雙方現金的較小值最大」的那一局 —— 兩邊都打得好。所以 Dmitry Larko 選 122,731 那局，不是 195,695 那局。\n\n⚠️ 六支來自五局，Whyme Labs / Crop Dusta 是同一局的兩邊。而且五局裡有四局的對手都是 Crop Dusta（它有 356 局，對局圖上到處都是），所以不是六個獨立樣本。\n\n⚠️ 跟 config/ladder-top.json（2026-08-19）只有 tetsuya 一個名字重疊，而 tetsuya 現在中位 $84,487、排不進這六支。詳見 journal §78。\n\n⚠️ 開迴路重播：不對我們的行為反應，市場被影響後 BUY_*/HIRE 可能失敗。原始 30MB 檔在 temp/episodes-202609/（gitignore）。\n\n對手的 name 直接取自 episode 的 `team_names`，跟 Kaggle 網頁上的隊名一致，可以直接拿去搜尋。",
+  "opponents": [
+    {
+      "name": "Dmitry Larko",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104935316",
+        "player": 1
+      },
+      "note": "peak rating 2969.3（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。53 局中位現金 $123,623、最高 $195,695。現在的第一名。這一局 122,731 對 122,105。"
+    },
+    {
+      "name": "Whyme Labs",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104818790",
+        "player": 0
+      },
+      "note": "peak rating 2917.3（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。15 局中位現金 $103,997、最高 $157,616。這一局 157,616 對 Crop Dusta 的 146,564。"
+    },
+    {
+      "name": "Bantam",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104834801",
+        "player": 1
+      },
+      "note": "peak rating 2888.3（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。10 局中位現金 $99,705、最高 $132,136。這一局 132,136 對 Crop Dusta 的 130,295。"
+    },
+    {
+      "name": "3정훈",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104665306",
+        "player": 0
+      },
+      "note": "peak rating 2899.9（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。15 局中位現金 $99,553、最高 $142,521。這一局 142,521 對 Crop Dusta 的 150,785。"
+    },
+    {
+      "name": "yukino",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104634010",
+        "player": 0
+      },
+      "note": "peak rating 2862.8（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。10 局中位現金 $94,539、最高 $123,781。這一局 123,781 對 Crop Dusta 的 138,874。"
+    },
+    {
+      "name": "Crop Dusta",
+      "entry": "agents.replay:act",
+      "params": {
+        "episode": "104818790",
+        "player": 1
+      },
+      "note": "peak rating 2945.1（2026-09-03 從對局圖看到的最高 updatedScore，不是當下排名）。356 局中位現金 $94,235、最高 $275,395。356 局，樣本最大、中位數最可信。跟 Whyme Labs 是同一局的兩邊，不是獨立樣本。"
+    }
+  ]
+}

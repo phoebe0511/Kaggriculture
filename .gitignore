@@ -79,3 +79,7 @@ desktop.ini
 !model/weights-e2e-round6.npz
 
 
+
+# submission 的 zip 是建置產物，不進版控（2026-09-03 決定）。
+# 原始檔（main.py / gen0.py / contracts.py）照樣要 commit —— 那是重現得出來的東西。
+submission/**/*.zip
