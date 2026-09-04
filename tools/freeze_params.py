@@ -35,10 +35,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OPPONENT_DIR = REPO_ROOT / "config" / "opponents"
 
 
+#: 不在 `DEFAULT_PARAMS` 裡、但確實會被讀到的 key，凍結時要放行。
+#:
+#: `whole_turn_assignment`：`agents/gen0.py` 用 `params.get(...)` 讀，
+#: `tools/param_space.py` 有維度，但沒有寫進 `DEFAULT_PARAMS`。
+#: `tests/test_param_space.py` 和 `tests/test_param_search_subspace.py`
+#: 都把 `extra == {"whole_turn_assignment"}` 釘成斷言，所以這是已知狀態，
+#: 不是漏掉的。`config/params/cma2-g119.json` / `cma4-g134.json` 都帶著它。
+#: `_replace_defaults`：不是參數，是 `eval.runner.build_agent` 的旗標，
+#: 由 `frozen` 那個 key 在載入時補上，所以寫檔時要拿掉。
+KNOWN_EXTRA = {"_replace_defaults", "whole_turn_assignment"}
+
+
 def build_spec(params, name, note="", frozen=None, source=""):
     """組出 config JSON 的內容，並檢查 51 項有沒有齊。"""
     missing = sorted(set(DEFAULT_PARAMS) - set(params))
-    extra = sorted(set(params) - set(DEFAULT_PARAMS) - {"_replace_defaults"})
+    extra = sorted(set(params) - set(DEFAULT_PARAMS) - KNOWN_EXTRA)
     if missing:
         raise SystemExit(f"少了 {len(missing)} 個 key，凍結對手必須完整展開：{missing}")
     if extra:

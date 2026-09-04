@@ -1,0 +1,92 @@
+{
+  "name": "cma5-g175",
+  "entry": "agents.gen0:act",
+  "engine_version": "1.32.7",
+  "frozen": "2026-09-04",
+  "source": "C:/Users/renee/AppData/Local/Temp/claude/c---phoebe-priv-Kaggriculture/de780dba-e4f0-458f-b061-0f84413e977b/scratchpad/cma5-g175.json",
+  "note": "第五輪 CMA-ES 第 175 代（gen 180 的 checkpoint）。同一輪、同一個暖啟動 cma4-g134。train 18,330 / holdout 7,198 / 現役6 -8,470 / 其他五支 -11,480。⚠️ train 比 cma5-g139 高 6,706，但 holdout（40 個沒訓練過的 seed）和 Dmitry 那一欄（20 個 team seed）都比 g139 低 4,198 / 2,515 —— 同一個對手換 seed 就掉，那個差是 40 個訓練 seed 上的。",
+  "params": {
+    "basket": [
+      "MELON",
+      "CARROT",
+      "CARROT",
+      "WHEAT",
+      "WHEAT"
+    ],
+    "dynamic_basket": true,
+    "dynamic_animals": true,
+    "fallback_crop": "WHEAT",
+    "crop_share": {
+      "STRAWBERRY": 0.4017448012994426,
+      "WHEAT": 0.8513964572628612,
+      "CARROT": 0.9447241289793964,
+      "TOMATO": 0.6236233411439649,
+      "MELON": 0.22236324917599903
+    },
+    "max_crop_share": 0.2874364458062525,
+    "oversupply_factor": 2.9072919545584255,
+    "crop_oversupply": {
+      "MELON": 4.0
+    },
+    "max_animal_share": 0.990097404043162,
+    "market_aware_pricing": true,
+    "supply_lookahead_days": 1,
+    "per_crop_lookahead": false,
+    "animal": "GOOSE",
+    "max_hands": 10,
+    "hands_per_quadrant": 4,
+    "hire_margin": 2.3413304622699433,
+    "hire_per_turn": 9,
+    "wheat_carry": 8,
+    "wheat_reserve_days": 1,
+    "use_fertilizer": true,
+    "seed_buffer_days": 1,
+    "seed_backlog": 0.4009334881311669,
+    "cash_reserve_days": 0,
+    "sell_chunk": 42,
+    "sell_price_frac": 0.21223118348027434,
+    "shed_force_sell": 0.9344164878932941,
+    "liquidate_days_left": 2,
+    "animal_reserve": 638,
+    "animal_spend_frac": 0.7645717622833793,
+    "buy_land": true,
+    "land_first_min_day": 5,
+    "max_quadrants": 3,
+    "land_min_days_left": 16,
+    "n_structures": 13,
+    "structure_spread": 0.8219444722692295,
+    "opponent_supply_weight": 1.4978469716273253,
+    "animal_demand_share_floor": 0.5160864794651167,
+    "feed_crop_bootstrap_share": 0.08993029440619832,
+    "feed_crop_demand_weight": 1.4694350041383464,
+    "strawberry_high_demand": 25,
+    "strawberry_high_share": 0.730004019042534,
+    "early_coop_limit": 2,
+    "early_coop_until_day": 18,
+    "sell_before_spending": false,
+    "fertilizer_roi_margin": 3.995122090012244,
+    "fertilize_one_time": false,
+    "late_crew_caps": [
+      [
+        2,
+        10
+      ],
+      [
+        1,
+        8
+      ]
+    ],
+    "optimal_assignment": true,
+    "priority_step_cost": 0.2963198895564026,
+    "quadrant_zoning": true,
+    "zone_penalty": 1,
+    "zone_planting_only": true,
+    "daytime_return_min_value": 839,
+    "daytime_return_max_distance": 12,
+    "avoid_last_hour_planting": true,
+    "sell_same_turn_returns": true,
+    "tiles_per_unit": 7,
+    "water_on_demand": true,
+    "whole_turn_assignment": true
+  }
+}
