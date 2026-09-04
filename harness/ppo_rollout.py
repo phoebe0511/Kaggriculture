@@ -52,6 +52,7 @@ if str(REPO_ROOT) not in sys.path:
 os.environ.setdefault("KAGGRI_LOG_LEVEL", "0")
 
 from tools._quiet import silenced                      # noqa: E402
+from model.networth import asset_value                 # noqa: E402
 
 with silenced():
     import torch
@@ -241,13 +242,20 @@ def main(argv=None):
     ap.add_argument("--opponent", default="",
                     help="固定對手的 spec（空字串 = 自對局）")
     ap.add_argument("--episode-steps", type=int, default=0)
+    ap.add_argument("--phi", default="none",
+                    choices=("none", "plants", "assets"),
+                    help="potential-based shaping 的 Φ 裝什麼")
+    ap.add_argument("--recognise", default="strict",
+                    choices=("strict", "produce"),
+                    help="--phi assets 的認列時點（§83.4）")
     args = ap.parse_args(argv)
     if args.envs:
         net = build_net(args.width, args.blocks)
         vec = VecRollout(net, n_envs=args.envs, seed0=5000, device=args.device,
                          episode_steps=args.episode_steps or None,
                          opponent=load_opponent(args.opponent)
-                         if args.opponent else None)
+                         if args.opponent else None,
+                         phi=args.phi, recognise=args.recognise)
         t0 = time.perf_counter()
         steps, cash, trajs = vec.run(collect=args.collect)
         dt = time.perf_counter() - t0
@@ -301,7 +309,7 @@ class VecRollout:
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
                  episode_steps=None, opponent=None, half_obs=True,
                  opp_offset=0, base_policy=None, greedy=False,
-                 base_side="units"):
+                 base_side="units", phi="none", recognise="strict"):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -355,6 +363,18 @@ class VecRollout:
         #: `--seed0` 本來只餵給環境（決定地圖），沒餵給動作取樣。
         self.gen = torch.Generator(device=device)
         self.gen.manual_seed(int(seed0))
+        #: potential-based shaping 的 Φ 要裝什麼（`model.ppo.step_rewards`）：
+        #:
+        #:   `none`    不算，reward 就是逐步現金
+        #:   `plants`  我方作物格數 − 對手作物格數（§55.6）
+        #:   `assets`  我方非現金資產金額（§83.3，`model/networth.py`）
+        #:
+        #: 🩸 `assets` 只算我方 —— `obs["private"]`（倉庫、手上、種子）是
+        #:    自己的才看得到。零和留在現金項。
+        if phi not in ("none", "plants", "assets"):
+            raise ValueError(f"--phi 只能是 none / plants / assets，收到 {phi!r}")
+        self.phi_mode = phi
+        self.recognise = recognise
         #: 打固定對手時我方坐哪一邊。單雙數輪流，不然先手／後手的差異會被學進去。
         self.seats = [i % 2 for i in range(n_envs)]
         self.envs = []
@@ -539,10 +559,12 @@ class VecRollout:
         writers = {(ei, p): TrajectoryWriter()
                    for ei in range(self.n_envs) for p in range(2)
                    if self._ours(ei, p)}
-        # 期末的 farms 拿不到（引擎結束後只剩 reward），所以用最後一次觀測到的
-        # 格子數當 Φ(s_T)。potential-based shaping 只要 Φ 一致就成立，這樣做
-        # 等於期末那一步不發 shaping —— 剛好是我們要的。
-        last_plants = {}
+        # Φ(s_T)。`plants` 模式用最後一次觀測到的格子數 —— 期末的 farms
+        # 拿不到（引擎結束後只剩 reward），這樣等於期末那一步不發 shaping。
+        # `assets` 模式送 0：賣不掉的庫存期末一分不值（期末 reward 只看
+        # `farm["money"]`），最後一步一次認列，那也正好滿足 Ng 的
+        # Φ(終端)=0（§83.3）。
+        last_phi = {}
         for _ in range(max_steps):
             active = self._gather()
             if not active:
@@ -556,17 +578,16 @@ class VecRollout:
                 if not self._ours(ei, p):
                     acts[ei][p] = self.opp_of(ei)(obs, cfg)
             if collect:
-                for (ei, p, obs, _c), (_ei, _p, _a, rec) in zip(items, decided):
+                for (ei, p, obs, cfg), (_ei, _p, _a, rec) in zip(items, decided):
                     # 🩸 期中的 `steps[-1][p]["reward"]` 是 0 —— 引擎只在 DONE
                     # 那一步才填 reward（kaggriculture.py:963）。現金要從
                     # observation 的 farms 拿。
                     farms = obs["farms"]
-                    pl = (count_plants(farms[p]),
-                          count_plants(farms[1 - p]))
-                    last_plants[(ei, p)] = pl
+                    phi = self._phi(obs, cfg, p)
+                    last_phi[(ei, p)] = phi
                     writers[(ei, p)].add(
                         rec, float(farms[p]["money"]),
-                        float(farms[1 - p]["money"]), pl[0], pl[1])
+                        float(farms[1 - p]["money"]), phi)
             # 引擎自己不印東西，不用每一步都 dup2 —— `silenced()` 一次要 4 個
             # syscall，720 步 × K 個 env 加起來很可觀。
             for ei, pair in acts.items():
@@ -576,11 +597,24 @@ class VecRollout:
         trajs = []
         if collect:
             for (ei, p), w in writers.items():
-                pl = last_plants.get((ei, p), (None, None))
-                tr = w.finish(cash[ei][p], cash[ei][1 - p], pl[0], pl[1])
+                final = (0.0 if self.phi_mode == "assets"
+                         else last_phi.get((ei, p)))
+                tr = w.finish(cash[ei][p], cash[ei][1 - p], final)
                 if tr is not None:
                     trajs.append(tr)
         return steps, cash, trajs
+
+    def _phi(self, obs, cfg, p):
+        """這一步的 Φ。`none` 回 None（shaping 整個關掉）。"""
+        if self.phi_mode == "none":
+            return None
+        if self.phi_mode == "plants":
+            farms = obs["farms"]
+            return float(count_plants(farms[p]) - count_plants(farms[1 - p]))
+        return float(asset_value(
+            obs, recognise=self.recognise,
+            episode_steps=int(cfg.get("episodeSteps", 720)),
+            turns_per_day=int(cfg.get("turnsPerDay", 24))))
 
     def our_cash(self, cash):
         """把 `run()` 回傳的現金拆成 (我方, 對手) —— 打固定對手時才有意義。"""

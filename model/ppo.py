@@ -124,8 +124,8 @@ def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
 
 
 def step_rewards(cash_a, cash_b, zero_sum=False, settle_step=0,
-                 plants_a=None, plants_b=None, plant_weight=0.0,
-                 gamma=0.997):
+                 phi=None, phi_weight=0.0, gamma=0.997,
+                 terminal_bonus=TERMINAL_BONUS):
     """逐步現金序列 -> dense reward。`cash_*` 是 `[T+1]`。
 
     ## `settle_step`：前段不逐步發分，到那一步一次結算
@@ -142,16 +142,28 @@ def step_rewards(cash_a, cash_b, zero_sum=False, settle_step=0,
     GAE 在 lam=0.95 下（等效視窗 19 步）一樣傳不到第 0 步。要傳回去得配
     `phased_lam()`。兩件事是分開的，可以各自開關。
 
-    ## `plant_weight`：把「種著作物的格子數」加進來
+    ## `phi`：potential-based shaping
 
-    §55.6 量到（6 局 ladder 頂端重播）：我們第 0 天的作物格是 5，頂端 9~19
-    （差 -11.3，sd 4.3）；第 5 天 13 對 18~19（差 -5.7，**sd 0.5**）。中後期
-    看不出差別（sd 14 左右）。
+    `phi` 是 `[T+1]` 的位能序列，`r += gamma*Φ(s_{t+1}) - Φ(s_t)`。這個形式
+    **不會改變最佳策略**（Ng et al. 1999）—— 整條軌跡加起來只剩
+    `gamma^T Φ(s_T) - Φ(s_0)`。它不是在教「Φ 大就是好」，只是把 credit
+    提前發，不用等 240 步後收穫。⚠️ **定理要 Φ(終端) = 0**，那是呼叫端
+    （`harness/ppo_rollout.py`）的責任。
 
-    用的是 potential-based shaping：`gamma*Φ(s') - Φ(s)`，`Φ = w × 作物格數`。
-    這個形式**不會改變最佳策略**（Ng et al. 1999）—— 整條軌跡加起來只剩
-    `gamma^T Φ(s_T) - Φ(s_0)`，所以它不是在教「格子多就是好」，只是把「種下去」
-    的功勞提前發，不用等 240 步後收穫。給 `plants_b` 就用雙方的差。
+    Φ 裝什麼由 rollout 決定，這裡只套公式。目前兩種：
+
+        作物格數（`--phi plants`）   §55.6 量到：我們第 0 天的作物格是 5、
+                                    ladder 頂端 9~19（差 -11.3，sd 4.3），
+                                    第 5 天 13 對 18~19（差 -5.7，sd 0.5）。
+                                    中後期看不出差別（sd 14 左右）。
+                                    送進來的是「我方 − 對手」的差。
+        非現金資產（`--phi assets`） §83.3。`model/networth.py` 算的金額，
+                                    單位是錢，所以 `phi_weight` 要
+                                    `1/REWARD_SCALE`。只算我方 —— 對手的
+                                    倉庫、手上、種子在 observation 裡看不到。
+
+    `phi_weight` 的單位是「scaled reward / Φ 的一單位」：`0.01` 等於一格作物
+    值 $100。
 
     ## `zero_sum`：⚠️ 預設值還是 False，但那個決定已經被推翻
 
@@ -174,13 +186,12 @@ def step_rewards(cash_a, cash_b, zero_sum=False, settle_step=0,
     da = np.diff(np.asarray(cash_a, dtype=np.float64))
     db = np.diff(np.asarray(cash_b, dtype=np.float64))
     r = (da - db) / REWARD_SCALE if zero_sum else da / REWARD_SCALE
-    if plant_weight and plants_a is not None:
-        pa = np.asarray(plants_a, dtype=np.float64)
-        phi = pa - np.asarray(plants_b, dtype=np.float64) \
-            if plants_b is not None else pa
-        phi = phi * float(plant_weight)
+    if phi_weight and phi is not None:
+        p = np.asarray(phi, dtype=np.float64) * float(phi_weight)
+        if len(p) != len(cash_a):
+            raise ValueError(f"phi 要 T+1 個（{len(cash_a)}），收到 {len(p)}")
         # potential-based shaping：gamma*Φ(s_{t+1}) - Φ(s_t)
-        r = r + gamma * phi[1:] - phi[:-1]
+        r = r + gamma * p[1:] - p[:-1]
     if settle_step:
         k = max(0, min(int(settle_step), len(r)))
         if k:
@@ -188,7 +199,7 @@ def step_rewards(cash_a, cash_b, zero_sum=False, settle_step=0,
             r[:k] = 0.0
             r[k - 1] = acc
     if len(r):
-        r[-1] += TERMINAL_BONUS * np.sign(cash_a[-1] - cash_b[-1])
+        r[-1] += terminal_bonus * np.sign(cash_a[-1] - cash_b[-1])
     return r.astype(np.float32)
 
 
@@ -304,9 +315,9 @@ class Trajectory:
     tgt_mask: np.ndarray       # [U, N_TARGET_CELLS] bool
     op_idx: np.ndarray         # [U] int64
     tgt_idx: np.ndarray        # [U] int64
-    #: [T+1, 2]（我方, 對手）種著作物的格子數。跟 `cash` 一樣多一格期末。
-    #: 舊的呼叫端不給就是 None，`step_rewards` 的 shaping 自動關掉。
-    plants: np.ndarray = None
+    #: [T+1] 的位能序列 Φ，跟 `cash` 一樣多一格期末。裝什麼由 rollout 決定
+    #: （作物格數差 / 非現金資產）。不給就是 None，shaping 自動關掉。
+    phi: np.ndarray = None
 
     def __len__(self):
         return len(self.value)
@@ -327,26 +338,25 @@ class TrajectoryWriter:
     def __init__(self):
         self.rows = []
         self.cash = []
-        self.plants = []
+        self.phi = []
 
-    def add(self, rec, my_cash, opp_cash, my_plants=None, opp_plants=None):
+    def add(self, rec, my_cash, opp_cash, phi=None):
         self.rows.append(rec)
         self.cash.append((my_cash, opp_cash))
-        if my_plants is not None:
-            self.plants.append((my_plants, opp_plants or 0))
+        if phi is not None:
+            self.phi.append(float(phi))
 
-    def finish(self, final_my_cash, final_opp_cash,
-               final_my_plants=None, final_opp_plants=None):
+    def finish(self, final_my_cash, final_opp_cash, final_phi=None):
         rows = self.rows
         if not rows:
             return None
-        # 格子數要跟 cash 一樣有 T+1 個。中途有一步沒給就整條關掉，
-        # 免得長度對不上在 step_rewards 裡才炸。
-        plants = None
-        if len(self.plants) == len(rows) and final_my_plants is not None:
-            plants = np.array(
-                self.plants + [(final_my_plants, final_opp_plants or 0)],
-                dtype=np.float32)
+        # Φ 要跟 cash 一樣有 T+1 個。中途有一步沒給就整條關掉，免得長度
+        # 對不上在 step_rewards 裡才炸。
+        # 🩸 `final_phi` 是**終端**的 Φ，不是最後一次觀測到的值。資產法要
+        #    送 0（§83.3 的終端條件），送別的就等於白送一筆不存在的資產。
+        phi = None
+        if len(self.phi) == len(rows) and final_phi is not None:
+            phi = np.array(self.phi + [float(final_phi)], dtype=np.float32)
         counts = [len(r["op_idx"]) for r in rows]
         return Trajectory(
             spatial=np.stack([r["spatial"] for r in rows]),
@@ -365,7 +375,7 @@ class TrajectoryWriter:
             tgt_mask=np.concatenate([r["tgt_mask"] for r in rows]),
             op_idx=np.concatenate([r["op_idx"] for r in rows]),
             tgt_idx=np.concatenate([r["tgt_idx"] for r in rows]),
-            plants=plants,
+            phi=phi,
         )
 
 
@@ -377,21 +387,20 @@ class RolloutBatch:
     """
 
     def __init__(self, trajs, gamma=0.997, lam=0.95, zero_sum=False,
-                 settle_step=0, plant_weight=0.0,
-                 lam_early=0.0, lam_split=0):
+                 settle_step=0, phi_weight=0.0,
+                 lam_early=0.0, lam_split=0,
+                 terminal_bonus=TERMINAL_BONUS):
         trajs = [t for t in trajs if t is not None and len(t)]
         if not trajs:
             raise ValueError("沒有軌跡")
         advs, rets, offs, base = [], [], [], 0
         for tr in trajs:
             T = len(tr)
-            p = tr.plants
             rew = step_rewards(
                 tr.cash[:, 0], tr.cash[:, 1], zero_sum,
-                settle_step=settle_step,
-                plants_a=None if p is None else p[:, 0],
-                plants_b=None if p is None else p[:, 1],
-                plant_weight=plant_weight, gamma=gamma)
+                settle_step=settle_step, phi=tr.phi,
+                phi_weight=phi_weight, gamma=gamma,
+                terminal_bonus=terminal_bonus)
             dones = np.zeros(T, dtype=np.float32)
             dones[-1] = 1.0
             # 期末 bootstrap 是 0：這一局真的結束了，沒有後續價值。

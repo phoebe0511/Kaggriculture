@@ -129,7 +129,8 @@ def train(args):
         # （2026-08-28 實測 2.21 -> 0.38 秒/局）。網路只佔 12%。
         pool = RolloutPool(args.workers, args.envs, args.opponent,
                            args.width, args.blocks, args.episode_steps,
-                           args.base_policy, args.base_side)
+                           args.base_policy, args.base_side,
+                           phi=args.phi, recognise=args.recognise)
         games = args.workers * args.envs
     else:
         opp, opp_names = (load_league(args.opponent) if args.opponent
@@ -259,7 +260,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                              device=args.device,
                              episode_steps=args.episode_steps,
                              opponent=opp, opp_offset=it * games,
-                             base_policy=base, base_side=args.base_side)
+                             base_policy=base, base_side=args.base_side,
+                             phi=args.phi, recognise=args.recognise)
             steps, cash, trajs = vec.run(collect=True)
             pairs = [(a, b, vec.opp_index(ei))
                      for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -271,9 +273,10 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
         batch = ppo.RolloutBatch(trajs, gamma=args.gamma, lam=args.lam,
                                  zero_sum=args.zero_sum,
                                  settle_step=args.settle_step,
-                                 plant_weight=args.plant_weight,
+                                 phi_weight=args.phi_weight,
                                  lam_early=args.lam_early,
-                                 lam_split=args.lam_split)
+                                 lam_split=args.lam_split,
+                                 terminal_bonus=args.terminal_bonus)
         del trajs
         t_batch = time.perf_counter() - t1
         t1 = time.perf_counter()
@@ -380,12 +383,30 @@ def main(argv=None):
                          "的和。總和不變。ladder 頂端前 10 天（240 步）現金都"
                          "在 2,000 以下（§55.1），逐步發等於把「正確地把錢花"
                          "光」當扣分。0 = 關掉")
+    ap.add_argument("--phi", default="none",
+                    choices=("none", "plants", "assets"),
+                    help="potential-based shaping 的 Φ 裝什麼。"
+                         "plants = 我方作物格數 − 對方（§55.6）；"
+                         "assets = 我方非現金資產金額（§83.3）。"
+                         "這個形式不改變最佳策略，只是把 credit 提前發")
+    ap.add_argument("--phi-weight", type=float, default=0.0,
+                    help="Φ 的權重，單位是「scaled reward / Φ 的一單位」。"
+                         "--phi plants 用 0.01（一格作物 $100）；"
+                         "--phi assets 用 1e-4（資產本來就是錢，"
+                         "1/REWARD_SCALE）。0 = 關掉 shaping")
+    ap.add_argument("--recognise", default="strict",
+                    choices=("strict", "produce"),
+                    help="--phi assets 的認列時點（§83.4）。strict = 跟引擎的"
+                         "HARVEST 條件一致，收得下來才算成品；"
+                         "produce = 澆水長出來就算")
+    ap.add_argument("--terminal-bonus", type=float, default=ppo.TERMINAL_BONUS,
+                    help="期末勝負的額外 reward（已經是除過 REWARD_SCALE 的"
+                         "單位，1.0 = $10,000）。--phi assets 底下 reward "
+                         "已經逐步反映資產，這個階梯函數要不要留是未定的"
+                         "（§83.7）")
     ap.add_argument("--plant-weight", type=float, default=0.0,
-                    help="把「種著作物的格子數」用 potential-based shaping 加"
-                         "進 reward（Φ = w × 我方格數 − 對方格數）。這個形式"
-                         "不改變最佳策略，只是把種下去的功勞提前發。§55.6 量"
-                         "到我們第 5 天比 ladder 頂端少 5.7 格（sd 0.5）。"
-                         "0 = 關掉")
+                    help="⚠️ 舊旗標，等於 --phi plants --phi-weight W。"
+                         "留著是為了重跑 2026-08-31 之前的命令")
     ap.add_argument("--lam-early", type=float, default=0.0,
                     help="前 --lam-split 步改用這個 lam（後段仍用 --lam）。"
                          "等效視窗是 1/(1-gamma*lam)：0.95 是 19 步、0.998 是"
@@ -437,6 +458,13 @@ def main(argv=None):
         args.save_every = 0
         args.eval_every, args.eval_games = 1, 2
     args.episode_steps = args.episode_steps or None
+    # 舊旗標 --plant-weight 等於 --phi plants --phi-weight W。
+    if args.plant_weight:
+        if args.phi != "none":
+            raise SystemExit("--plant-weight 和 --phi 不能一起給")
+        args.phi, args.phi_weight = "plants", args.plant_weight
+    if args.phi != "none" and not args.phi_weight:
+        raise SystemExit(f"--phi {args.phi} 要配 --phi-weight（0 = shaping 關掉）")
     return train(args)
 
 

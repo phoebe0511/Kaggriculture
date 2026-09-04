@@ -109,52 +109,56 @@ def test_a_bigger_early_lam_carries_the_late_reward_further_back():
     assert big[0] > small[0] * 100
 
 
-# --------------------------------------------------------------- plant shaping
+# ----------------------------------------------------------------- Φ shaping
 
-def test_plant_shaping_is_potential_based_so_the_total_barely_moves():
+def test_phi_shaping_is_potential_based_so_the_total_barely_moves():
     """整條加起來只剩 gamma^T*Φ(s_T) - Φ(s_0)，不是在加一筆新的目標。"""
     a, b = _cash()
-    pa = np.linspace(0, 40, len(a))
-    pb = np.linspace(0, 45, len(a))
+    phi = np.linspace(0, 40, len(a)) - np.linspace(0, 45, len(a))
     plain = step_rewards(a, b, zero_sum=True)
-    shaped = step_rewards(a, b, zero_sum=True, plants_a=pa, plants_b=pb,
-                          plant_weight=0.01, gamma=1.0)
-    phi0 = 0.01 * (pa[0] - pb[0])
-    phiT = 0.01 * (pa[-1] - pb[-1])
-    assert shaped.sum() == pytest.approx(plain.sum() + phiT - phi0, abs=1e-4)
+    shaped = step_rewards(a, b, zero_sum=True, phi=phi, phi_weight=0.01,
+                          gamma=1.0)
+    assert shaped.sum() == pytest.approx(
+        plain.sum() + 0.01 * (phi[-1] - phi[0]), abs=1e-4)
 
 
 def test_planting_a_tile_pays_immediately():
     """種下去當場就有分，不用等 240 步後收穫 —— 這是加它的理由。"""
     a = np.array([3000.0, 3000.0, 3000.0])
     b = np.array([3000.0, 3000.0, 3000.0])
-    flat = step_rewards(a, b, zero_sum=True, plants_a=np.array([0.0, 0.0, 0.0]),
-                        plant_weight=0.1)
-    grew = step_rewards(a, b, zero_sum=True, plants_a=np.array([0.0, 5.0, 5.0]),
-                        plant_weight=0.1)
+    flat = step_rewards(a, b, zero_sum=True, phi=np.array([0.0, 0.0, 0.0]),
+                        phi_weight=0.1)
+    grew = step_rewards(a, b, zero_sum=True, phi=np.array([0.0, 5.0, 5.0]),
+                        phi_weight=0.1)
     assert grew[0] > flat[0]
 
 
-def test_plant_weight_zero_is_a_no_op():
+def test_phi_weight_zero_is_a_no_op():
     a, b = _cash()
-    pa = np.linspace(0, 40, len(a))
-    assert step_rewards(a, b, plants_a=pa, plant_weight=0.0) == pytest.approx(
+    phi = np.linspace(0, 40, len(a))
+    assert step_rewards(a, b, phi=phi, phi_weight=0.0) == pytest.approx(
         step_rewards(a, b), abs=1e-7)
 
 
-def test_plants_none_is_a_no_op_even_with_a_weight():
+def test_phi_none_is_a_no_op_even_with_a_weight():
     a, b = _cash()
-    assert step_rewards(a, b, plant_weight=0.5) == pytest.approx(
+    assert step_rewards(a, b, phi_weight=0.5) == pytest.approx(
         step_rewards(a, b), abs=1e-7)
 
 
-def test_plant_shaping_alone_without_an_opponent_count():
+def test_phi_shaping_with_a_one_sided_potential():
     a = np.array([3000.0, 3000.0])
     b = np.array([3000.0, 3000.0])
-    r = step_rewards(a, b, zero_sum=True, plants_a=np.array([0.0, 10.0]),
-                     plant_weight=0.1, gamma=1.0)
+    r = step_rewards(a, b, zero_sum=True, phi=np.array([0.0, 10.0]),
+                     phi_weight=0.1, gamma=1.0)
     # 期末 bonus 是 sign(0) = 0，所以只剩 shaping：1.0*1.0 - 0.0
     assert r[0] == pytest.approx(1.0, abs=1e-5)
+
+
+def test_phi_length_must_be_t_plus_one():
+    a, b = _cash()
+    with pytest.raises(ValueError):
+        step_rewards(a, b, phi=np.zeros(len(a) - 1), phi_weight=0.01)
 
 
 # ------------------------------------------------------------------- 互不干擾
@@ -163,7 +167,7 @@ def test_the_three_knobs_compose():
     a, b = _cash()
     pa, pb = np.linspace(0, 40, len(a)), np.linspace(0, 45, len(a))
     r = step_rewards(a, b, zero_sum=True, settle_step=10,
-                     plants_a=pa, plants_b=pb, plant_weight=0.01)
+                     phi=pa - pb, phi_weight=0.01)
     assert np.all(r[:9] == 0.0)
     assert np.isfinite(r).all()
 
@@ -171,7 +175,7 @@ def test_the_three_knobs_compose():
 def test_terminal_bonus_survives_every_combination():
     a, b = _cash()
     for kw in ({}, {"settle_step": 10},
-               {"plants_a": np.linspace(0, 40, len(a)), "plant_weight": 0.01}):
+               {"phi": np.linspace(0, 40, len(a)), "phi_weight": 0.01}):
         r = step_rewards(a, b, zero_sum=True, **kw)
         assert r[-1] > TERMINAL_BONUS / 2, kw     # 我方期末較高 -> +1.0
 

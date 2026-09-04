@@ -364,3 +364,62 @@ def test_watch_survives_a_missing_dir(tmp_path, capsys):
 
     assert watch([str(tmp_path / "nope")]) == 1
     assert "train.jsonl" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------- Φ 接線（§83.3）
+
+@pytest.fixture(scope="module")
+def assets_rollout():
+    from harness.ppo_rollout import VecRollout, build_net
+
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    vec = VecRollout(net, n_envs=2, seed0=777, episode_steps=72, phi="assets")
+    _steps, _cash, trajs = vec.run(collect=True)
+    return trajs
+
+
+def test_assets_phi_lands_in_the_trajectory_with_a_zero_terminal(assets_rollout):
+    """🩸 期末的 Φ 一定要是 0：賣不掉的庫存一分不值，而且 Ng 的定理要它。"""
+    for t in assets_rollout:
+        assert t.phi is not None
+        assert t.phi.shape == (len(t) + 1,)
+        assert t.phi[-1] == 0.0
+        assert t.phi[0] == 0.0            # 開局身上只有現金
+        assert np.isfinite(t.phi).all()
+        assert (t.phi >= 0).all()
+
+
+def test_assets_reward_sums_to_the_final_margin(assets_rollout):
+    """γ=1 時整局加總 = 期末 margin（Φ_0 = 0，terminal bonus 關掉）。"""
+    from model.ppo import REWARD_SCALE, step_rewards
+
+    for t in assets_rollout:
+        r = step_rewards(t.cash[:, 0], t.cash[:, 1], zero_sum=True,
+                         phi=t.phi, phi_weight=1 / REWARD_SCALE, gamma=1.0,
+                         terminal_bonus=0.0)
+        margin = (t.cash[-1, 0] - t.cash[-1, 1]) - (t.cash[0, 0] - t.cash[0, 1])
+        assert r.sum() == pytest.approx(margin / REWARD_SCALE, abs=1e-3)
+
+
+def test_phi_none_leaves_the_trajectory_without_a_potential(rollout):
+    _net, _steps, _cash, trajs = rollout
+    assert all(t.phi is None for t in trajs)
+
+
+def test_plants_phi_is_the_difference_between_the_two_sides():
+    """舊的 `--plant-weight` 是「我方 − 對手」，換欄位之後要一模一樣。"""
+    from harness.ppo_rollout import VecRollout, build_net, count_plants
+
+    torch.manual_seed(0)
+    net = build_net(width=16, blocks=2)
+    vec = VecRollout(net, n_envs=1, seed0=777, episode_steps=48, phi="plants")
+    _steps, _cash, trajs = vec.run(collect=True)
+    assert trajs and all(t.phi is not None for t in trajs)
+    # 最後一格是「最後一次觀測到的值」，不是 0 —— plants 模式維持舊行為。
+    for t in trajs:
+        assert t.phi[-1] == t.phi[-2]
+    obs = vec.envs[0].steps[0]
+    farms = obs[0]["observation"]["farms"]
+    want = count_plants(farms[0]) - count_plants(farms[1])
+    assert trajs[0].phi[0] == want
