@@ -1,0 +1,9 @@
+{
+  "name": "Whyme Labs",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104818790",
+    "player": 0
+  },
+  "note": "第六輪 CMA-ES 的訓練對手之一。⚠️ 跟 Bantam 是同一支 code —— 不同 episode、不同對手，720 回合有 663 回合動作完全相同（92.1%）。兩支不要同時當訓練對手。cma5-g175 對它 0/20。\n\n⚠️ 開迴路重播：它不會對我們反應，`margin` 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。取樣規則見 config/ladder-top-202609.json。"
+}

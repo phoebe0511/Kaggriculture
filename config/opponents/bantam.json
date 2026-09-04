@@ -1,0 +1,9 @@
+{
+  "name": "Bantam",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104834801",
+    "player": 1
+  },
+  "note": "⚠️ 跟 Whyme Labs 是同一支 code（720 回合有 663 回合動作相同）。當訓練對手時兩支挑一支就好。cma5-g175 對它 0/20。\n\n⚠️ 開迴路重播：它不會對我們反應，`margin` 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。取樣規則見 config/ladder-top-202609.json。"
+}

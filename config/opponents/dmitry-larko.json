@@ -1,0 +1,9 @@
+{
+  "name": "Dmitry Larko",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104935316",
+    "player": 1
+  },
+  "note": "第五輪 CMA-ES 的訓練對手。2026-09-03 現役第一名，53 局中位現金 $123,623。g134 對它 20 局只拿 20% 得分率、每局落後 $22,150 —— 六支現役對手裡差距最大的。\n\n⚠️ 開迴路重播（episode 104935316 player 1，那一局 122,731 對 122,105）。它不會對我們反應，所以 margin 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。checkpoint 打整個池子是唯一的防線。\n\n詳見 journal §79。"
+}

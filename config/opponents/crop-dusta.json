@@ -1,0 +1,9 @@
+{
+  "name": "Crop Dusta",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104818790",
+    "player": 1
+  },
+  "note": "⚠️ 打法跟其他五支都不一樣：買 13 頭牛 11 隻羊（別人 5~7 / 3~6），靠賣奶和羊毛，種最少、雜草率最高。我們對它是贏的（65~80%），不適合當訓練對手。在爬到的 400 局裡出現 356 局，對局圖上到處都是。\n\n⚠️ 開迴路重播：它不會對我們反應，`margin` 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。取樣規則見 config/ladder-top-202609.json。"
+}

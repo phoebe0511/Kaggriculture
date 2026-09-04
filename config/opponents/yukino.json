@@ -1,0 +1,9 @@
+{
+  "name": "yukino",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104634010",
+    "player": 0
+  },
+  "note": "第六輪 CMA-ES 的訓練對手之一。整輪第五輪對它只進步 $95 —— 六支現役裡最不受影響的一支。cma5-g175 對它 10%。\n\n⚠️ 開迴路重播：它不會對我們反應，`margin` 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。取樣規則見 config/ladder-top-202609.json。"
+}

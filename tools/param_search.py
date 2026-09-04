@@ -106,8 +106,20 @@ HOLDOUT_TEAMS = ("kawashigi", "thomas", "tetsuya", "utkarsh",
                  "peikopon", "lucien", "recursion", "kostiantyn", "gen1")
 
 
-def load_team_specs(names=HOLDOUT_TEAMS):
-    """撈出指定隊伍的 spec。先找 `config/ladder-top.json`，沒有就走 `load_spec`。"""
+def load_team_specs(names=HOLDOUT_TEAMS, pool_path=None):
+    """撈出指定隊伍的 spec。先找對手池檔，沒有就走 `load_spec`。
+
+    `pool_path` 給了就用那個池子的**全部**對手，忽略 `names` ——
+    `--teams config/ladder-top-202609.json` 走的是這條。
+
+    🩸 2026-09-03 加的。原本寫死 `config/ladder-top.json`，而那個池子是
+    2026-08-19 抓的：八個名字現在只剩 tetsuya 還在榜上（journal §78/§79）。
+    g134 對那批平均得分率 53.8%、對現役六支只有 19.2% —— checkpoint 一直在
+    對一批已經打贏的對手報捷。
+    """
+    if pool_path:
+        with open(pool_path, encoding="utf-8") as f:
+            return list(json.load(f)["opponents"])
     path = REPO_ROOT / "config" / "ladder-top.json"
     with open(path, encoding="utf-8") as f:
         pool = json.load(f)["opponents"]
@@ -224,14 +236,70 @@ def _score_rows(rows, objective="cash"):
     return (statistics.fmean(values) if values else 0.0), dropped
 
 
-def evaluate_batch(xs, opponent_spec, games, seed0, workers, swap, tag="cand",
+def load_opponents(names):
+    """`--opponent` 吃逗號分隔的多支對手，回傳 spec 清單。
+
+    🩸 **為什麼要能給多支。** 第五輪（`temp/cma/20260903-111413`）只訓練
+    `Dmitry Larko` 一支，180 代下來：
+
+        Dmitry Larko          -19,203 -> +9,095    +25,783
+        另外五支現役平均       -14,268 -> -11,480    +2,788（1.1 SE，讀不出來）
+        舊池子八支得分率         53.8% -> 39.4%
+
+    `margin` 對單一固定 replay 產出的就是針對那一支的東西（見 `OBJECTIVES`
+    的誘因問題）。checkpoint 擋不住 —— 它只在事後量，不進目標函數。
+
+    ⚠️ 第四輪看起來有轉移，其實沒有：訓練對手 `ladder-top-a`（kawashigi）
+    的 holdout 池八支裡有六支是同一個策略家族（人手排程都是 d0=5 / d6=4 /
+    d9 起 12，種下 171~187），所以那也是家族內的專門化。**要不同家族，
+    不是更多支。**
+    """
+    specs = [load_spec(n.strip()) for n in str(names).split(",") if n.strip()]
+    if not specs:
+        raise SystemExit("--opponent 至少要一支")
+    return specs
+
+
+def seed_blocks(n_opponents, games, seed0):
+    """把 `games` 個 seed 切成連續的 n 塊，回傳 `[(起始 seed, 幾個), ...]`。
+
+    餘數分給前面幾支，所以 40 個 seed 給 3 支 = 14 / 13 / 13。
+
+    🩸 **連續切，不是輪流發。** `eval.runner.run()` 只吃連續的 seed 區間
+    （`seed0` + `games`），輪流發的話 `evaluate_one` 就不能再沿用它，得另外
+    寫一條評估路徑 —— 而 checkpoint 走的正是 `evaluate_one`，動它的風險比
+    收益大。連續塊的代價是每支對手固定看同一批地圖，但那對所有候選都一樣，
+    CMA-ES 比的是候選之間的差，不受影響。
+
+    ⚠️ **加對手不加牆鐘時間，加的是每支對手的雜訊。** 每個候選的總局數
+    仍然是 `games`（×2 如果 swap），但單支對手的 seed 從 40 掉到 13。
+    目標函數量的是跨對手的平均，那正是我們要的東西；要看單支得回頭看
+    checkpoint。
+    """
+    base, rem = divmod(games, n_opponents)
+    if base == 0:
+        raise SystemExit(
+            f"{games} 個 seed 分不給 {n_opponents} 支對手（--seeds 要 >= 對手數）")
+    out, seed = [], seed0
+    for j in range(n_opponents):
+        n = base + (1 if j < rem else 0)
+        out.append((seed, n))
+        seed += n
+    return out
+
+
+def evaluate_batch(xs, opponent_specs, games, seed0, workers, swap, tag="cand",
                    objective="cash", base=None):
     """一整代的候選，共用一個 pool。回傳 `[(平均分數, 作廢局數), ...]`。"""
     per = games * (2 if swap else 1)
+    blocks = seed_blocks(len(opponent_specs), games, seed0)
     jobs = []
     for i, x in enumerate(xs):
-        jobs.extend(build_jobs(candidate_spec(x, f"{tag}{i}", base), opponent_spec,
-                               games, seed0, swap, None))
+        spec_a = candidate_spec(x, f"{tag}{i}", base)
+        # 🩸 一個候選的 job 一定要連續排在一起，下面才切得回去。
+        for opponent_spec, (block_seed0, block_games) in zip(opponent_specs, blocks):
+            jobs.extend(build_jobs(spec_a, opponent_spec,
+                                   block_games, block_seed0, swap, None))
 
     if workers <= 1:
         results = [_play(job) for job in jobs]
@@ -243,30 +311,39 @@ def evaluate_batch(xs, opponent_spec, games, seed0, workers, swap, tag="cand",
             for i in range(len(xs))]
 
 
-def evaluate_one(x, opponent_spec, games, seed0, workers, swap, name="cand",
+def evaluate_one(x, opponent_specs, games, seed0, workers, swap, name="cand",
                  objective="cash", base=None):
-    """單一候選走 `eval.runner.run()`（公開 API，但每次都開新的 pool）。"""
-    _summary, results = run(candidate_spec(x, name, base), opponent_spec,
-                            games, workers, seed0=seed0, swap=swap, progress=False)
-    return _score_rows(results, objective)
+    """單一候選走 `eval.runner.run()`（公開 API，但每次都開新的 pool）。
+
+    多支對手時每支跑自己那一塊 seed，結果接起來一起平均 —— 切法跟
+    `evaluate_batch` 一致，兩條路算出來的才是同一個數字。
+    """
+    spec_a = candidate_spec(x, name, base)
+    rows = []
+    for opponent_spec, (block_seed0, block_games) in zip(
+            opponent_specs, seed_blocks(len(opponent_specs), games, seed0)):
+        _summary, results = run(spec_a, opponent_spec, block_games, workers,
+                                seed0=block_seed0, swap=swap, progress=False)
+        rows.extend(results)
+    return _score_rows(rows, objective)
 
 
 # --------------------------------------------------------------------------
 # checkpoint
 # --------------------------------------------------------------------------
 
-def checkpoint(x, args, opponent_spec, teams, base=None):
+def checkpoint(x, args, opponent_specs, teams, base=None):
     """當代最佳去打 holdout seed + `HOLDOUT_TEAMS` 的每一支。"""
     out = {}
     out["holdout"], out["holdout_dropped"] = evaluate_one(
-        x, opponent_spec, args.holdout_seeds, args.holdout_seed0,
+        x, opponent_specs, args.holdout_seeds, args.holdout_seed0,
         args.workers, args.swap, name="best-holdout", objective=args.objective,
         base=base)
 
     per_team = {}
     for team in teams:
         score, _dropped = evaluate_one(
-            x, team, args.team_seeds, args.holdout_seed0,
+            x, [team], args.team_seeds, args.holdout_seed0,
             args.workers, args.swap, name=f"best-vs-{team['name']}",
             objective=args.objective, base=base)
         per_team[team["name"]] = score
@@ -458,7 +535,12 @@ def main(argv=None):
     ap.add_argument("--generations", type=int, default=243, help="最多跑幾代")
     ap.add_argument("--checkpoint-every", type=int, default=20)
     ap.add_argument("--workers", type=int, default=24)
-    ap.add_argument("--opponent", default="ladder-top-a")
+    ap.add_argument("--opponent", default="ladder-top-a",
+                    help="訓練對手。逗號分隔可以給多支，seed 會平均切開分給各支"
+                         "（總局數不變）。單一對手會讓 CMA-ES 專門化到那一支 —— "
+                         "第五輪對訓練對手 +25,783、對另外五支只有 +2,788。")
+    ap.add_argument("--teams", metavar="LADDER_JSON", default=None,
+                    help="checkpoint 打哪個對手池（預設 config/ladder-top.json 的那八支 + gen1）。給了就用那個池子的全部對手。")
     ap.add_argument("--objective", choices=sorted(OBJECTIVES), default="margin",
                     help="cash = 我方期末現金；margin = 我方減對手。"
                          "2026-08-25 實測 margin 的訊噪比高 1.9 倍（54 vs 197 "
@@ -516,8 +598,8 @@ def main(argv=None):
 
     import cma
 
-    opponent_spec = load_spec(args.opponent)
-    teams = load_team_specs()
+    opponent_specs = load_opponents(args.opponent)
+    teams = load_team_specs(pool_path=args.teams)
 
     # --- 建立或載入狀態 ---
     if args.resume:
@@ -574,7 +656,9 @@ def main(argv=None):
                        "active_keys": list(active_keys) if active_keys else None,
                        "x_base": x_base,
                        "base_params": base_params,
-                       "opponent": opponent_spec.get("name"),
+                       "opponent": ", ".join(
+                           s.get("name") for s in opponent_specs),
+                       "opponents": [s.get("name") for s in opponent_specs],
                        "teams": [t["name"] for t in teams]},
                       f, ensure_ascii=False, indent=2)
 
@@ -587,7 +671,8 @@ def main(argv=None):
     games_per_gen = args.popsize * args.seeds * (2 if args.swap else 1)
     print(f"維度 {len(idx) if idx else DIM}   popsize {args.popsize}"
           f"   train seed {args.seed0}~"
-          f"{args.seed0 + args.seeds - 1}   對手 {opponent_spec.get('name')}"
+          f"{args.seed0 + args.seeds - 1}   對手 "
+          f"{', '.join(s.get('name') for s in opponent_specs)}"
           f"   目標 {args.objective}")
     print(f"一代 {games_per_gen} 局   狀態在 {state_dir}\n")
 
@@ -617,9 +702,9 @@ def main(argv=None):
     if not args.resume:
         t_start = time.perf_counter()
         start_score, _dropped = evaluate_one(
-            x_base, opponent_spec, args.seeds, args.seed0, args.workers,
+            x_base, opponent_specs, args.seeds, args.seed0, args.workers,
             args.swap, name="start", objective=args.objective, base=base_params)
-        ck0 = checkpoint(x_base, args, opponent_spec, teams, base=base_params)
+        ck0 = checkpoint(x_base, args, opponent_specs, teams, base=base_params)
         ck0.update({"generation": 0, "train": start_score, "is_start": True})
         with open(ck_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(ck0, ensure_ascii=False) + "\n")
@@ -651,12 +736,12 @@ def main(argv=None):
         xs = [expand(z, x_base) for z in zs]
 
         if args.no_batch:
-            scored = [evaluate_one(x, opponent_spec, args.seeds, args.seed0,
+            scored = [evaluate_one(x, opponent_specs, args.seeds, args.seed0,
                                    args.workers, args.swap, f"cand{i}",
                                    objective=args.objective, base=base_params)
                       for i, x in enumerate(xs)]
         else:
-            scored = evaluate_batch(xs, opponent_spec, args.seeds, args.seed0,
+            scored = evaluate_batch(xs, opponent_specs, args.seeds, args.seed0,
                                     args.workers, args.swap,
                                     objective=args.objective, base=base_params)
 
@@ -691,7 +776,7 @@ def main(argv=None):
               f"sigma {es.sigma:.4f}  {wall:5.1f}s{flag}")
 
         if args.checkpoint_every and gen % args.checkpoint_every == 0:
-            ck = checkpoint(best_x, args, opponent_spec, teams, base=base_params)
+            ck = checkpoint(best_x, args, opponent_specs, teams, base=base_params)
             ck.update({"generation": gen, "train": best_score})
             with open(ck_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ck, ensure_ascii=False) + "\n")

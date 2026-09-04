@@ -1,0 +1,9 @@
+{
+  "name": "3정훈",
+  "entry": "agents.replay:act",
+  "params": {
+    "episode": "104665306",
+    "player": 0
+  },
+  "note": "第六輪 CMA-ES 的訓練對手之一。cma5-g175 對它 10%、每局落後 $15,107。\n\n⚠️ 開迴路重播：它不會對我們反應，`margin` 目標仍有「讓它的 BUY_*/HIRE 失敗」這個誘因（見 param_search 的 OBJECTIVES）。取樣規則見 config/ladder-top-202609.json。"
+}
