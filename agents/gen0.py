@@ -275,6 +275,18 @@ DEFAULT_PARAMS = {
     # 最後兩天不再維持完整 12 人：剩 2 天上限 10，最後一天上限 8。
     # 從剩 6 天就降到 11 的版本反而少賺；保守版與 ROI 合併後再多約 $150。
     "late_crew_caps": ((2, 10), (1, 8)),
+    # 最後一天把所有還能變現的事做完。⚠️ 預設 False = 保持舊行為。
+    #
+    # 舊行為漏掉兩筆錢（2026-09-05 實測，cma5-g175 對 Dmitry Larko 12 局）：
+    #
+    #   1. 逐格任務那裡 WATER 和 HARVEST 是 `if / elif`。一格如果**既成熟又
+    #      還沒澆水**，只會生 WATER；而 `act()` 在最後一天把任務過濾成只留
+    #      HARVEST，於是那一格整天沒人碰。12 局全部有剩，平均 $1,161 爛在
+    #      田裡（最糟 $2,849），而同一天 89.7% 的 unit-turn 是 PASS。
+    #   2. `COLLECT_FERTILIZER` 也被同一個過濾器丟掉。FERTILIZER 是
+    #      `PRODUCTS` 之一，撿進 shed 之後清倉期是照賣的（`_planned_sale_orders`
+    #      的 `forced`）。最後一天每一步都有 13 筆這種任務排在那裡沒人做。
+    "final_day_harvest_all": False,
     # 同一優先序的任務做全域最短配對，不用固定象限。直接對打舊的逐筆貪婪
     # 分派器 60 局為 58 勝 2 負，平均現金 +$8,686，買地時點完全相同。
     "optimal_assignment": True,
@@ -1410,6 +1422,7 @@ def _tile_tasks(
             elif kind == "PLANT":
                 cd = CROPS[tile["crop"]]
                 age = day - tile["planted_day"]
+                ripe = tile["yield_units"] > 0 and age >= cd["first_yield_day"]
                 if _needs_water(
                     tile,
                     cd,
@@ -1420,7 +1433,12 @@ def _tile_tasks(
                     ),
                 ):
                     out.append((_PRI["WATER"], "WATER", x, y, None))
-                elif tile["yield_units"] > 0 and age >= cd["first_yield_day"]:
+                    # 🩸 最後一天 `act()` 只留 HARVEST，這一格如果同時已經
+                    # 成熟，不補一筆就整天不會被碰（見 `final_day_harvest_all`）。
+                    if ripe and days_left == 1 and params.get(
+                            "final_day_harvest_all", False):
+                        out.append((_PRI["HARVEST"], "HARVEST", x, y, None))
+                elif ripe:
                     out.append((_PRI["HARVEST"], "HARVEST", x, y, None))
                 if params["use_fertilizer"] and _fertilize_worth_it(
                     tile,
@@ -2643,7 +2661,9 @@ def act(obs, config=None, params=None, return_plan=False, demand=None):
     # FERTILIZE / DIG / PLANT 都不會增加最終現金，正確流程是把盤面上已成熟的
     # 產品收完，再把 unit inventory 帶回 shed，讓下一個小時的市場訂單賣掉。
     if final_day:
-        tasks = [task for task in tasks if task[1] == "HARVEST"]
+        keep = ("HARVEST", "COLLECT_FERTILIZER") if p.get(
+            "final_day_harvest_all", False) else ("HARVEST",)
+        tasks = [task for task in tasks if task[1] in keep]
 
     assigned, idle = _assign(
         unit_pos,

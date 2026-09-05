@@ -538,3 +538,60 @@ def test_reserved_structure_weed_is_dug_for_waiting_animal():
     )
 
     assert any(task[1:4] == ("DIG", target[0], target[1]) for task in tasks)
+
+
+def _ripe_thirsty_board():
+    """一格已成熟、今天還沒澆水的小麥。`consecutive_unwatered=1` = 剛種下或
+    昨天有澆；`watered_today=False` 讓 `_needs_water` 成立。"""
+    return [[{
+        "kind": "PLANT", "crop": "WHEAT", "planted_day": 26,
+        "watered_today": False, "consecutive_unwatered": 1,
+        "yield_units": 3, "max_lifespan_step": -1, "fertilized_until_day": -1,
+    }]]
+
+
+def _final_day_common():
+    return dict(
+        tiles=_ripe_thirsty_board(), day=29, board=1,
+        struct_order=(), struct_plan={}, unit_inv=[{}],
+        private={"shed": {}}, days_left=1, hour=0, turns_per_day=24,
+    )
+
+
+def test_a_ripe_but_thirsty_tile_gets_no_harvest_task_without_the_flag():
+    """🩸 舊行為：WATER / HARVEST 是 if/elif，成熟又缺水只生 WATER，而
+    `act()` 最後一天只留 HARVEST —— 那一格整天沒人碰（平均 $1,161 爛在田裡）。"""
+    ops = [t[1] for t in _tasks(
+        params={"basket": ("WHEAT",), "use_fertilizer": False,
+                "wheat_carry": 4, "water_on_demand": True},
+        **_final_day_common())]
+    assert "WATER" in ops
+    assert "HARVEST" not in ops
+
+
+def test_the_flag_adds_the_harvest_task_on_the_final_day():
+    ops = [t[1] for t in _tasks(
+        params={"basket": ("WHEAT",), "use_fertilizer": False,
+                "wheat_carry": 4, "water_on_demand": True,
+                "final_day_harvest_all": True},
+        **_final_day_common())]
+    assert "HARVEST" in ops and "WATER" in ops
+
+
+def test_the_flag_changes_nothing_before_the_final_day():
+    common = dict(_final_day_common())
+    common["days_left"] = 2
+    on = [t[1] for t in _tasks(
+        params={"basket": ("WHEAT",), "use_fertilizer": False,
+                "wheat_carry": 4, "water_on_demand": True,
+                "final_day_harvest_all": True},
+        **common)]
+    off = [t[1] for t in _tasks(
+        params={"basket": ("WHEAT",), "use_fertilizer": False,
+                "wheat_carry": 4, "water_on_demand": True},
+        **common)]
+    assert on == off == ["WATER"]
+
+
+def test_the_default_keeps_the_old_behaviour():
+    assert DEFAULT_PARAMS["final_day_harvest_all"] is False

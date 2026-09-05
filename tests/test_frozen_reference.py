@@ -142,6 +142,9 @@ _ADDED_AFTER_REF_V11 = {
     "quadrant_zoning": False,
     "zone_penalty": 10,
     "zone_planting_only": False,
+    # 2026-09-05：最後一天補生 HARVEST、並保留 COLLECT_FERTILIZER。
+    # False = 舊行為（成熟又缺水的格子整天沒人碰）。
+    "final_day_harvest_all": False,
 }
 
 
