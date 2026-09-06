@@ -69,6 +69,7 @@ import multiprocessing as mp
 import os
 import pickle
 import statistics
+import sys
 import time
 from pathlib import Path
 
@@ -579,6 +580,16 @@ def main(argv=None):
                          "⚠️ **牆鐘時間沒有變**（一代 221.3 -> 218.6 秒，在雜訊"
                          "範圍內）—— 關掉是為了不要洗版和寫爆磁碟，不是為了快。")
     args = ap.parse_args(argv)
+
+    # 🩸 輸出重導到檔案時 Python 改用系統 locale（正體中文是 cp950），而現役
+    # 對手裡有 `3정훈` —— `정` (U+C815) cp950 編不出來，**整支就在印表頭那一行
+    # 掛掉**（2026-09-05 第六輪續跑踩到，`param_search.py:672` UnicodeEncodeError，
+    # 狀態沒壞但一代都沒跑）。跟 `tools/action_dist.py:133` 同一個坑。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):     # 不是真的 TextIOWrapper 就算了
+            pass
 
     if args.watch:
         return watch(args.watch)

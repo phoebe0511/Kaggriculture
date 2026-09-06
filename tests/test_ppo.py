@@ -423,3 +423,50 @@ def test_plants_phi_is_the_difference_between_the_two_sides():
     farms = obs[0]["observation"]["farms"]
     want = count_plants(farms[0]) - count_plants(farms[1])
     assert trajs[0].phi[0] == want
+
+
+# --------------------------------------------------- value 暖身（§88）
+
+def test_value_warmup_moves_only_the_value_head(rollout):
+    """🩸 暖身的重點是「policy 一個位元都不動」。軀幹是共用的，所以只能靠
+    optimiser 只收 value_head 的參數 + `policy_coef=0` 把 policy loss 關掉。
+    這兩件事漏掉任何一件，暖身本身就會把 policy 弄壞。"""
+    from model.ppo import RolloutBatch, evaluate_actions, update
+
+    net, _steps, _cash, trajs = rollout
+    batch = RolloutBatch(trajs)
+    before = {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+    idx = np.arange(min(64, batch.n_steps))
+    with torch.no_grad():
+        lp_before, _e, _v = evaluate_actions(net, batch._pack(idx, "cpu"))
+
+    opt = torch.optim.Adam(net.value_head.parameters(), lr=1e-2)
+    update(net, opt, batch, epochs=2, minibatch=batch.n_steps, seed=0,
+           device="cpu", policy_coef=0.0, target_kl=0.0)
+
+    after = net.state_dict()
+    moved = [k for k in before if not torch.equal(before[k], after[k])]
+    assert moved, "value head 完全沒動，暖身沒有作用"
+    assert all(k.startswith("value_head.") for k in moved), \
+        f"暖身動到了 value head 以外的權重：{[k for k in moved if not k.startswith('value_head.')]}"
+
+    with torch.no_grad():
+        lp_after, _e, _v = evaluate_actions(net, batch._pack(idx, "cpu"))
+    assert torch.allclose(lp_before, lp_after), "policy 的機率被暖身改掉了"
+
+
+def test_policy_coef_zero_drops_the_policy_term():
+    """`policy_coef=0` 之後總損失只剩 value（entropy 也要一起關掉）。"""
+    from model.ppo import ppo_loss
+
+    kw = dict(new_logp=torch.zeros(4), old_logp=torch.zeros(4),
+              adv=torch.tensor([1.0, -1.0, 2.0, -2.0]),
+              new_value=torch.zeros(4), ret=torch.ones(4),
+              entropy=torch.full((4,), 3.0), vf_coef=0.5, ent_coef=0.01)
+    full, _p = ppo_loss(**kw)
+    only_v, parts = ppo_loss(**kw, policy_coef=0.0)
+    assert only_v.item() == pytest.approx(0.5 * 1.0)      # mse(0, 1) = 1
+    assert full.item() != pytest.approx(only_v.item())
+    assert parts["value"] == pytest.approx(1.0)           # 各項照樣如實回報
+    assert parts["entropy"] == pytest.approx(3.0)

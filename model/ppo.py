@@ -100,11 +100,24 @@ def phased_lam(T, split, lam_early, lam_late):
 
 
 def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
-             clip=0.2, vf_coef=0.5, ent_coef=0.01):
+             clip=0.2, vf_coef=0.5, ent_coef=0.01, policy_coef=1.0):
     """一個 minibatch 的損失。回傳 `(total, 各項的 dict)`。
 
     🩸 advantage 要**在 minibatch 內**標準化，不是全批。全批標準化在
     「大部分步的 advantage 都接近 0、少數很大」的情況下會把訊號壓掉。
+
+    ## `policy_coef`：value 暖身用
+
+    `policy_coef=0` 時只留 value loss。用途是**接手一個學別的東西的
+    critic**：`model/train.py` 的 value head 學的是「自己的期末現金 / 100k」
+    （train.py:12），而 PPO 的目標是「剩下的 margin / REWARD_SCALE」。
+    2026-09-06 實測（`ckpt-cma1-round4-tgt`、4 局）：value head 預測
+    +0.25~+1.02、實際回報 −2.80~−0.56，兩者相關 −0.48~+0.29。
+
+    後果不是 value 不準而已 —— 第 0 輪 `policy -0.036 / value 5.503`，
+    value 那一項大 150 倍，**共用軀幹被它重塑，policy 的頭跟著壞掉**
+    （`ent-coef 0` 之下 entropy 還從 11.0 漲到 15.1）。所以要先把 critic
+    校正到新目標，再放 policy 走。
     """
     a = (adv - adv.mean()) / (adv.std() + 1e-8)
     ratio = torch.exp(new_logp - old_logp)
@@ -113,7 +126,8 @@ def ppo_loss(new_logp, old_logp, adv, new_value, ret, entropy,
     policy_loss = -torch.min(unclipped, clipped).mean()
     value_loss = F.mse_loss(new_value, ret)
     ent = entropy.mean()
-    total = policy_loss + vf_coef * value_loss - ent_coef * ent
+    total = (policy_coef * (policy_loss - ent_coef * ent)
+             + vf_coef * value_loss)
     return total, {
         "policy": float(policy_loss.item()),
         "value": float(value_loss.item()),
@@ -528,7 +542,7 @@ def evaluate_actions(net, mb):
 
 def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
            clip=0.2, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
-           target_kl=0.0):
+           target_kl=0.0, policy_coef=1.0):
     """對一批軌跡跑幾輪 PPO 更新。回傳各項損失的平均。
 
     🩸 **這裡的 KL 是聯合動作的，不是單一 head 的。** 一步有 ~5 個 unit ×
@@ -548,7 +562,7 @@ def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
             loss, parts = ppo_loss(new_logp, mb["old_logp"], mb["adv"],
                                    value, mb["ret"], ent,
                                    clip=clip, vf_coef=vf_coef,
-                                   ent_coef=ent_coef)
+                                   ent_coef=ent_coef, policy_coef=policy_coef)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), max_grad_norm)

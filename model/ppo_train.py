@@ -113,6 +113,19 @@ def train(args):
               f"跳過 {len(skipped)} 個")
     net = net.to(args.device)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)
+    # 🩸 監督式的 value head 學的是「自己的期末現金 / 100k」（`model/train.py:12`），
+    # PPO 的目標是「剩下的 margin / REWARD_SCALE」—— 不同的量，不是換單位。
+    # 2026-09-06 實測（round4-tgt、4 局）：預測 +0.25~+1.02、實際 −2.80~−0.56，
+    # 相關 −0.48~+0.29。而第 0 輪 `policy -0.036 / value 5.503`，value 大 150 倍，
+    # 共用軀幹被它重塑、policy 的頭跟著壞掉（§88）。
+    if args.reset_value:
+        for m in net.value_head.modules():
+            if isinstance(m, torch.nn.Linear):
+                m.reset_parameters()
+        print("  value head 重新初始化（--reset-value）")
+    # 暖身只更新 value head 自己那兩層，軀幹和 policy 的頭一個位元都不動。
+    value_opt = torch.optim.Adam(net.value_head.parameters(),
+                                 lr=args.value_lr or args.lr, eps=1e-5)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -148,7 +161,7 @@ def train(args):
         run_loop(args, net, opt, out, log_path, pool, games,
                  None if args.workers else opp,
                  [] if args.workers else opp_names, base,
-                 eval_opp, eval_base)
+                 eval_opp, eval_base, value_opt)
     finally:
         if pool is not None:
             pool.close()
@@ -244,7 +257,7 @@ def watch(dirs):
 
 
 def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
-             base=None, eval_opp=None, eval_base=None):
+             base=None, eval_opp=None, eval_base=None, value_opt=None):
     from harness.ppo_rollout import VecRollout                # noqa: PLC0415
     from model import ppo                                     # noqa: PLC0415
 
@@ -280,12 +293,15 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
         del trajs
         t_batch = time.perf_counter() - t1
         t1 = time.perf_counter()
-        parts = ppo.update(net, opt, batch, epochs=args.epochs,
+        warming = it < args.value_warmup
+        parts = ppo.update(net, value_opt if warming else opt, batch,
+                           epochs=args.epochs,
                            minibatch=args.minibatch, seed=args.seed + it,
                            device=args.device, clip=args.clip,
                            vf_coef=args.vf_coef, ent_coef=args.ent_coef,
                            max_grad_norm=args.max_grad_norm,
-                           target_kl=args.target_kl)
+                           target_kl=0.0 if warming else args.target_kl,
+                           policy_coef=0.0 if warming else 1.0)
         t_upd = time.perf_counter() - t1
 
         ours = np.array([a for a, _b, _k in pairs], dtype=np.float64)
@@ -356,6 +372,15 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
 
 
 def main(argv=None):
+    # 🩸 主控台／重導到檔案時 Python 用系統 locale（正體中文是 cp950）。
+    # help 字串裡有 U+2212（−）就會讓 `--help` 整支拋 UnicodeEncodeError，
+    # 而 `tests/test_ppo.py::test_argparse_help_renders` 抓不到 —— pytest 的
+    # stdout 是 UTF-8。2026-09-06 踩到。跟 `tools/action_dist.py:133` 同一個坑。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):     # 不是真的 TextIOWrapper 就算了
+            pass
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--iters", type=int, default=100)
     ap.add_argument("--workers", type=int, default=10,
@@ -414,6 +439,18 @@ def main(argv=None):
                          "需要。0 = 整局同一個 lam")
     ap.add_argument("--lam-split", type=int, default=0,
                     help="--lam-early 管到第幾步。建議 240（第 10 天）")
+    ap.add_argument("--value-warmup", type=int, default=0,
+                    help="前 N 輪只練 value head（軀幹和 policy 的頭凍結）。"
+                         "接手監督式的 checkpoint 一定要開 —— 它的 value head "
+                         "學的是「期末現金/100k」，跟 PPO 的目標不是同一個量，"
+                         "不先校正的話 value loss 會大 150 倍、把共用軀幹"
+                         "重塑掉（§88）")
+    ap.add_argument("--reset-value", action="store_true",
+                    help="開跑前把 value head 的兩層重新初始化。配 "
+                         "--value-warmup 用：與其把舊解拉過來，不如重學")
+    ap.add_argument("--value-lr", type=float, default=0.0,
+                    help="暖身階段的 lr，0 = 跟 --lr 一樣。暖身時沒有信賴區域"
+                         "要顧，可以開大一點")
     ap.add_argument("--target-kl", type=float, default=0.0,
                     help="聯合動作的 approx_kl 超過 1.5 倍就停掉這一輪的 "
                          "epoch。0 = 不管")
