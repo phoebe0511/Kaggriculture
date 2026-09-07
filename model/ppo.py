@@ -407,7 +407,7 @@ class RolloutBatch:
         trajs = [t for t in trajs if t is not None and len(t)]
         if not trajs:
             raise ValueError("沒有軌跡")
-        advs, rets, offs, base = [], [], [], 0
+        advs, rets, offs, rews, base = [], [], [], [], 0
         for tr in trajs:
             T = len(tr)
             rew = step_rewards(
@@ -425,9 +425,17 @@ class RolloutBatch:
             advs.append(a)
             rets.append(r)
             offs.append(base)
+            rews.append(rew)
             base += T
 
         self.n_steps = base
+        # 🩸 診斷要的 ground truth。`ret` 是 `adv + old_value`（GAE 的**估計**），
+        # 拿它當「實際發生的未來報酬」是循環論證 —— 那條式子的兩邊都含 advantage。
+        # 真正的未來報酬要從 `rew` 沿著軌跡往後加，所以邊界也得留著。
+        self.rew = np.concatenate(rews)
+        self.traj_start = np.asarray(offs, dtype=np.int64)
+        self.traj_cash = np.asarray([t.cash[-1] for t in trajs],
+                                    dtype=np.float64)
         self.spatial = np.concatenate([t.spatial for t in trajs])
         self.scalar = np.concatenate([t.scalar for t in trajs])
         self.old_logp = np.concatenate([t.logp for t in trajs])

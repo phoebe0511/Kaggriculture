@@ -595,3 +595,39 @@ def test_dump_batch_writes_every_field_the_diagnostic_needs(tmp_path,
         assert z[k].shape == batch.unit_step.shape, f"{k} 的長度要等於 unit 數"
     assert int(z["iter"]) == 6
     assert np.abs(z["adv"] - batch.adv).max() == 0.0
+
+
+def test_batch_keeps_the_ground_truth_the_diagnostic_needs(tiny_batch):
+    """🩸 `ret` 是 `adv + old_value` —— GAE 的**估計**。拿它當「實際發生的未來
+    報酬」是循環論證，兩邊都含 advantage。真正的要從 `rew` 沿軌跡往後加。
+
+    `gamma=1.0` 之下閉式解成立：從第 t 步到期末的報酬總和 = `rew[t:].sum()`，
+    而整條加起來要等於 `期末 margin / REWARD_SCALE + 勝負 bonus`。
+    """
+    from model.ppo import REWARD_SCALE, TERMINAL_BONUS
+
+    _net, batch = tiny_batch
+    assert batch.rew.shape == (batch.n_steps,)
+    assert batch.traj_start.ndim == 1 and batch.traj_start[0] == 0
+    assert batch.traj_cash.shape == (len(batch.traj_start), 2)
+
+    # 每條軌跡的 reward 總和 = 期末差額/scale + 勝負，逐條驗。
+    ends = list(batch.traj_start[1:]) + [batch.n_steps]
+    for k, (lo, hi) in enumerate(zip(batch.traj_start, ends)):
+        mine, theirs = batch.traj_cash[k]
+        want = (mine - theirs) / REWARD_SCALE + TERMINAL_BONUS * np.sign(
+            mine - theirs)
+        assert batch.rew[lo:hi].sum() == pytest.approx(want, abs=1e-3)
+
+
+def test_dump_batch_carries_the_ground_truth_fields(tmp_path, tiny_batch):
+    from model.ppo_train import dump_batch
+
+    net, batch = tiny_batch
+    p = tmp_path / "batch-00001.npz"
+    dump_batch(p, batch, net, "cpu", 0)
+    z = np.load(p)
+    assert z["rew"].shape == (batch.n_steps,)
+    assert z["traj_start"].shape == batch.traj_start.shape
+    assert z["traj_cash"].shape == batch.traj_cash.shape
+    assert np.abs(z["rew"] - batch.rew).max() == 0.0

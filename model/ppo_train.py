@@ -220,7 +220,11 @@ def dump_batch(path, batch, net, device, it):
         old_logp=batch.old_logp,
         new_logp=ppo.all_logp(net, batch, device),
         unit_step=batch.unit_step, op_idx=batch.op_idx,
-        tgt_idx=batch.tgt_idx, iter=np.int64(it))
+        tgt_idx=batch.tgt_idx, iter=np.int64(it),
+        # ground truth：逐步 reward + 軌跡邊界 + 期末現金。有這三個才算得出
+        # 「從第 t 步到期末**實際**拿到多少」，不必拿 GAE 的 ret 頂替。
+        rew=batch.rew, traj_start=batch.traj_start,
+        traj_cash=batch.traj_cash)
 
 
 def best_score(zero_sum, g_cash, g_margin):
