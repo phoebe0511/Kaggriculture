@@ -201,6 +201,25 @@ def greedy_eval(args, net, opp, base, games, seed0):
             float((ours - theirs).mean()))
 
 
+def best_score(zero_sum, g_cash, g_margin):
+    """挑 `best.pt` 要比哪一個量 —— 必須跟 reward 練的量一致。
+
+    🩸 `--zero-sum` 之下 reward 是**差額**（`model/ppo.py:step_rewards` 的
+    `da - db`），拿我方現金挑會選到另一個東西。2026-09-07 的 `wu-g175-phi`
+    實測，20 個評估點：
+
+        現金規則   鎖在 it 24   現金 71,203   差額 -35,771（倒數第四差）
+        差額規則   選到 it 39   現金 61,169   差額 -25,397（最好）
+
+    差 10,374。現金規則在 it 24 就鎖死了，因為 71,203 是整條線的最高點，
+    後面 76 輪再也沒超過，`best.pt` 從此沒被更新。
+
+    不開零和時 reward 就是我方現金增量，那時候用現金挑才是一致的 ——
+    所以舊指令的行為完全不變。
+    """
+    return g_margin if zero_sum else g_cash
+
+
 def watch(dirs):
     """看一或多個訓練目錄的進度，不用等它跑完。
 
@@ -348,10 +367,11 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
             row["greedy_cash"] = round(g_cash, 1)
             row["greedy_win"] = round(g_win, 3)
             row["greedy_margin"] = round(g_margin, 1)
+            score = best_score(args.zero_sum, g_cash, g_margin)
             best = getattr(run_loop, "_best", float("-inf"))
             mark = ""
-            if g_cash > best:
-                run_loop._best = g_cash
+            if score > best:
+                run_loop._best = score
                 save_checkpoint(out / "best.pt", net, args, row)
                 mark = "  <- best.pt"
             print(f"        greedy {args.eval_games} 局  現金 {g_cash:>9,.0f}  "

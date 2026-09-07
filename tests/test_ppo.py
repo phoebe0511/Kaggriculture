@@ -470,3 +470,64 @@ def test_policy_coef_zero_drops_the_policy_term():
     assert full.item() != pytest.approx(only_v.item())
     assert parts["value"] == pytest.approx(1.0)           # 各項照樣如實回報
     assert parts["entropy"] == pytest.approx(3.0)
+
+
+# ------------------------------------------- best.pt 挑哪一個量（2026-09-07）
+
+def test_best_score_follows_the_reward_that_is_being_trained():
+    """🩸 `--zero-sum` 之下 reward 是差額，挑 best 卻用我方現金 —— 兩個不同的
+    量。`--zero-sum` 是 2026-09-04（§54）才變成標配的，那一行沒跟著換。
+    """
+    from model.ppo_train import best_score
+
+    assert best_score(True, 71203.0, -35771.0) == -35771.0
+    assert best_score(False, 71203.0, -35771.0) == 71203.0
+
+
+def test_best_score_picks_the_right_iteration_on_a_real_run():
+    """實測重播：`wu-g175-phi` 的 20 個 greedy 評估點（現金, 差額）。
+
+    現金規則在 it 24 就鎖死 —— 71,203 是整條線的最高點，後面 76 輪再也沒超過，
+    但它的差額 -35,771 在 20 個點裡是倒數第四差。差額規則選到 it 39
+    （-25,397，最好的一點）。兩者差 10,374。
+    """
+    from model.ppo_train import best_score
+
+    run = [(4, 65010, -33105), (9, 65010, -33105), (14, 58610, -30585),
+           (19, 61364, -34432), (24, 71203, -35771), (29, 64061, -29113),
+           (34, 59293, -37691), (39, 61169, -25397), (44, 61886, -33150),
+           (49, 60641, -26859), (54, 63815, -37411), (59, 63080, -41082),
+           (64, 62278, -29185), (69, 65830, -32618), (74, 58983, -31338),
+           (79, 56731, -31204), (84, 58850, -37735), (89, 55362, -34754),
+           (94, 61322, -36850), (99, 65069, -27218)]
+
+    def kept(zero_sum):
+        best, held = float("-inf"), None
+        for it, cash, margin in run:
+            score = best_score(zero_sum, float(cash), float(margin))
+            if score > best:
+                best, held = score, it
+        return held
+
+    assert kept(True) == 39, "零和之下要選差額最好的那一輪"
+    assert kept(False) == 24, "沒開零和時行為必須跟改動前一樣"
+
+
+def test_saved_checkpoint_keeps_greedy_margin_in_its_meta(tmp_path):
+    """挑 best 的依據要留在檔案裡，不然事後分不出它是按哪個量選的。"""
+    import argparse
+
+    from harness.ppo_rollout import build_net
+    from model.ppo_train import save_checkpoint
+
+    net = build_net(8, 1)
+    args = argparse.Namespace(width=8, blocks=1)
+    row = {"iter": 39, "greedy_cash": 61169.0, "greedy_win": 0.0,
+           "greedy_margin": -25397.0}
+    save_checkpoint(tmp_path / "best.pt", net, args, row)
+
+    ck = torch.load(tmp_path / "best.pt", map_location="cpu",
+                    weights_only=False)
+    assert ck["greedy_margin"] == -25397.0
+    assert ck["greedy_cash"] == 61169.0
+    assert ck["iter"] == 39
