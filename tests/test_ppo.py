@@ -531,3 +531,67 @@ def test_saved_checkpoint_keeps_greedy_margin_in_its_meta(tmp_path):
     assert ck["greedy_margin"] == -25397.0
     assert ck["greedy_cash"] == 61169.0
     assert ck["iter"] == 39
+
+
+# -------------------------------------- 逐步樣本存檔（2026-09-07，--dump-batch）
+
+@pytest.fixture(scope="module")
+def tiny_batch():
+    """一小局的真軌跡 + 對應的網路。跑一次給下面幾項共用。"""
+    from harness.ppo_rollout import VecRollout, build_net, load_opponent
+    from model import ppo
+    from tools._quiet import silenced
+
+    torch.manual_seed(0)
+    with silenced():
+        net = build_net(32, 2)
+        vec = VecRollout(net, n_envs=1, seed0=1, episode_steps=96,
+                         opponent=load_opponent("config/params/cma5-g175.json"),
+                         device="cpu", phi="assets")
+        _s, _c, trajs = vec.run(collect=True)
+        batch = ppo.RolloutBatch(trajs, gamma=1.0, lam=0.998, zero_sum=True,
+                                 phi_weight=1e-4)
+    return net, batch
+
+
+def test_all_logp_reproduces_what_the_rollout_recorded(tiny_batch):
+    """🩸 網路沒動時重算的 logprob 必須等於 rollout 存的那一份。對不上就表示
+    重算走的路跟取樣時不同，`new_logp - old_logp` 量到的就不是更新的效果。
+    """
+    from model import ppo
+
+    net, batch = tiny_batch
+    lp = ppo.all_logp(net, batch)
+    assert lp.shape == (batch.n_steps,)
+    # 觀測存成 float16 再還原，所以不是位元相同，但要在捨入誤差內。
+    assert np.abs(lp - batch.old_logp).max() < 1e-3
+
+
+def test_all_logp_moves_after_an_update(tiny_batch):
+    from model import ppo
+
+    net, batch = tiny_batch
+    before = ppo.all_logp(net, batch)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3, eps=1e-5)
+    ppo.update(net, opt, batch, epochs=1, minibatch=64, seed=0,
+               ent_coef=0.0, target_kl=0.0)
+    after = ppo.all_logp(net, batch)
+    assert not np.allclose(before, after), "更新之後 logprob 應該要動"
+
+
+def test_dump_batch_writes_every_field_the_diagnostic_needs(tmp_path,
+                                                            tiny_batch):
+    """存檔的欄位一旦少一個，事後就補不回來 —— 訓練不留 rollout。"""
+    from model.ppo_train import dump_batch
+
+    net, batch = tiny_batch
+    p = tmp_path / "batch-00007.npz"
+    dump_batch(p, batch, net, "cpu", 6)
+
+    z = np.load(p)
+    for k in ("adv", "ret", "old_value", "old_logp", "new_logp"):
+        assert z[k].shape == (batch.n_steps,), f"{k} 的長度要等於步數"
+    for k in ("unit_step", "op_idx", "tgt_idx"):
+        assert z[k].shape == batch.unit_step.shape, f"{k} 的長度要等於 unit 數"
+    assert int(z["iter"]) == 6
+    assert np.abs(z["adv"] - batch.adv).max() == 0.0

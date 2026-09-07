@@ -540,6 +540,26 @@ def evaluate_actions(net, mb):
             value)
 
 
+def all_logp(net, batch, device="cpu", chunk=512):
+    """整批重算每一步的 logprob —— 不切 minibatch、不打亂,順序跟 `batch` 一致。
+
+    診斷用：跟 `batch.old_logp` 相減就是「這一輪的更新把這一步推高還是壓低」。
+    `update()` 內部算的 new_logp 是 minibatch 順序的、而且每個 epoch 都不同，
+    拿不到「整輪更新完的結果」。
+
+    ⚠️ 粒度是**一步**（一個聯合動作），不是一個 unit —— logprob 是那一步全部
+    unit 的和加上 market，拆不開（見模組 docstring）。
+    """
+    out = []
+    with torch.no_grad():
+        for i in range(0, batch.n_steps, chunk):
+            idx = np.arange(i, min(i + chunk, batch.n_steps))
+            lp, _ent, _v = evaluate_actions(net, batch._pack(idx, device))
+            out.append(lp.detach().cpu().numpy())
+    return (np.concatenate(out) if out
+            else np.zeros(0, dtype=np.float32))
+
+
 def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
            clip=0.2, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
            target_kl=0.0, policy_coef=1.0):

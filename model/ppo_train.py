@@ -201,6 +201,28 @@ def greedy_eval(args, net, opp, base, games, seed0):
             float((ours - theirs).mean()))
 
 
+def dump_batch(path, batch, net, device, it):
+    """把這一輪的逐步樣本寫成 npz。**要在 `update` 之後呼叫。**
+
+    🩸 訓練不留 rollout —— 那 122 MB 只在記憶體裡，`update` 跑完就沒了。
+    事後想問「當時那批的 advantage 跟更新方向對不對得上」只能重收一批，而重收
+    拿不到同一批：我方動作是取樣的，訓練當下那個 RNG 已經抽了 N 輪，對不回去。
+
+    `new_logp` 是**整輪更新完**之後重算的（`ppo.all_logp`）。`update` 內部
+    每個 epoch 都算 new_logp，但那些是 minibatch 順序、而且是中途值，湊不出
+    這個。多一次全批前向，約佔一輪的 5%。
+    """
+    from model import ppo                                   # noqa: PLC0415
+
+    np.savez_compressed(
+        path,
+        adv=batch.adv, ret=batch.ret, old_value=batch.old_value,
+        old_logp=batch.old_logp,
+        new_logp=ppo.all_logp(net, batch, device),
+        unit_step=batch.unit_step, op_idx=batch.op_idx,
+        tgt_idx=batch.tgt_idx, iter=np.int64(it))
+
+
 def best_score(zero_sum, g_cash, g_margin):
     """挑 `best.pt` 要比哪一個量 —— 必須跟 reward 練的量一致。
 
@@ -388,6 +410,13 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
         if args.save_every and (it + 1) % args.save_every == 0:
             save_checkpoint(out / f"ckpt-{it + 1:05d}.pt", net, args, row)
         save_checkpoint(out / "last.pt", net, args, row)
+
+        # 🩸 訓練把 rollout 丟在記憶體裡，`update` 跑完就沒了。事後想問
+        # 「當時那批樣本的 advantage 跟更新方向對不對得上」只能重收一批 ——
+        # 而重收拿不到同一批（我方動作是取樣的，RNG 對不回去）。
+        if args.dump_batch and (it + 1) % args.dump_batch == 0:
+            dump_batch(out / f"batch-{it + 1:05d}.npz", batch, net,
+                       args.device, it)
     return 0
 
 
@@ -493,6 +522,11 @@ def main(argv=None):
                     help="固定對手的 spec。空字串 = 自對局（隨機初始時沒訊號）")
     ap.add_argument("--out", default="model/artifacts/ppo0")
     ap.add_argument("--save-every", type=int, default=10)
+    ap.add_argument("--dump-batch", type=int, default=0,
+                    help="每幾輪把那一批的逐步 advantage / 回報 / 更新前後的 "
+                         "logprob 寫成 batch-NNNNN.npz。0 = 不寫。"
+                         "訓練不留 rollout，事後重收拿不到同一批（動作是取樣的）"
+                         "。一輪約 680 KB，多花約 5%% 時間（多一次全批前向）")
     ap.add_argument("--eval-every", type=int, default=10,
                     help="每幾輪用 greedy 解碼評估一次。0 = 不評估。"
                          "🩸 訓練曲線是取樣版，上場是 greedy 版，要分開看")
