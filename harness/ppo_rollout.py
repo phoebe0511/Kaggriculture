@@ -309,7 +309,8 @@ class VecRollout:
     def __init__(self, net, n_envs=32, seed0=0, device="cpu",
                  episode_steps=None, opponent=None, half_obs=True,
                  opp_offset=0, base_policy=None, greedy=False,
-                 base_side="units", phi="none", recognise="strict"):
+                 base_side="units", phi="none", recognise="strict",
+                 op_exec_only=False):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -351,6 +352,13 @@ class VecRollout:
         self.base_side = base_side
         #: 上場用的解碼（argmax / logit>0）。訓練時是 False。
         self.greedy = greedy
+        #: F2 ablation：unit 沒站到目標格上時，那一步的 op **不會進引擎**
+        #: （下面 `_policy_batch` 的 `step_toward` 分支）。開這個旗標就把那些
+        #: op 因子從 joint logprob 裡拿掉，policy gradient 不再推它們。
+        #:
+        #: 🩸 遮罩存進軌跡（`rec["op_exec"]`），update 重算時用**同一份**，
+        #: 不在那邊重新判定 —— 重判一次就可能跟 rollout 當下不一致，ratio 會錯。
+        self.op_exec_only = bool(op_exec_only)
         #: 🩸 動作取樣專用的 RNG，種子從 `seed0` 來。
         #:
         #: 沒有這個的話 `torch.multinomial` / `torch.rand` 走全域 RNG，而
@@ -474,7 +482,10 @@ class VecRollout:
             mk_present, mk_qty, mk_legal, mk_pres_act, mk_qty_act)
 
         t_np, o_np = t_idx.cpu().numpy(), o_idx.cpu().numpy()
-        lp_np = (t_lp + o_lp).cpu().numpy()
+        # 🩸 target 和 op 的 logprob 要分開留一份 —— `--op-exec-only` 只把
+        # **沒有真的執行到**的 op 那一項排除，target 一律留著。
+        t_lp_np, o_lp_np = t_lp.cpu().numpy(), o_lp.cpu().numpy()
+        lp_np = t_lp_np + o_lp_np
         v_np = value.cpu().numpy()
         mk_lp_np = mk_lp.cpu().numpy()
         mp_np = mk_pres_act.cpu().numpy()
@@ -488,13 +499,20 @@ class VecRollout:
             pos = pos_list[bi]
             base = self.base_policy(o, c) if self.base_policy else None
             units = []
+            # 🩸 `op_exec` 就是下面這個 if 的另一面：站到目標格上才會送 op，
+            # 否則送 `step_toward`、那一步的 op 根本不進引擎。判定條件不能另外
+            # 寫一份，只能從同一個分支取。
+            op_exec = []
             for k, (ti, oi) in enumerate(zip(t_np[sel], o_np[sel])):
                 tx, ty = C.target_xy(int(ti), board)
                 cur = tuple(pos[k])
                 if (int(cur[0]), int(cur[1])) != (tx, ty):
                     units.append(step_toward(cur, (tx, ty)))
+                    op_exec.append(False)
                 else:
                     units.append(C.decode_unit(int(oi), None))
+                    op_exec.append(True)
+            op_exec = np.asarray(op_exec, dtype=bool)
             # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
             # clamp、HIRE 要送 n 筆這些規則都在那裡面，重寫一份會走鐘。
             pres_logit = np.where(mp_np[bi], 1.0, -1.0)
@@ -504,10 +522,16 @@ class VecRollout:
             # 🩸 骨幹選的動作，logprob **不能算進去** —— 那些不是網路選的，
             # 算了就是在對別人的選擇做 policy gradient，而且 update 重算時會
             # 加回來，ratio 就錯了。所以哪一邊是骨幹，那一邊的 logprob 歸 0。
+            # `--op-exec-only`：沒執行到的 op 不進 joint logprob。target 照算。
+            def _unit_logp():
+                if not self.op_exec_only:
+                    return float(lp_np[sel].sum())
+                return float(t_lp_np[sel].sum() + o_lp_np[sel][op_exec].sum())
+
             if base is None:
                 action = {"farmer": units[0], "hands": units[1:],
                           "market": market}
-                unit_logp, mk_logp = float(lp_np[sel].sum()), float(mk_lp_np[bi])
+                unit_logp, mk_logp = _unit_logp(), float(mk_lp_np[bi])
                 keep, keep_market = sel, True
             elif self.base_side == "units":
                 # 骨幹出工人，網路只出 market。
@@ -519,7 +543,7 @@ class VecRollout:
                 # 反向：骨幹出 market，網路只出工人。
                 action = {"farmer": units[0], "hands": units[1:],
                           "market": base["market"]}
-                unit_logp, mk_logp = float(lp_np[sel].sum()), 0.0
+                unit_logp, mk_logp = _unit_logp(), 0.0
                 keep, keep_market = sel, False
             rec = {"logp": unit_logp + mk_logp,
                    "value": float(v_np[bi])}
@@ -536,6 +560,8 @@ class VecRollout:
                     op_mask=op_mask_np[keep], tgt_mask=tgt_mask_np[keep],
                     op_idx=o_np[keep].astype(np.int64),
                     tgt_idx=t_np[keep].astype(np.int64),
+                    # update 重算時要用**同一個** mask，不能在那邊重新判定。
+                    op_exec=op_exec[mine],
                     # 🩸 反向混合把 mk_legal 整列設成 False —— `market_logp_entropy`
                     # 的每一項都乘 `legal`，所以 market 對 logprob 和 entropy 的
                     # 貢獻剛好是 0，update 重算時自然不會把骨幹的訂單算進來。

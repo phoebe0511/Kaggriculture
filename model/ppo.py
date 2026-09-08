@@ -329,6 +329,11 @@ class Trajectory:
     tgt_mask: np.ndarray       # [U, N_TARGET_CELLS] bool
     op_idx: np.ndarray         # [U] int64
     tgt_idx: np.ndarray        # [U] int64
+    #: 這一步這個 unit 的 op 有沒有真的送進引擎（站到目標格上才有）。
+    #: `--op-exec-only` 用它把沒執行的 op 從 joint logprob 裡拿掉。
+    #: 舊的呼叫端（測試裡手工建的軌跡）不給就當成全部都有執行 —— baseline
+    #: 的語意本來就是「全部都算」。
+    op_exec: np.ndarray = None      # [U] bool
     #: [T+1] 的位能序列 Φ，跟 `cash` 一樣多一格期末。裝什麼由 rollout 決定
     #: （作物格數差 / 非現金資產）。不給就是 None，shaping 自動關掉。
     phi: np.ndarray = None
@@ -389,6 +394,9 @@ class TrajectoryWriter:
             tgt_mask=np.concatenate([r["tgt_mask"] for r in rows]),
             op_idx=np.concatenate([r["op_idx"] for r in rows]),
             tgt_idx=np.concatenate([r["tgt_idx"] for r in rows]),
+            op_exec=np.concatenate(
+                [r.get("op_exec", np.ones(len(r["op_idx"]), bool))
+                 for r in rows]),
             phi=phi,
         )
 
@@ -453,6 +461,9 @@ class RolloutBatch:
         self.tgt_mask = np.concatenate([t.tgt_mask for t in trajs])
         self.op_idx = np.concatenate([t.op_idx for t in trajs])
         self.tgt_idx = np.concatenate([t.tgt_idx for t in trajs])
+        self.op_exec = np.concatenate(
+            [t.op_exec if t.op_exec is not None
+             else np.ones(len(t.op_idx), bool) for t in trajs])
 
         # CSR：每一步的 unit 在攤平陣列裡是連續的一段。
         # 🩸 這只有在 unit_step 遞增時才成立。寫入端是照步序 append 的，但這裡
@@ -508,6 +519,7 @@ class RolloutBatch:
             "tgt_mask": t(self.tgt_mask[u]),
             "op_idx": t(self.op_idx[u]),
             "tgt_idx": t(self.tgt_idx[u]),
+            "op_exec": t(self.op_exec[u].astype(np.float32)),
             "mk_legal": t(self.mk_legal[idx]),
             "mk_present": t(self.mk_present[idx]),
             "mk_qty": t(self.mk_qty[idx]),
@@ -523,19 +535,26 @@ class RolloutBatch:
             yield self._pack(np.sort(order[i:i + size]), device)
 
 
-def evaluate_actions(net, mb):
+def evaluate_actions(net, mb, op_exec_only=False):
     """重算 minibatch 裡每一步的 (logprob, entropy, value)。
 
     unit 的 logprob 用 `index_add_` 加回它所屬的那一步 —— 聯合動作是各 unit
     獨立取樣的乘積，取 log 就是相加；market 那一份再加上去。
+
+    `op_exec_only=True`（F2 ablation）把**沒有送進引擎**的 op 因子從 logprob
+    裡拿掉，用的是 rollout 當下存下來的 `mb["op_exec"]`，不重新判定。
+    🩸 entropy **不動** —— 這個實驗只改 policy loss 那一項，entropy 的定義
+    保持跟 baseline 一致才比得了（而且這條線 `--ent-coef 0`，它只進 log）。
     """
     op_logits, _qty, tgt_logits, mk_present, mk_qty, value, _d = net(
         mb["spatial"], mb["scalar"],
         mb["unit_board"], mb["unit_pos"], mb["unit_feats"])
     o_lp = masked_log_softmax(op_logits, mb["op_mask"])
     t_lp = masked_log_softmax(tgt_logits, mb["tgt_mask"])
-    lp = (o_lp.gather(-1, mb["op_idx"].unsqueeze(-1)).squeeze(-1)
-          + t_lp.gather(-1, mb["tgt_idx"].unsqueeze(-1)).squeeze(-1))
+    op_sel = o_lp.gather(-1, mb["op_idx"].unsqueeze(-1)).squeeze(-1)
+    if op_exec_only:
+        op_sel = op_sel * mb["op_exec"]
+    lp = op_sel + t_lp.gather(-1, mb["tgt_idx"].unsqueeze(-1)).squeeze(-1)
     ent = -((o_lp.exp() * o_lp).sum(-1) + (t_lp.exp() * t_lp).sum(-1))
     n = mb["spatial"].shape[0]
     ub = mb["unit_board"]
@@ -548,7 +567,7 @@ def evaluate_actions(net, mb):
             value)
 
 
-def all_logp(net, batch, device="cpu", chunk=512):
+def all_logp(net, batch, device="cpu", chunk=512, op_exec_only=False):
     """整批重算每一步的 logprob —— 不切 minibatch、不打亂,順序跟 `batch` 一致。
 
     診斷用：跟 `batch.old_logp` 相減就是「這一輪的更新把這一步推高還是壓低」。
@@ -562,7 +581,8 @@ def all_logp(net, batch, device="cpu", chunk=512):
     with torch.no_grad():
         for i in range(0, batch.n_steps, chunk):
             idx = np.arange(i, min(i + chunk, batch.n_steps))
-            lp, _ent, _v = evaluate_actions(net, batch._pack(idx, device))
+            lp, _ent, _v = evaluate_actions(net, batch._pack(idx, device),
+                                            op_exec_only)
             out.append(lp.detach().cpu().numpy())
     return (np.concatenate(out) if out
             else np.zeros(0, dtype=np.float32))
@@ -570,7 +590,7 @@ def all_logp(net, batch, device="cpu", chunk=512):
 
 def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
            clip=0.2, vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5,
-           target_kl=0.0, policy_coef=1.0):
+           target_kl=0.0, policy_coef=1.0, op_exec_only=False):
     """對一批軌跡跑幾輪 PPO 更新。回傳各項損失的平均。
 
     🩸 **這裡的 KL 是聯合動作的，不是單一 head 的。** 一步有 ~5 個 unit ×
@@ -586,7 +606,7 @@ def update(net, opt, batch, epochs=4, minibatch=512, seed=0, device="cpu",
         done_epochs += 1
         ep_kl, ep_n = 0.0, 0
         for mb in batch.minibatches(minibatch, rng, device):
-            new_logp, ent, value = evaluate_actions(net, mb)
+            new_logp, ent, value = evaluate_actions(net, mb, op_exec_only)
             loss, parts = ppo_loss(new_logp, mb["old_logp"], mb["adv"],
                                    value, mb["ret"], ent,
                                    clip=clip, vf_coef=vf_coef,
