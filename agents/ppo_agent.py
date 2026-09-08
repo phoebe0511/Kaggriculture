@@ -116,7 +116,7 @@ def act(obs, config=None, params=None):
     pos, feats = C.encode_units(obs, config)
     n = len(pos)
     with torch.no_grad():
-        op_logits, _qty, tgt_logits, mk_present, mk_qty, _v, _d = net(
+        op_logits, qty_logits, tgt_logits, mk_present, mk_qty, _v, _d = net(
             torch.as_tensor(spatial).unsqueeze(0),
             torch.as_tensor(scalar).unsqueeze(0),
             torch.zeros(n, dtype=torch.long),
@@ -129,6 +129,7 @@ def act(obs, config=None, params=None):
         if greedy:
             o_idx = o_lp.argmax(-1)
             t_idx = t_lp.argmax(-1)
+            q_idx = qty_logits.argmax(-1)
             # 門檻 0 對應 sigmoid 0.5，跟 `decode_market_orders` 的預設一致。
             mk_pres = (mk_present[0] > 0.0) & torch.as_tensor(
                 C.legal_market_mask(obs, config))
@@ -138,11 +139,16 @@ def act(obs, config=None, params=None):
                 C.legal_market_mask(obs, config)).unsqueeze(0)
             t_idx = torch.multinomial(t_lp.exp(), 1).squeeze(-1)
             o_idx = torch.multinomial(o_lp.exp(), 1).squeeze(-1)
+            q_idx = torch.multinomial(
+                torch.softmax(qty_logits, dim=-1), 1).squeeze(-1)
             pres, q = sample_market(mk_present, mk_qty, mk_legal)
             mk_pres, mk_q = pres[0], q[0]
 
     board = len(obs["farms"][obs["player"]]["tiles"])
-    t_np, o_np = t_idx.numpy(), o_idx.numpy()
+    t_np, o_np, q_np = t_idx.numpy(), o_idx.numpy(), q_idx.numpy()
+    # `qty`：PICKUP / PLACE 的數量由網路選（跟 `--qty-factor` 訓出來的
+    # checkpoint 配對）。預設關閉 —— 舊的 spec 行為一個位元都不變。
+    use_qty = bool(p.get("qty", False))
     units = []
     for i in range(n) if (not base_spec or base_side == "market") else ():
         tx, ty = C.target_xy(int(t_np[i]), board)
@@ -150,7 +156,8 @@ def act(obs, config=None, params=None):
         if (int(cur[0]), int(cur[1])) != (tx, ty):
             units.append(step_toward(cur, (tx, ty)))
         else:
-            units.append(C.decode_unit(int(o_np[i]), None))
+            units.append(C.decode_unit(
+                int(o_np[i]), int(q_np[i]) if use_qty else None))
 
     qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
     qty_onehot[np.arange(C.N_MARKET_OPS), mk_q.numpy()] = 1.0

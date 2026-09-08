@@ -108,6 +108,12 @@ def load_league(names):
     return [load_opponent(n) for n in picks], picks
 
 
+#: 哪些 op 帶數量。`contracts.decode_unit` 只對 PICKUP / PLACE 用 qty_index
+#: （PLANT 帶 item 但不帶數量，15 個無參數 op 都不帶）。這張表是從
+#: `C.UNIT_OPS` 導出來的，不是另外定義一套。
+QTY_OPS = np.array([op in ("PICKUP", "PLACE") for op, _item in C.UNIT_OPS])
+
+
 def count_plants(farm):
     """一個 farm 上種著作物的格子數。
 
@@ -310,7 +316,7 @@ class VecRollout:
                  episode_steps=None, opponent=None, half_obs=True,
                  opp_offset=0, base_policy=None, greedy=False,
                  base_side="units", phi="none", recognise="strict",
-                 op_exec_only=False):
+                 op_exec_only=False, qty_factor=False):
         self.net = net.to(device).eval()
         self.device = device
         self.half_obs = half_obs
@@ -359,6 +365,10 @@ class VecRollout:
         #: 🩸 遮罩存進軌跡（`rec["op_exec"]`），update 重算時用**同一份**，
         #: 不在那邊重新判定 —— 重判一次就可能跟 rollout 當下不一致，ratio 會錯。
         self.op_exec_only = bool(op_exec_only)
+        #: qty intervention：PICKUP / PLACE 的數量改成**真的由 policy 選**，
+        #: 而且進 joint logprob。關掉時 `decode_unit` 收到 None，數量固定 1
+        #: （原本的行為，`qty_out` 拿不到梯度）。
+        self.qty_factor = bool(qty_factor)
         #: 🩸 動作取樣專用的 RNG，種子從 `seed0` 來。
         #:
         #: 沒有這個的話 `torch.multinomial` / `torch.rand` 走全域 RNG，而
@@ -457,7 +467,7 @@ class VecRollout:
         uf = np.concatenate(feat_list)
         ub = np.concatenate(board_list)
 
-        op_logits, _qty, tgt_logits, mk_present, mk_qty, value, _d = self.net(
+        op_logits, qty_logits, tgt_logits, mk_present, mk_qty, value, _d = self.net(
             torch.as_tensor(sp, device=dev), torch.as_tensor(sc, device=dev),
             torch.as_tensor(ub, device=dev), torch.as_tensor(up, device=dev),
             torch.as_tensor(uf, device=dev))
@@ -470,6 +480,14 @@ class VecRollout:
         tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
         t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy, self.gen)
         o_idx, o_lp = masked_sample(op_logits, op_mask, self.greedy, self.gen)
+        # 🩸 qty 沒有合法性遮罩（1~12 都送得出去，超過的由引擎自己夾），所以
+        # 餵一張全 True 進去 —— 走同一個 `masked_sample` 才跟 update 端一致。
+        q_idx = torch.zeros_like(o_idx)
+        q_lp = torch.zeros_like(o_lp)
+        if self.qty_factor:
+            q_mask = torch.ones_like(qty_logits, dtype=torch.bool)
+            q_idx, q_lp = masked_sample(qty_logits, q_mask, self.greedy,
+                                        self.gen)
 
         # market 也要取樣，不能用 `decode_market_orders` 的門檻 + argmax ——
         # 那條路沒有 logprob，HIRE / BUY_LAND / BUY_SEED 就拿不到 gradient。
@@ -486,6 +504,10 @@ class VecRollout:
         # **沒有真的執行到**的 op 那一項排除，target 一律留著。
         t_lp_np, o_lp_np = t_lp.cpu().numpy(), o_lp.cpu().numpy()
         lp_np = t_lp_np + o_lp_np
+        q_np, q_lp_np = q_idx.cpu().numpy(), q_lp.cpu().numpy()
+        # 只有帶數量的 op 才算 qty 那一項 —— 其他 op 的 qty 不是決策。
+        q_use_np = QTY_OPS[o_np] if self.qty_factor else np.zeros(
+            len(o_np), dtype=bool)
         v_np = value.cpu().numpy()
         mk_lp_np = mk_lp.cpu().numpy()
         mp_np = mk_pres_act.cpu().numpy()
@@ -510,7 +532,8 @@ class VecRollout:
                     units.append(step_toward(cur, (tx, ty)))
                     op_exec.append(False)
                 else:
-                    units.append(C.decode_unit(int(oi), None))
+                    qi = int(q_np[sel][k]) if self.qty_factor else None
+                    units.append(C.decode_unit(int(oi), qi))
                     op_exec.append(True)
             op_exec = np.asarray(op_exec, dtype=bool)
             # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
@@ -524,9 +547,11 @@ class VecRollout:
             # 加回來，ratio 就錯了。所以哪一邊是骨幹，那一邊的 logprob 歸 0。
             # `--op-exec-only`：沒執行到的 op 不進 joint logprob。target 照算。
             def _unit_logp():
+                q = float((q_lp_np[sel] * q_use_np[sel]).sum())
                 if not self.op_exec_only:
-                    return float(lp_np[sel].sum())
-                return float(t_lp_np[sel].sum() + o_lp_np[sel][op_exec].sum())
+                    return float(lp_np[sel].sum()) + q
+                return float(t_lp_np[sel].sum()
+                             + o_lp_np[sel][op_exec].sum()) + q
 
             if base is None:
                 action = {"farmer": units[0], "hands": units[1:],
@@ -562,6 +587,8 @@ class VecRollout:
                     tgt_idx=t_np[keep].astype(np.int64),
                     # update 重算時要用**同一個** mask，不能在那邊重新判定。
                     op_exec=op_exec[mine],
+                    qty_idx=q_np[keep].astype(np.int64),
+                    qty_used=q_use_np[keep],
                     # 🩸 反向混合把 mk_legal 整列設成 False —— `market_logp_entropy`
                     # 的每一項都乘 `legal`，所以 market 對 logprob 和 entropy 的
                     # 貢獻剛好是 0，update 重算時自然不會把骨幹的訂單算進來。

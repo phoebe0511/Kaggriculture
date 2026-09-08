@@ -144,7 +144,8 @@ def train(args):
                            args.width, args.blocks, args.episode_steps,
                            args.base_policy, args.base_side,
                            phi=args.phi, recognise=args.recognise,
-                           op_exec_only=args.op_exec_only)
+                           op_exec_only=args.op_exec_only,
+                           qty_factor=args.qty_factor)
         games = args.workers * args.envs
     else:
         opp, opp_names = (load_league(args.opponent) if args.opponent
@@ -182,10 +183,13 @@ def greedy_eval(args, net, opp, base, games, seed0):
 
     was_training = net.training
     net.eval()
+    # 🩸 qty 會改變**送進引擎的動作**，所以評估也一定要帶同一個旗標，
+    # 否則 treatment 會被用 qty=1 的解碼評估。
     vec = VecRollout(net, n_envs=games, seed0=seed0, device=args.device,
                      episode_steps=args.episode_steps, opponent=opp,
                      base_policy=base, greedy=True,
-                     base_side=args.base_side)
+                     base_side=args.base_side,
+                     qty_factor=args.qty_factor)
     _steps, cash, _trajs = vec.run(collect=False)
     pairs = vec.our_cash(cash)
     ours = np.array([a for a, _ in pairs], dtype=np.float64)
@@ -202,7 +206,8 @@ def greedy_eval(args, net, opp, base, games, seed0):
             float((ours - theirs).mean()))
 
 
-def dump_batch(path, batch, net, device, it, op_exec_only=False):
+def dump_batch(path, batch, net, device, it, op_exec_only=False,
+               qty_factor=False):
     """把這一輪的逐步樣本寫成 npz。**要在 `update` 之後呼叫。**
 
     🩸 訓練不留 rollout —— 那 122 MB 只在記憶體裡，`update` 跑完就沒了。
@@ -220,7 +225,8 @@ def dump_batch(path, batch, net, device, it, op_exec_only=False):
         adv=batch.adv, ret=batch.ret, old_value=batch.old_value,
         old_logp=batch.old_logp,
         new_logp=ppo.all_logp(net, batch, device,
-                              op_exec_only=op_exec_only),
+                              op_exec_only=op_exec_only,
+                              qty_factor=qty_factor),
         unit_step=batch.unit_step, op_idx=batch.op_idx,
         tgt_idx=batch.tgt_idx, iter=np.int64(it),
         # ground truth：逐步 reward + 軌跡邊界 + 期末現金。有這三個才算得出
@@ -322,7 +328,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                              opponent=opp, opp_offset=it * games,
                              base_policy=base, base_side=args.base_side,
                              phi=args.phi, recognise=args.recognise,
-                             op_exec_only=args.op_exec_only)
+                             op_exec_only=args.op_exec_only,
+                             qty_factor=args.qty_factor)
             steps, cash, trajs = vec.run(collect=True)
             pairs = [(a, b, vec.opp_index(ei))
                      for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -350,7 +357,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
                            max_grad_norm=args.max_grad_norm,
                            target_kl=0.0 if warming else args.target_kl,
                            policy_coef=0.0 if warming else 1.0,
-                           op_exec_only=args.op_exec_only)
+                           op_exec_only=args.op_exec_only,
+                           qty_factor=args.qty_factor)
         t_upd = time.perf_counter() - t1
 
         ours = np.array([a for a, _b, _k in pairs], dtype=np.float64)
@@ -424,7 +432,8 @@ def run_loop(args, net, opt, out, log_path, pool, games, opp, opp_names,
         # 而重收拿不到同一批（我方動作是取樣的，RNG 對不回去）。
         if args.dump_batch and (it + 1) % args.dump_batch == 0:
             dump_batch(out / f"batch-{it + 1:05d}.npz", batch, net,
-                       args.device, it, args.op_exec_only)
+                       args.device, it, args.op_exec_only,
+                       args.qty_factor)
     return 0
 
 
@@ -530,6 +539,10 @@ def main(argv=None):
                     help="固定對手的 spec。空字串 = 自對局（隨機初始時沒訊號）")
     ap.add_argument("--out", default="model/artifacts/ppo0")
     ap.add_argument("--save-every", type=int, default=10)
+    ap.add_argument("--qty-factor", action="store_true",
+                    help="PICKUP / PLACE 的數量改成由 policy 選（"
+                         "contracts.QTY_CHOICES 的 12 個桶），並計入 joint "
+                         "logprob。關掉時數量固定 1、qty head 沒有梯度。")
     ap.add_argument("--op-exec-only", action="store_true",
                     help="F2 ablation：unit 沒站到目標格上時，那一步的 op "
                          "不會進引擎，也不計入 joint logprob / policy loss。"

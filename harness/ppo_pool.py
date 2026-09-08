@@ -80,7 +80,8 @@ def _run(job):
                          base_side=cfg.get("base_side", "units"),
                          phi=cfg.get("phi", "none"),
                          recognise=cfg.get("recognise", "strict"),
-                         op_exec_only=cfg.get("op_exec_only", False))
+                         op_exec_only=cfg.get("op_exec_only", False),
+                         qty_factor=cfg.get("qty_factor", False))
         steps, cash, trajs = vec.run(collect=True)
     pairs = [(a, b, vec.opp_index(ei))
              for ei, (a, b) in enumerate(vec.our_cash(cash))]
@@ -95,7 +96,8 @@ class RolloutPool:
 
     def __init__(self, workers=10, envs=2, opponent="", width=64, blocks=4,
                  episode_steps=None, base_policy="", base_side="units",
-                 phi="none", recognise="strict", op_exec_only=False):
+                 phi="none", recognise="strict", op_exec_only=False,
+                 qty_factor=False):
         self.workers = workers
         self.envs = envs
         # 主行程只留名字，不 import agent 模組 —— 那是 worker 的事。
@@ -104,7 +106,8 @@ class RolloutPool:
                "envs": envs, "episode_steps": episode_steps,
                "base_policy": base_policy, "base_side": base_side,
                "phi": phi, "recognise": recognise,
-               "op_exec_only": bool(op_exec_only)}
+               "op_exec_only": bool(op_exec_only),
+               "qty_factor": bool(qty_factor)}
         # 🩸 不要包在 silenced() 裡（見模組說明）。
         self.pool = mp.Pool(workers, initializer=_init, initargs=(cfg,))
 
