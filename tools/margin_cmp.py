@@ -34,6 +34,15 @@ md = st.mean(diffs); sd = st.stdev(diffs); se = sd / len(diffs) ** 0.5
 print()
 print("%d 點平均  %s %.0f   %s %.0f   diff %.0f" % (len(gb), BASE, mb, TREAT, mt, md))
 print("配對差 SD %.0f  SE %.0f  t=%.3f  (n=%d, df=%d)" % (sd, se, md / se, len(diffs), len(diffs) - 1))
+print("配對差 中位數 %.0f   正/負 %d/%d   最小 %.0f   最大 %.0f"
+      % (st.median(diffs), sum(1 for x in diffs if x > 0),
+         sum(1 for x in diffs if x < 0), min(diffs), max(diffs)))
+_k = sum(1 for x in diffs if x > 0); _n = len(diffs)
+from math import comb as _c
+_p = 2 * sum(_c(_n, j) for j in range(max(_k, _n - _k), _n + 1)) / 2 ** _n
+print("符號檢定 雙尾 p = %.4f  (%d/%d 為正)" % (min(_p, 1.0), _k, _n))
+print("🩸 這 12 個點是同一條訓練軌跡上的 checkpoint，不是 12 次獨立重跑。")
+print("   t 檢定回答的是「這一對 run 之間差異穩定嗎」，不是「重跑會不會一樣」。")
 
 def slope(rows):
     xs = [r['iter'] for r in rows]; ys = [r['greedy_margin'] for r in rows]

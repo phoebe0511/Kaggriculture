@@ -12,7 +12,10 @@
 """
 from __future__ import annotations
 import glob, os, sys
+import sys
 import numpy as np
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 os.chdir(r"C:\_phoebe_priv\Kaggriculture")
 HERE = os.path.dirname(os.path.abspath(__file__))

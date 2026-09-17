@@ -37,15 +37,19 @@ from __future__ import annotations
 import glob
 import os
 
+import sys
 import numpy as np
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 os.chdir(r"C:\_phoebe_priv\Kaggriculture")
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTDIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp")
-import sys as _s
-OUT = open(os.path.join(OUTDIR, _s.argv[0].rsplit(os.sep,1)[-1].replace(".py","")
-                        + "_" + "_".join(_s.argv[1:] or ["qty"]) + ".txt"),
-           "w", encoding="utf-8")
+OUT = open(os.path.join(
+    OUTDIR,
+    os.path.splitext(os.path.basename(__file__))[0]
+    + "_" + "_".join(sys.argv[1:] or ["qty"]) + ".txt"),
+    "w", encoding="utf-8")
 RNG = np.random.default_rng(20260910)
 W = 21
 NPERM = 200

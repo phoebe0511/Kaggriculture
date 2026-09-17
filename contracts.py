@@ -1072,6 +1072,68 @@ def legal_demand_mask(obs, config=None):
 # decode
 # --------------------------------------------------------------------------
 
+#: op 索引 -> 作物名，只含 PLANT。`turn_guard` 用來扣種子。
+PLANT_OP = {i: arg for i, (op, arg) in enumerate(UNIT_OPS)
+            if op == "PLANT" and arg}
+
+
+def turn_guard_state(obs, market_orders):
+    """建立一回合的 guard 狀態：`(可用種子, 已佔用的格子)`。
+
+    可用量 = 回合開始時的存量 + 這回合 `BUY_SEED` 買的（引擎先處理市場訂單）。
+    """
+    avail = dict((obs.get("private") or {}).get("seeds") or {})
+    for order in market_orders or ():
+        if isinstance(order, (list, tuple)) and len(order) > 2 \
+                and order[0] == "BUY_SEED":
+            avail[order[1]] = avail.get(order[1], 0) + int(order[2])
+    return avail, set()
+
+
+def turn_guard(op_index, logp_row, legal_row, avail, pos, claimed):
+    """同回合衝突的重選。回傳 `(新的 op 索引, 是否被改掉)`。
+
+    🩸 `legal_unit_mask` 對整個回合只算**一次**（用回合開始前的狀態），所以同一
+    回合裡 unit 之間的互相影響完全沒被考慮。兩種衝突（2026-09-17 實測，
+    seed 900000、ckpt-140）：
+
+    1. **同格** —— 多個 unit 站在同一格都選 PLANT。第一個種下去之後那格就不是
+       空的，其餘的引擎直接拒絕，那些 unit 整回合什麼也沒做。量到的 34 個失敗
+       回合**全部**屬於這種（沒有同格重疊的失敗是 0）。這是主因。
+    2. **種子** —— 種子是全農場共用的一份存量。次要：剩下的失敗裡 30/36 種子
+       其實綽綽有餘。
+
+    修掉之後每局 PLANT 成功率 0.766 -> 0.997。
+
+    `logp_row` 只用來排序偏好。合法性一律看 `legal_row`（`legal_unit_mask` 的
+    那一列）—— 🩸 不能靠 logp 判斷，`masked_log_softmax` 壓的是 `-1e9` 不是
+    `-inf`。整列全 False 時退回「全部合法」，跟 `masked_log_softmax` 同一條規則。
+    """
+    def _take(j):
+        crop = PLANT_OP.get(j)
+        if crop is None:
+            return True
+        if pos in claimed or avail.get(crop, 0) <= 0:
+            return False
+        avail[crop] -= 1
+        claimed.add(pos)
+        return True
+
+    op_index = int(op_index)
+    if _take(op_index):
+        return op_index, False
+    legal = [bool(v) for v in legal_row]
+    if not any(legal):
+        legal = [True] * len(legal)
+    order = sorted(range(len(logp_row)), key=lambda j: -logp_row[j])
+    for j in order:
+        if j == op_index or not legal[j]:
+            continue
+        if _take(j):
+            return j, True
+    return op_index, False        # 全部都不行，維持原樣
+
+
 def decode_unit(op_index, qty_index=None):
     """`(動作編號, 數量編號) -> 引擎吃的 unit 動作 list`。
 

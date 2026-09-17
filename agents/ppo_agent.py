@@ -149,20 +149,30 @@ def act(obs, config=None, params=None):
     # `qty`：PICKUP / PLACE 的數量由網路選（跟 `--qty-factor` 訓出來的
     # checkpoint 配對）。預設關閉 —— 舊的 spec 行為一個位元都不變。
     use_qty = bool(p.get("qty", False))
-    units = []
-    for i in range(n) if (not base_spec or base_side == "market") else ():
-        tx, ty = C.target_xy(int(t_np[i]), board)
-        cur = tuple(pos[i])
-        if (int(cur[0]), int(cur[1])) != (tx, ty):
-            units.append(step_toward(cur, (tx, ty)))
-        else:
-            units.append(C.decode_unit(
-                int(o_np[i]), int(q_np[i]) if use_qty else None))
 
     qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
     qty_onehot[np.arange(C.N_MARKET_OPS), mk_q.numpy()] = 1.0
     market = C.decode_market_orders(
         np.where(mk_pres.numpy(), 1.0, -1.0), qty_onehot, obs, config)
+
+    # 🩸 同回合衝突的重選，見 `contracts.turn_guard`。送出引擎會拒絕的動作不是
+    # 策略選擇，是沒照規則走 —— 無條件修，不做旗標。
+    avail, claimed = C.turn_guard_state(obs, market)
+    o_lp_np = o_lp.numpy()
+    op_mask_np = op_mask.numpy()
+
+    units = []
+    for i in range(n) if (not base_spec or base_side == "market") else ():
+        tx, ty = C.target_xy(int(t_np[i]), board)
+        cur = tuple(pos[i])
+        if (int(cur[0]), int(cur[1])) != (tx, ty):
+            # 沒站到目標格的 unit 送出的是移動，不會消耗種子。
+            units.append(step_toward(cur, (tx, ty)))
+            continue
+        op_i, _changed = C.turn_guard(
+            int(o_np[i]), o_lp_np[i], op_mask_np[i], avail, (tx, ty), claimed)
+        units.append(C.decode_unit(
+            op_i, int(q_np[i]) if use_qty else None))
     if base_spec:
         base = _load_base(base_spec)(obs, config)
         if base_side == "units":

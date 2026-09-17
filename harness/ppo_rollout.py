@@ -513,6 +513,9 @@ class VecRollout:
         mp_np = mk_pres_act.cpu().numpy()
         mq_np = mk_qty_act.cpu().numpy()
         ub_np = ub
+        # 🩸 `turn_guard` 要完整的機率列來找次佳動作，`masked_sample` 只回傳被選
+        # 中那一個。多算一次 log_softmax 比重收一批便宜得多。
+        o_full_lp_np = masked_log_softmax(op_logits, op_mask).cpu().numpy()
 
         out = []
         for bi, (ei, p, o, c) in enumerate(items):
@@ -525,6 +528,20 @@ class VecRollout:
             # 否則送 `step_toward`、那一步的 op 根本不進引擎。判定條件不能另外
             # 寫一份，只能從同一個分支取。
             op_exec = []
+            # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
+            # clamp、HIRE 要送 n 筆這些規則都在那裡面，重寫一份會走鐘。
+            # 🩸 要先解碼才知道這回合買幾顆種子（引擎先處理市場訂單）。
+            pres_logit = np.where(mp_np[bi], 1.0, -1.0)
+            qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
+            qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
+            market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
+            # 🩸 同回合衝突的重選，見 `contracts.turn_guard`。上場側
+            # （`agents/ppo_agent.py`）走同一個函式，兩邊一定要一致。
+            #
+            # 被改掉的 unit 標成 `op_exec=False`：logprob 仍記**取樣到**的那個
+            # op（guard 是動作投影，當成環境的一部分，跟 `step_toward` 同一個
+            # 處理方式），但 `--op-exec-only` 開著時不進 joint logprob。
+            avail, claimed = C.turn_guard_state(o, market)
             for k, (ti, oi) in enumerate(zip(t_np[sel], o_np[sel])):
                 tx, ty = C.target_xy(int(ti), board)
                 cur = tuple(pos[k])
@@ -532,16 +549,13 @@ class VecRollout:
                     units.append(step_toward(cur, (tx, ty)))
                     op_exec.append(False)
                 else:
+                    gi, changed = C.turn_guard(
+                        int(oi), o_full_lp_np[sel][k], op_mask_np[sel][k],
+                        avail, (tx, ty), claimed)
                     qi = int(q_np[sel][k]) if self.qty_factor else None
-                    units.append(C.decode_unit(int(oi), qi))
-                    op_exec.append(True)
+                    units.append(C.decode_unit(gi, qi))
+                    op_exec.append(not changed)
             op_exec = np.asarray(op_exec, dtype=bool)
-            # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
-            # clamp、HIRE 要送 n 筆這些規則都在那裡面，重寫一份會走鐘。
-            pres_logit = np.where(mp_np[bi], 1.0, -1.0)
-            qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
-            qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
-            market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
             # 🩸 骨幹選的動作，logprob **不能算進去** —— 那些不是網路選的，
             # 算了就是在對別人的選擇做 policy gradient，而且 update 重算時會
             # 加回來，ratio 就錯了。所以哪一邊是骨幹，那一邊的 logprob 歸 0。
