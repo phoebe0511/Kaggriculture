@@ -157,7 +157,7 @@ def act(obs, config=None, params=None):
 
     # 🩸 同回合衝突的重選，見 `contracts.turn_guard`。送出引擎會拒絕的動作不是
     # 策略選擇，是沒照規則走 —— 無條件修，不做旗標。
-    avail, claimed = C.turn_guard_state(obs, market)
+    guard = C.turn_guard_state(obs)
     o_lp_np = o_lp.numpy()
     op_mask_np = op_mask.numpy()
 
@@ -166,11 +166,11 @@ def act(obs, config=None, params=None):
         tx, ty = C.target_xy(int(t_np[i]), board)
         cur = tuple(pos[i])
         if (int(cur[0]), int(cur[1])) != (tx, ty):
-            # 沒站到目標格的 unit 送出的是移動，不會消耗種子。
+            # 沒站到目標 tile 的 unit 送出的是移動，不會動到任何共用狀態。
             units.append(step_toward(cur, (tx, ty)))
             continue
         op_i, _changed = C.turn_guard(
-            int(o_np[i]), o_lp_np[i], op_mask_np[i], avail, (tx, ty), claimed)
+            int(o_np[i]), o_lp_np[i], op_mask_np[i], guard, (tx, ty))
         units.append(C.decode_unit(
             op_i, int(q_np[i]) if use_qty else None))
     if base_spec:

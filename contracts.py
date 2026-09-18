@@ -1072,51 +1072,190 @@ def legal_demand_mask(obs, config=None):
 # decode
 # --------------------------------------------------------------------------
 
-#: op 索引 -> 作物名，只含 PLANT。`turn_guard` 用來扣種子。
-PLANT_OP = {i: arg for i, (op, arg) in enumerate(UNIT_OPS)
-            if op == "PLANT" and arg}
+#: 合法性會被「同一回合稍早的 unit」改掉的 op —— `turn_guard` 逐 unit 重查這些。
+#: 其餘 op（移動、PASS、PICKUP、PLACE、DROP）不重查，理由見 `turn_guard_state`。
+_GUARD_OPS = frozenset((
+    "PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
+    "BUILD_COOP", "BUILD_PASTURE", "FEED", "CARE", "COLLECT_FERTILIZER",
+))
 
 
-def turn_guard_state(obs, market_orders):
-    """建立一回合的 guard 狀態：`(可用種子, 已佔用的格子)`。
+def turn_guard_state(obs):
+    """建立一回合的 guard 帳本：`{tiles, seeds, day}`。
 
-    可用量 = 回合開始時的存量 + 這回合 `BUY_SEED` 買的（引擎先處理市場訂單）。
+    🩸 `legal_unit_mask` 對整個回合只算**一次**，用的是回合開始前的盤面。可是
+    引擎是逐 unit 依序執行的（farmer 先，再 hands 按 index，`kaggriculture.py:935`
+    -938）。第一個 unit 動完 tile 就變了，mask 沒跟著更新，後面的 unit 拿的是
+    過期的合法性。agent 又看不到引擎執行到一半的狀態 —— 所有動作在第一個 unit
+    執行之前就已經交出去了。所以只能自己在旁邊模擬一份。
+
+    記的是「**這一回合會被別的 unit 改掉**」的東西，兩類：
+
+        tiles   每個 tile 的狀態。WATER 寫 watered_today、HARVEST 清 yield_units、
+                DIG 把整格清成 None…… 後面的 unit 照這份判，不照 obs 那份。
+        seeds   種子是全農場共用的一份存量，不屬於任何 tile。
+
+    不用記的：
+
+        每個 unit 自己的 inventory —— 一個 unit 一回合只做一個動作，它自己的
+        inventory 在它動之前不會被自己改，別的 unit 也碰不到。所以
+        `legal_unit_mask` 算出來的 inventory 條件（FEED 要 WHEAT、FERTILIZE 要
+        FERTILIZER）不會過期，這裡不重複檢查。
+
+        「這一格有沒有別的 unit 站著」—— 引擎完全不看。`_apply_unit_action`
+        （行 312-530）從頭到尾只讀自己那個 unit 的位置和 inventory，沒有任何
+        一行看別的 unit 在哪。unit 重疊完全合法。
+
+    ⚠️ **market 不進來。** 舊版把這回合 `BUY_SEED` 買的種子加進可用量，那是錯的
+    —— 引擎的 `_process_market`（行 941）在 unit 動作（行 935-938）**之後**，
+    這回合買的種子這回合種不了。`tools/seed_timing.py` 實測（2026-09-18 §128.1.1）：
+    同回合 BUY_SEED + PLANT 長出 0 株，種子原封不動留在手上。
+
+    ⚠️ PICKUP / PLACE / DROP 沒有納入。shed 也是全農場共用的一份，PICKUP 撞車
+    確實會白做（2026-09-18 §130 量到 2.8 次/局），但搬運量由 qty head 決定、
+    `turn_guard` 拿不到 qty，模型會不準；而且 DROP 會在同一回合把東西加回 shed。
+    寧可不管也不要亂擋。
     """
-    avail = dict((obs.get("private") or {}).get("seeds") or {})
-    for order in market_orders or ():
-        if isinstance(order, (list, tuple)) and len(order) > 2 \
-                and order[0] == "BUY_SEED":
-            avail[order[1]] = avail.get(order[1], 0) + int(order[2])
-    return avail, set()
+    player = int(obs["player"])
+    farm = obs["farms"][player]
+    priv = obs.get("private") or {}
+    return {
+        # 每一列各複製一份 list，所以換掉整格不會動到 obs。改格子裡的欄位要走
+        # `_guard_apply` 的 copy-on-write。
+        "tiles": [list(row) for row in farm["tiles"]],
+        "seeds": dict(priv.get("seeds") or {}),
+        "day": int(obs.get("day", 0)),
+    }
 
 
-def turn_guard(op_index, logp_row, legal_row, avail, pos, claimed):
+def _guard_tile(state, pos):
+    x, y = int(pos[0]), int(pos[1])
+    tiles = state["tiles"]
+    if not (0 <= y < len(tiles) and 0 <= x < len(tiles[y])):
+        return "LOCKED"
+    return tiles[y][x]
+
+
+def _guard_ok(op, arg, state, pos):
+    """同一回合稍早的 unit 動過之後，這個 op 還成不成立。
+
+    每一條都對應引擎 `_apply_unit_action` 裡的一個 early return，行號標在後面。
+    只查「會被同回合其他 unit 改掉」的條件；不會變的（LOCKED、inventory）由
+    `legal_unit_mask` 那一列負責，這裡不重複。
+    """
+    tile = _guard_tile(state, pos)
+    td = tile if isinstance(tile, dict) else {}
+    kind = td.get("kind")
+    day = state["day"]
+
+    if op == "PLANT":                                        # 引擎 421/425
+        return tile is None and state["seeds"].get(arg, 0) > 0
+    if op in ("BUILD_COOP", "BUILD_PASTURE"):                # 引擎 494/500
+        return tile is None
+    if op == "WATER":                                        # 引擎 431/433
+        return kind == "PLANT" and not td.get("watered_today")
+    if op == "FERTILIZE":
+        # 引擎 481：`fertilized_until_day = max(舊值, day + 2)`。已經是 day+2
+        # 就再也長不上去 —— 🩸 而且 `_inv_take`（行 478）在它之前，肥料照扣、
+        # 效果沒有。同一天第二次施肥就是燒掉一個 FERTILIZER。
+        return kind == "PLANT" and td.get("fertilized_until_day", -1) < day + 2
+    if op == "HARVEST":
+        if td.get("yield_units", 0) <= 0:                    # 引擎 449
+            return False
+        if kind == "PLANT":
+            # 引擎 451：未滿 first_yield_day 一律拒收。🩸 非 ongoing 作物種下去
+            # 就帶 1 個 yield_unit（行 223），所以「yield_units > 0」不等於收得成。
+            spec = CROPS.get(td.get("crop")) or {}
+            return day - td.get("planted_day", day) >= spec.get("first_yield_day", 0)
+        return "animal" in td
+    if op == "DIG":                                          # 引擎 485/487
+        return isinstance(tile, dict) and "animal" not in td
+    if op == "FEED":                                         # 引擎 507/509
+        return "animal" in td and not td.get("fed_today")
+    if op == "CARE":                                         # 引擎 524/526
+        return "animal" in td and not td.get("cared_today")
+    if op == "COLLECT_FERTILIZER":                           # 引擎 516/518
+        return "animal" in td and bool(td.get("fertilizer_available"))
+    return True
+
+
+def _guard_apply(op, arg, state, pos):
+    """把這個 op 對共用狀態的效果套上去，給同一回合後面的 unit 看。
+
+    只模擬「會影響別人合法性」的欄位，不是引擎的完整複刻 —— 例如 WATER 的加產
+    （引擎 436-443）不模擬，因為沒有任何 op 的合法性看得到它。
+    """
+    x, y = int(pos[0]), int(pos[1])
+    tiles = state["tiles"]
+    tile = tiles[y][x]
+    day = state["day"]
+
+    def _edit():
+        """copy-on-write：第一次改到這一格才複製，不動到 obs 裡的原字典。"""
+        t = dict(tiles[y][x])
+        tiles[y][x] = t
+        return t
+
+    if op == "PLANT":
+        state["seeds"][arg] = state["seeds"].get(arg, 0) - 1
+        spec = CROPS[arg]
+        tiles[y][x] = {                                   # 引擎 `_new_plant` 行 218
+            "kind": "PLANT", "crop": arg, "planted_day": day,
+            "watered_today": False, "consecutive_unwatered": 1,
+            "yield_units": 0 if spec["ongoing"] else 1,
+            "fertilized_until_day": -1,
+        }
+    elif op == "BUILD_COOP":
+        tiles[y][x] = {"kind": "COOP"}
+    elif op == "BUILD_PASTURE":
+        tiles[y][x] = {"kind": "PASTURE"}
+    elif op == "WATER":
+        _edit()["watered_today"] = True
+    elif op == "FERTILIZE":
+        t = _edit()
+        t["fertilized_until_day"] = max(t.get("fertilized_until_day", -1), day + 2)
+    elif op == "HARVEST":
+        spec = CROPS.get((tile or {}).get("crop")) or {}
+        if isinstance(tile, dict) and tile.get("kind") == "PLANT" \
+                and not spec.get("ongoing", False):
+            tiles[y][x] = None                            # 引擎 468：整格消失
+        else:
+            _edit()["yield_units"] = 0                    # 引擎 465/471
+    elif op == "DIG":
+        tiles[y][x] = None
+    elif op == "FEED":
+        _edit()["fed_today"] = True
+    elif op == "CARE":
+        _edit()["cared_today"] = True
+    elif op == "COLLECT_FERTILIZER":
+        _edit()["fertilizer_available"] = False
+
+
+def turn_guard(op_index, logp_row, legal_row, state, pos):
     """同回合衝突的重選。回傳 `(新的 op 索引, 是否被改掉)`。
 
-    🩸 `legal_unit_mask` 對整個回合只算**一次**（用回合開始前的狀態），所以同一
-    回合裡 unit 之間的互相影響完全沒被考慮。兩種衝突（2026-09-17 實測，
-    seed 900000、ckpt-140）：
+    policy 選的 op 先拿去對 `state` 裡模擬到現在的 tile 查一次。過了就照送，
+    並把它的效果記進 `state` 給後面的 unit；沒過就照 logp 由高到低走一遍，挑第
+    一個「mask 說合法」而且「對當下的 tile 也成立」的 op 換上去。全都不行就維持
+    原樣（送出去會是靜默 no-op，跟 PASS 等價）。
 
-    1. **同格** —— 多個 unit 站在同一格都選 PLANT。第一個種下去之後那格就不是
-       空的，其餘的引擎直接拒絕，那些 unit 整回合什麼也沒做。量到的 34 個失敗
-       回合**全部**屬於這種（沒有同格重疊的失敗是 0）。這是主因。
-    2. **種子** —— 種子是全農場共用的一份存量。次要：剩下的失敗裡 30/36 種子
-       其實綽綽有餘。
-
-    修掉之後每局 PLANT 成功率 0.766 -> 0.997。
+    unit 的處理順序必須跟引擎一致 —— 索引 0 是 farmer、1 以後是 hands
+    （`encode_units` 的 docstring，`kaggriculture.py:937`）。
 
     `logp_row` 只用來排序偏好。合法性一律看 `legal_row`（`legal_unit_mask` 的
     那一列）—— 🩸 不能靠 logp 判斷，`masked_log_softmax` 壓的是 `-1e9` 不是
     `-inf`。整列全 False 時退回「全部合法」，跟 `masked_log_softmax` 同一條規則。
+
+    2026-09-18 §130 在 ckpt-140、8 局 greedy 上量到的白做工：每局 270.1 個
+    unit-回合，其中 2,061/2,161 = 95% 是這裡擋得掉的。
     """
     def _take(j):
-        crop = PLANT_OP.get(j)
-        if crop is None:
+        op, arg = UNIT_OPS[j]
+        if op not in _GUARD_OPS:
             return True
-        if pos in claimed or avail.get(crop, 0) <= 0:
+        if not _guard_ok(op, arg, state, pos):
             return False
-        avail[crop] -= 1
-        claimed.add(pos)
+        _guard_apply(op, arg, state, pos)
         return True
 
     op_index = int(op_index)

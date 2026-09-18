@@ -530,7 +530,6 @@ class VecRollout:
             op_exec = []
             # 取樣結果改寫成 logit 再交給 `decode_market_orders` —— 數量的
             # clamp、HIRE 要送 n 筆這些規則都在那裡面，重寫一份會走鐘。
-            # 🩸 要先解碼才知道這回合買幾顆種子（引擎先處理市場訂單）。
             pres_logit = np.where(mp_np[bi], 1.0, -1.0)
             qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
             qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
@@ -541,7 +540,7 @@ class VecRollout:
             # 被改掉的 unit 標成 `op_exec=False`：logprob 仍記**取樣到**的那個
             # op（guard 是動作投影，當成環境的一部分，跟 `step_toward` 同一個
             # 處理方式），但 `--op-exec-only` 開著時不進 joint logprob。
-            avail, claimed = C.turn_guard_state(o, market)
+            guard = C.turn_guard_state(o)
             for k, (ti, oi) in enumerate(zip(t_np[sel], o_np[sel])):
                 tx, ty = C.target_xy(int(ti), board)
                 cur = tuple(pos[k])
@@ -551,7 +550,7 @@ class VecRollout:
                 else:
                     gi, changed = C.turn_guard(
                         int(oi), o_full_lp_np[sel][k], op_mask_np[sel][k],
-                        avail, (tx, ty), claimed)
+                        guard, (tx, ty))
                     qi = int(q_np[sel][k]) if self.qty_factor else None
                     units.append(C.decode_unit(gi, qi))
                     op_exec.append(not changed)
