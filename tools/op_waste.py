@@ -173,6 +173,7 @@ def _one(job):
     dup_pairs = collections.Counter()
     ok_pairs = collections.Counter()
     atomic = collections.Counter()
+    other = collections.Counter()      # 移動 / PASS：沒有 op 送進引擎的 unit-回合
     turn = {"farm_ids": [], "tile_seen": {}}
 
     orig_unit = K._apply_unit_action
@@ -187,7 +188,11 @@ def _one(job):
         except ValueError:
             me = -1
         op = action[0] if isinstance(action, list) and action else None
-        if me != player or op is None or op in MOVES or op == "PASS":
+        if me != player or op is None:
+            return orig_unit(farm, private, idx, action, board_size, day,
+                             turns_per_day, shed_capacity)
+        if op in MOVES or op == "PASS":
+            other[op] += 1
             return orig_unit(farm, private, idx, action, board_size, day,
                              turns_per_day, shed_capacity)
 
@@ -264,7 +269,8 @@ def _one(job):
         return None, f"{type(exc).__name__}: {exc}"
     finally:
         K._apply_unit_action = orig_unit
-    return (issued, worked, why, dup, dup_waste, dup_pairs, ok_pairs, atomic), None
+    return (issued, worked, why, dup, dup_waste, dup_pairs, ok_pairs,
+            atomic, other), None
 
 
 def main(argv=None):
@@ -286,14 +292,14 @@ def main(argv=None):
     I = collections.Counter(); W = collections.Counter()
     D = collections.Counter(); DW = collections.Counter()
     P = collections.Counter(); OK = collections.Counter()
-    A = collections.Counter()
+    A = collections.Counter(); O = collections.Counter()
     Y = collections.defaultdict(collections.Counter)
     for r, e in res:
         if r is None:
             print("  失敗:", e)
             continue
         I += r[0]; W += r[1]; D += r[3]; DW += r[4]
-        P += r[5]; OK += r[6]; A += r[7]
+        P += r[5]; OK += r[6]; A += r[7]; O += r[8]
         for op, c in r[2].items():
             Y[op] += c
     ng = sum(1 for r, e in res if r is not None)
@@ -338,6 +344,18 @@ def main(argv=None):
         print(f"    {op}  {tot:,} 次（{tot / ng:.1f}/局）")
         for reason, n in Y[op].most_common(6):
             print(f"      {n:>7,}  {100 * n / tot:>5.1f}%  {reason}")
+
+    mv = sum(O[k] for k in MOVES)
+    ps = O.get("PASS", 0)
+    total = ti + mv + ps
+    print(f"\n  一局的 unit-回合全貌（{total:,} 次 = {total / ng:.0f}/局）")
+    print(f"    送 op 且生效      {tw:>8,}{tw / ng:>9.1f}/局{100 * tw / total:>7.1f}%")
+    print(f"    送 op 但白做      {tws:>8,}{tws / ng:>9.1f}/局{100 * tws / total:>7.1f}%")
+    print(f"    走路（沒到目標）  {mv:>8,}{mv / ng:>9.1f}/局{100 * mv / total:>7.1f}%")
+    print(f"    PASS              {ps:>8,}{ps / ng:>9.1f}/局{100 * ps / total:>7.1f}%")
+    print("    ⚠️ 走路和 PASS 引擎都正常處理，不是白做。這張表只判斷"
+          "「引擎有沒有執行」，")
+    print("    不判斷「值不值得做」。")
 
     print("\n  同一個 tile 上，先動的 op -> 後動的 op")
     print(f"    [後面的白做]  共 {sum(P.values()):,} 次")
