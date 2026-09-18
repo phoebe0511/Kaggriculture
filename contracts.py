@@ -1135,10 +1135,14 @@ _GUARD_OPS = frozenset((
 #: None，寫錯就是真的把作物弄不見，所以放最後、而且驗收時特別盯 DIG 的生效數
 #: 有沒有上升（§131.3 量到 guard 的重選讓 DIG 挖自己作物從 53 變成 387 次）。
 #:
-#: ⚠️ 動物鏈（FEED / CARE / COLLECT_FERTILIZER / BUILD_*）還在 `_GUARD_OPS`
-#: 但不在這裡 —— 它們仍然走事後重選，PPO 學不到。那是下一輪的題目，要先照
-#: `tools/rule_probe.py` 的做法把動物鏈的規則逐條問過引擎。
-_SEQ_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG"))
+#: 動物鏈（BUILD_* / FEED / CARE / COLLECT_FERTILIZER）也接上了 ——
+#: `tools/rule_probe.py` 的 A1~A4 逐條問過引擎：FEED / CARE /
+#: COLLECT_FERTILIZER 都是每日一次，而且動物放進去那天還收不到肥料
+#: （`fertilizer_available` 初值 False，每晚才設 True）。
+_SEQ_OPS = frozenset((
+    "PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
+    "BUILD_COOP", "BUILD_PASTURE", "FEED", "CARE", "COLLECT_FERTILIZER",
+))
 
 
 def guard_mask_row(legal_row, state, pos):

@@ -356,6 +356,126 @@ def s_plant():
     })
 
 
+# --------------------------------------------------------------------------
+# 動物鏈
+# --------------------------------------------------------------------------
+def _animal_setup():
+    """共用開場：在 (4,4) 蓋 COOP、放一隻 GOOSE，手上備 WHEAT。
+
+    (4,4) 本身就是 shed 旁的四格之一，而且農夫每天早上被重設到那裡，所以多日
+    情境不用走來走去。⚠️ inventory 每晚自動存回 shed（引擎 `_end_of_day`），
+    所以每天要重新 PICKUP。
+    """
+    return {
+        0: {"farmer": ["PASS"], "hands": [],
+            "market": [["HIRE"], ["BUY_ANIMAL", "GOOSE", 1],
+                       ["BUY_PRODUCT", "WHEAT", 12]]},
+        1: {"farmer": ["BUILD_COOP"], "hands": [["WEST"]], "market": []},
+        2: {"farmer": ["PICKUP", "GOOSE", 1], "hands": [], "market": []},
+        3: {"farmer": ["PLACE", "GOOSE", 1], "hands": [], "market": []},
+        4: {"farmer": ["PICKUP", "WHEAT", 4],
+            "hands": [["PICKUP", "WHEAT", 4]], "market": []},
+    }
+
+
+def s_animal_daily():
+    """FEED / CARE / COLLECT_FERTILIZER 是不是每日一次？"""
+    script = _animal_setup()
+    script.update({
+        5: {"farmer": ["FEED"], "hands": [["FEED"]], "market": []},   # 同回合
+        6: {"farmer": ["FEED"], "hands": [], "market": []},           # 同天不同回合
+        7: {"farmer": ["CARE"], "hands": [["CARE"]], "market": []},   # 同回合
+        8: {"farmer": ["CARE"], "hands": [], "market": []},           # 同天不同回合
+        # 🩸 放進去那天 fertilizer_available 是 False（`_new_animal` 的初值），
+        # 每晚才無條件設 True（`_daily_refresh_animals`）。
+        9: {"farmer": ["COLLECT_FERTILIZER"], "hands": [], "market": []},
+        # day 1：農夫被重設到 (4,4)、hands 清空、inventory 回到 shed
+        25: {"farmer": ["COLLECT_FERTILIZER"], "hands": [], "market": []},
+        26: {"farmer": ["COLLECT_FERTILIZER"], "hands": [], "market": []},
+        27: {"farmer": ["PICKUP", "WHEAT", 2], "hands": [], "market": []},
+        28: {"farmer": ["FEED"], "hands": [], "market": []},
+        29: {"farmer": ["CARE"], "hands": [], "market": []},
+    })
+    name, log, _ = run("A1  FEED / CARE / COLLECT_FERTILIZER：同回合 / 同天 / 隔天",
+                       script, 31, default=dict(PASS))
+    return report(name, log, {1, 3, 5, 6, 7, 8, 9, 25, 26, 28, 29}, expect={
+        (1, 0): True,      # BUILD_COOP
+        (3, 0): True,      # PLACE GOOSE
+        (5, 0): True,      # FEED 第一次
+        (5, 1): False,     # 同回合第二個
+        (6, 0): False,     # 同天不同回合
+        (7, 0): True,      # CARE 第一次
+        (7, 1): False,
+        (8, 0): False,
+        (9, 0): False,     # 放進去那天還沒有肥料
+        (25, 0): True,     # 隔天有了
+        (26, 0): False,    # 同天第二次
+        (28, 0): True,     # FEED 隔天
+        (29, 0): True,     # CARE 隔天
+    })
+
+
+def s_animal_harvest():
+    """動物的產出從哪一天開始收得到？GOOSE first_yield_day 4、interval 1。
+
+    引擎的動物 HARVEST **沒有成熟度檢查**（只看 yield_units > 0），跟作物那側
+    不一樣。所以真正的門檻是「產出什麼時候第一次出現」。
+    `_daily_refresh_animals`：`days_since_first = next_day - placed_day
+    - first_yield_day`，`>= 0` 且能被 interval 整除才產。這支腳本是**探索用**，
+    不預設答案。
+    """
+    script = _animal_setup()
+    feed = {"farmer": ["FEED"], "hands": [], "market": []}
+    pick = {"farmer": ["PICKUP", "WHEAT", 1], "hands": [], "market": []}
+    harv = {"farmer": ["HARVEST"], "hands": [], "market": []}
+    script[5] = feed
+    watch = {3}
+    for d in range(1, 7):
+        base = d * TPD
+        script[base + 1] = pick
+        script[base + 2] = feed       # 不餵會餓跑（consecutive_unfed >= 2）
+        script[base + 3] = harv
+        watch.add(base + 3)
+    name, log, _ = run("A2  GOOSE 的產出從第幾天收得到（探索，不預設答案）",
+                       script, 7 * TPD, default=dict(PASS))
+    return report(name, log, watch)
+
+
+def s_animal_build():
+    """BUILD 蓋在有東西的 tile / PLACE 放進已經有動物的建物。"""
+    script = _animal_setup()
+    script.update({
+        5: {"farmer": ["BUILD_COOP"], "hands": [], "market": []},    # 上面有動物
+        6: {"farmer": ["BUILD_PASTURE"], "hands": [], "market": []},
+        7: {"farmer": ["PICKUP", "GOOSE", 1], "hands": [], "market": []},
+        8: {"farmer": ["PLACE", "GOOSE", 1], "hands": [], "market": []},
+    })
+    name, log, _ = run("A3  BUILD 蓋在有動物的建物上 / PLACE 放進已經有動物的建物",
+                       script, 10, default=dict(PASS))
+    return report(name, log, {1, 3, 5, 6, 7, 8}, expect={
+        (1, 0): True,
+        (3, 0): True,
+        (5, 0): False,     # tile 不是 None
+        (6, 0): False,
+        (7, 0): False,     # shed 裡已經沒有 GOOSE 了
+        (8, 0): False,     # 手上沒有，而且建物已經有動物
+    })
+
+
+def s_animal_escape():
+    """兩天沒餵動物會逃走，建物留著。"""
+    script = _animal_setup()
+    # 放進去之後完全不餵
+    script[3 * TPD + 1] = {"farmer": ["DIG"], "hands": [], "market": []}
+    name, log, _ = run("A4  兩天沒餵動物會逃走，空建物挖得掉",
+                       script, 3 * TPD + 3, default=dict(PASS))
+    return report(name, log, {3, 3 * TPD + 1}, expect={
+        (3, 0): True,
+        # 動物跑掉之後剩空 COOP，挖得掉；動物還在的話挖不掉
+        (3 * TPD + 1, 0): True,
+    })
+
+
 def main():
     results = [
         s_water(),
@@ -365,6 +485,10 @@ def main():
         s_dig(),
         s_dig_weed(),
         s_plant(),
+        s_animal_daily(),
+        s_animal_harvest(),
+        s_animal_build(),
+        s_animal_escape(),
     ]
     print("\n" + "=" * 72)
     bad = results.count(False)
