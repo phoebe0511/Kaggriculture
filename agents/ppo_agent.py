@@ -127,8 +127,8 @@ def act(obs, config=None, params=None):
         o_lp = masked_log_softmax(op_logits, op_mask)
         t_lp = masked_log_softmax(tgt_logits, tgt_mask)
         if greedy:
-            # 🩸 op 不在這裡選 —— `_SEQ_OPS` 的合法性會被同一回合稍早的 unit
-            # 改掉，要逐 unit 縮 mask 再選。見下面的迴圈。
+            # 🩸 op 不在這裡選 —— `_GUARD_OPS` 的合法性會被同一回合稍早的
+            # unit 改掉，要逐 unit 縮 mask 再選。見下面的迴圈。
             t_idx = t_lp.argmax(-1)
             q_idx = qty_logits.argmax(-1)
             # 門檻 0 對應 sigmoid 0.5，跟 `decode_market_orders` 的預設一致。
@@ -155,10 +155,9 @@ def act(obs, config=None, params=None):
     market = C.decode_market_orders(
         np.where(mk_pres.numpy(), 1.0, -1.0), qty_onehot, obs, config)
 
-    # 🩸 同回合衝突的重選，見 `contracts.turn_guard`。送出引擎會拒絕的動作不是
-    # 策略選擇，是沒照規則走 —— 無條件修，不做旗標。
+    # 🩸 同回合衝突靠逐 unit 縮 mask 解決，見 `contracts.guard_mask_row`。
+    # 送出引擎會拒絕的動作不是策略選擇，是沒照規則走 —— 無條件修，不做旗標。
     guard = C.turn_guard_state(obs)
-    o_lp_np = o_lp.numpy()
     op_mask_np = op_mask.numpy()
 
     units = []
@@ -169,9 +168,9 @@ def act(obs, config=None, params=None):
             # 沒站到目標 tile 的 unit 送出的是移動，不會動到任何共用狀態。
             units.append(step_toward(cur, (tx, ty)))
             continue
-        # 🩸 逐 unit 縮 mask 再選：`_SEQ_OPS` 的合法性會被同一回合稍早的 unit
-        # 改掉。訓練側（`harness/ppo_rollout.py`）走同一套，兩邊不能分歧 ——
-        # 這就是 contracts.py 存在的理由。
+        # 🩸 逐 unit 縮 mask 再選：`_GUARD_OPS` 的合法性會被同一回合稍早的
+        # unit 改掉。訓練側（`harness/ppo_rollout.py`）走同一套，兩邊不能分歧
+        # —— 這就是 contracts.py 存在的理由。
         row = C.guard_mask_row(op_mask_np[i], guard, (tx, ty))
         with torch.no_grad():
             row_lp = masked_log_softmax(
@@ -179,9 +178,9 @@ def act(obs, config=None, params=None):
                 torch.as_tensor(row).unsqueeze(0))[0]
         op_sel = (int(row_lp.argmax()) if greedy
                   else int(torch.multinomial(row_lp.exp(), 1)))
-        # 還沒搬進 mask 的 op 仍然由 `turn_guard` 重選，它同時把效果套回
-        # `guard` —— 那是後面的 unit 看得到改變的唯一途徑。
-        op_i, _changed = C.turn_guard(op_sel, o_lp_np[i], row, guard, (tx, ty))
+        # 把效果套回 `guard` —— 後面的 unit 看得到改變的唯一途徑。
+        C.turn_guard_commit(op_sel, guard, (tx, ty))
+        op_i = op_sel
         units.append(C.decode_unit(
             op_i, int(q_np[i]) if use_qty else None))
     if base_spec:

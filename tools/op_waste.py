@@ -29,13 +29,13 @@
               動作一律是**靜默 no-op**、什麼都不碰（引擎行 313 的 docstring：
               `Invalid / illegal actions are silent no-ops`），所以
               「有沒有任何改變」就是精確的判準，不需要逐 op 寫規則
-    已佔格    那個 tile 這一回合已經被前面的 unit 佔走（`turn_guard` 的 `claimed`
-              是同一件事）。這個 unit 不是第一個動它的。
+    佔格造成  白做裡，那個 tile 這一回合已經被前面的 unit 動過的部分。
               **跨 op 計** —— A 收成把 tile 清掉、B 的 WATER 落空，這種舊版完全
               沒算到（舊版的 dup 只比對同一個 op）。
-              ⚠️ 已佔格**不等於**白做：FEED -> HARVEST 在同一個 tile 上兩個都
-              會成立。所以另外分出「其中白做」，那一欄才是 turn_guard 擴充之後
-              修得掉的量
+              ⚠️ 被佔走**不等於**白做：FEED -> HARVEST 在同一個 tile 上兩個都
+              會成立，所以只計真的白做的那些。
+              2026-09-18 之後這一欄應該恆為 0 —— 同回合衝突已經由
+              `contracts.guard_mask_row` 在取樣前擋掉了（§133）
     原子擋掉  PLANT 專屬。引擎行 919-931：某作物的 PLANT 請求數 > 回合開始的種子
               數 -> 該作物這回合的 PLANT **全部**被換成 PASS。被換掉的動作到不了
               `_apply_unit_action`，所以不會出現在「發出」裡，要另外算
@@ -332,10 +332,10 @@ def main(argv=None):
     tfrac = f"{100 * sum(DW.values()) / tws:.0f}%" if tws else "—"
     print(f"  {'合計':<20}{ti:>8,}{tw:>8,}{tw / max(ti, 1):>8.3f}"
           f"{tws:>8,}{tws / ng:>10.1f}{sum(DW.values()):>10,}{tfrac:>6}")
-    print("  「佔格造成」= 白做裡，那個 tile 這一回合已經被前面的 unit 佔走的部分。"
-          "把 contracts.turn_guard")
-    print("  擴充成「任何 tile 專屬的 op 都佔格」之後消得掉的就是這些，"
-          "「%」是它佔白做的比例。")
+    print("  「佔格造成」= 白做裡，那個 tile 這一回合已經被前面的 unit 動過的部分。"
+          "同回合衝突已經由")
+    print("  contracts.guard_mask_row 在取樣前擋掉，所以這一欄應該恆為 0；"
+          "不是 0 就是那裡漏了。")
     extra = sum(D.values()) - sum(DW.values())
     print(f"  （另有 {extra:,} 次是被佔格之後仍然生效的，例如 FEED -> HARVEST，"
           f"不是白做，所以不列）")

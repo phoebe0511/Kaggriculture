@@ -156,8 +156,9 @@ def _sample_row(logits_row, mask_row, greedy=False, gen=None):
     （`model/ppo.py:570`），這裡自己算會讓 epoch 0 的 ratio 不是 1。
 
     ⚠️ 逐 unit 取樣比整批慢（`masked_sample` 的 docstring 記過：逐 unit 搬回
-    主機讓每步從 2.9 ms 變成 4.1 ms）。但 `_SEQ_OPS` 的合法性本來就相依於同一
-    回合稍早的 unit，整批算不出來。改前改後的 rollout 時間記在 journal §132。
+    主機讓每步從 2.9 ms 變成 4.1 ms）。但 `_GUARD_OPS` 的合法性本來就相依於
+    同一回合稍早的 unit，整批算不出來。實際代價：rollout 1.4~1.5s -> 1.5~1.7s
+    （`ppo_train --smoke`，journal §132.6）。
     """
     lp = masked_log_softmax(logits_row.unsqueeze(0), mask_row.unsqueeze(0))[0]
     idx = (int(lp.argmax()) if greedy
@@ -166,7 +167,13 @@ def _sample_row(logits_row, mask_row, greedy=False, gen=None):
 
 
 class TorchPolicy:
-    """把網路包成 `act(obs, config)`，順便吐出 PPO 要的 logprob / value。"""
+    """把網路包成 `act(obs, config)`，順便吐出 PPO 要的 logprob / value。
+
+    ⚠️ **只有 `bench()` 在用** —— 那是量吞吐量的（引擎 / 編碼 / 網路各佔多少），
+    不是訓練也不是上場路徑。所以它沒有做逐 unit 的 mask 序列化，op 還是整批
+    取樣。真正的兩條路是 `VecRollout._policy_batch`（訓練）和
+    `agents/ppo_agent.act`（上場）。要拿它當 policy 用的話得先補上序列化。
+    """
 
     def __init__(self, net, device="cpu", seed=0):
         self.net = net.to(device).eval()
@@ -495,8 +502,8 @@ class VecRollout:
         op_mask = torch.as_tensor(op_mask_np, device=dev)
         tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
         t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy, self.gen)
-        # 🩸 op **不在這裡整批取樣** —— `_SEQ_OPS` 那些 op 的合法性會被同一回合
-        # 稍早的 unit 改掉，所以要照引擎的順序逐 unit 縮 mask 再取樣。
+        # 🩸 op **不在這裡整批取樣** —— `_GUARD_OPS` 那些 op 的合法性會被同一
+        # 回合稍早的 unit 改掉，所以要照引擎的順序逐 unit 縮 mask 再取樣。
         # 見下面的迴圈與 `contracts.guard_mask_row`。
         # 🩸 qty 沒有合法性遮罩（1~12 都送得出去，超過的由引擎自己夾），所以
         # 餵一張全 True 進去 —— 走同一個 `masked_sample` 才跟 update 端一致。
@@ -534,10 +541,6 @@ class VecRollout:
         o_lp_np = np.zeros(n_u, dtype=np.float32)
         lp_np = np.zeros(n_u, dtype=np.float32)
         q_use_np = np.zeros(n_u, dtype=bool)
-        # 🩸 `turn_guard` 要完整的機率列來找次佳動作，`masked_sample` 只回傳被選
-        # 中那一個。多算一次 log_softmax 比重收一批便宜得多。用回合開始的 mask
-        # 算就夠了 —— 那一列只拿來排偏好順序，合法性一律看傳進去的 `legal_row`。
-        o_full_lp_np = masked_log_softmax(op_logits, op_mask).cpu().numpy()
 
         out = []
         for bi, (ei, p, o, c) in enumerate(items):
@@ -556,12 +559,13 @@ class VecRollout:
             qty_onehot = np.zeros((C.N_MARKET_OPS, C.N_MARKET_QTY), np.float32)
             qty_onehot[np.arange(C.N_MARKET_OPS), mq_np[bi]] = 1.0
             market = C.decode_market_orders(pres_logit, qty_onehot, o, c)
-            # 🩸 同回合衝突的重選，見 `contracts.turn_guard`。上場側
-            # （`agents/ppo_agent.py`）走同一個函式，兩邊一定要一致。
+            # 🩸 同回合衝突靠逐 unit 縮 mask 解決，見 `contracts.guard_mask_row`。
+            # 上場側（`agents/ppo_agent.py`）走同一套，兩邊一定要一致。
             #
-            # 被改掉的 unit 標成 `op_exec=False`：logprob 仍記**取樣到**的那個
-            # op（guard 是動作投影，當成環境的一部分，跟 `step_toward` 同一個
-            # 處理方式），但 `--op-exec-only` 開著時不進 joint logprob。
+            # `op_exec` 現在只剩一個意思：**這個 unit 有沒有站到目標 tile**。
+            # 沒站到的送的是移動，那個 op 根本不進引擎，`--op-exec-only` 開著時
+            # 不進 joint logprob。站到的一律是 True —— mask 已經保證選得到的都
+            # 做得成，不會再有「送出去被引擎靜默丟掉」的 op。
             guard = C.turn_guard_state(o)
             # 🩸 順序必須跟引擎一致（farmer 先、hands 按 index）—— `ub_np == bi`
             # 是遞增的，`encode_units` 也是這個順序。
@@ -583,14 +587,11 @@ class VecRollout:
                     oi, olp = _sample_row(
                         op_logits[g], torch.as_tensor(row, device=op_logits.device),
                         self.greedy, self.gen)
-                    # `_SEQ_OPS` 的 op 這裡一定過得了，`turn_guard` 只是替其餘
-                    # 還沒搬進 mask 的 op 重選 —— 順便把效果套回 `guard`，
-                    # 那是後面的 unit 看得到改變的唯一途徑。
-                    gi, changed = C.turn_guard(
-                        oi, o_full_lp_np[g], row, guard, (tx, ty))
+                    # 把效果套回 `guard` —— 後面的 unit 看得到改變的唯一途徑。
+                    C.turn_guard_commit(oi, guard, (tx, ty))
                     qi = int(q_np[g]) if self.qty_factor else None
-                    units.append(C.decode_unit(gi, qi))
-                    op_exec.append(not changed)
+                    units.append(C.decode_unit(oi, qi))
+                    op_exec.append(True)
                 o_np[g], o_lp_np[g] = oi, olp
             op_exec = np.asarray(op_exec, dtype=bool)
             lp_np[sel] = t_lp_np[sel] + o_lp_np[sel]

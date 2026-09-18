@@ -1116,33 +1116,17 @@ def legal_demand_mask(obs, config=None):
 # decode
 # --------------------------------------------------------------------------
 
-#: 合法性會被「同一回合稍早的 unit」改掉的 op —— `turn_guard` 逐 unit 重查這些。
+#: 合法性會被「同一回合稍早的 unit」改掉的 op。`guard_mask_row` 逐 unit 重查
+#: 這些，`turn_guard_commit` 逐 unit 把效果套回去。
 #: 其餘 op（移動、PASS、PICKUP、PLACE、DROP）不重查，理由見 `turn_guard_state`。
 _GUARD_OPS = frozenset((
     "PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
     "BUILD_COOP", "BUILD_PASTURE", "FEED", "CARE", "COLLECT_FERTILIZER",
 ))
 
-#: 已經改成「逐 unit 序列化 mask」的 op —— policy 在**正確的候選集合**上取樣，
-#: 選到什麼就做什麼、logprob 就記什麼，PPO 拿得到 gradient。
-#:
-#: 不在這裡面的 op 仍然走 `turn_guard` 的事後重選，那條路 policy 學不到東西
-#: （被換掉的 unit 標 `op_exec=False`，不進 joint logprob）。所以這個集合最後
-#: 要長到跟 `_GUARD_OPS` 一樣大，重選那段就可以拿掉。
-#:
-#: 2026-09-18：植物鏈五個 op 全部接上，照「不具破壞性的先接」的順序做
-#: （PLANT / WATER -> FERTILIZE -> HARVEST / DIG）。後兩個會把整個 tile 清成
-#: None，寫錯就是真的把作物弄不見，所以放最後、而且驗收時特別盯 DIG 的生效數
-#: 有沒有上升（§131.3 量到 guard 的重選讓 DIG 挖自己作物從 53 變成 387 次）。
-#:
-#: 動物鏈（BUILD_* / FEED / CARE / COLLECT_FERTILIZER）也接上了 ——
-#: `tools/rule_probe.py` 的 A1~A4 逐條問過引擎：FEED / CARE /
-#: COLLECT_FERTILIZER 都是每日一次，而且動物放進去那天還收不到肥料
-#: （`fertilizer_available` 初值 False，每晚才設 True）。
-_SEQ_OPS = frozenset((
-    "PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG",
-    "BUILD_COOP", "BUILD_PASTURE", "FEED", "CARE", "COLLECT_FERTILIZER",
-))
+#: 2026-09-18：這裡本來還有一個 `_SEQ_OPS`，用來標「已經搬進 mask、不再靠事後
+#: 重選」的 op。分段搬完之後它跟 `_GUARD_OPS` 完全一樣，所以併掉了。分段的順序
+#: 與當時的驗收記在 journal §132 / §133。
 
 
 def guard_mask_row(legal_row, state, pos):
@@ -1153,14 +1137,15 @@ def guard_mask_row(legal_row, state, pos):
     變了，所以後面的 unit 要重查一次。
 
     呼叫端必須照引擎的順序走（索引 0 是 farmer、1 以後是 hands，見
-    `encode_units` 的 docstring），而且每個 unit 選完之後要讓 `turn_guard` 把
-    效果套回 `state` —— 那是後面的 unit 看得到改變的唯一途徑。
+    `encode_units` 的 docstring），而且每個 unit 選完之後要呼叫
+    `turn_guard_commit` 把效果套回 `state` —— 那是後面的 unit 看得到改變的
+    唯一途徑。
 
-    ⚠️ 移動和 PASS 不在 `_SEQ_OPS` 裡，所以整列不會被縮到全 False。
+    ⚠️ 移動和 PASS 不在 `_GUARD_OPS` 裡，所以整列不會被縮到全 False。
     """
     row = np.asarray(legal_row, dtype=bool).copy()
     for j, (op, arg) in enumerate(UNIT_OPS):
-        if row[j] and op in _SEQ_OPS and not _guard_ok(op, arg, state, pos):
+        if row[j] and op in _GUARD_OPS and not _guard_ok(op, arg, state, pos):
             row[j] = False
     return row
 
@@ -1198,7 +1183,7 @@ def turn_guard_state(obs):
 
     ⚠️ PICKUP / PLACE / DROP 沒有納入。shed 也是全農場共用的一份，PICKUP 撞車
     確實會白做（2026-09-18 §130 量到 2.8 次/局），但搬運量由 qty head 決定、
-    `turn_guard` 拿不到 qty，模型會不準；而且 DROP 會在同一回合把東西加回 shed。
+    這裡拿不到 qty，模型會不準；而且 DROP 會在同一回合把東西加回 shed。
     寧可不管也不要亂擋。
     """
     player = int(obs["player"])
@@ -1316,46 +1301,34 @@ def _guard_apply(op, arg, state, pos):
         _edit()["fertilizer_available"] = False
 
 
-def turn_guard(op_index, logp_row, legal_row, state, pos):
-    """同回合衝突的重選。回傳 `(新的 op 索引, 是否被改掉)`。
+def turn_guard_commit(op_index, state, pos):
+    """把這個 unit 選到的動作對共用狀態的效果套上去。
 
-    policy 選的 op 先拿去對 `state` 裡模擬到現在的 tile 查一次。過了就照送，
-    並把它的效果記進 `state` 給後面的 unit；沒過就照 logp 由高到低走一遍，挑第
-    一個「mask 說合法」而且「對當下的 tile 也成立」的 op 換上去。全都不行就維持
-    原樣（送出去會是靜默 no-op，跟 PASS 等價）。
+    呼叫端每個 unit 選完就呼叫一次 —— 這是同一回合後面的 unit 看得到改變的
+    唯一途徑。順序必須跟引擎一致（索引 0 是 farmer、1 以後是 hands，見
+    `encode_units` 的 docstring、`kaggriculture.py:937`）。
 
-    unit 的處理順序必須跟引擎一致 —— 索引 0 是 farmer、1 以後是 hands
-    （`encode_units` 的 docstring，`kaggriculture.py:937`）。
+    ## 這裡為什麼還要再查一次 `_guard_ok`
 
-    `logp_row` 只用來排序偏好。合法性一律看 `legal_row`（`legal_unit_mask` 的
-    那一列）—— 🩸 不能靠 logp 判斷，`masked_log_softmax` 壓的是 `-1e9` 不是
-    `-inf`。整列全 False 時退回「全部合法」，跟 `masked_log_softmax` 同一條規則。
+    正常情況下查不出東西 —— `guard_mask_row` 已經把做不成的 op 從那一列拿掉，
+    policy 選不到。留著是因為**萬一選到了，引擎也不會執行它**，那就不該在模擬
+    狀態裡留下效果，否則後面的 unit 會照著一份跟引擎不同步的盤面做決定。
+    這不是把錯誤藏起來 —— 真的發生的話 `tools/op_waste.py` 的生效率會掉下來。
 
-    2026-09-18 §130 在 ckpt-140、8 局 greedy 上量到的白做工：每局 270.1 個
-    unit-回合，其中 2,061/2,161 = 95% 是這裡擋得掉的。
+    ## 2026-09-18：這裡本來是「重選」
+
+    舊版是 policy 選到做不成的 op 時，照 logp 由高到低挑一個次佳的換上去。
+    那條路**對學習完全沒有作用** —— 被換掉的 unit 標 `op_exec=False`，那個 op
+    不進 joint logprob，PPO 拿不到 gradient，所以它永遠學不會那個動作做不成。
+    而且量到會造成傷害：DIG 挖掉自己作物從 53 次/8局 變成 387 次（§131.3），
+    因為「logp 次高」常常就是 DIG。
+
+    規則改由 `guard_mask_row` 在**取樣之前**表達，policy 在正確的候選集合上選，
+    選到什麼就做什麼、logprob 就記什麼。重選沒有存在的理由了。
     """
-    def _take(j):
-        op, arg = UNIT_OPS[j]
-        if op not in _GUARD_OPS:
-            return True
-        if not _guard_ok(op, arg, state, pos):
-            return False
+    op, arg = UNIT_OPS[int(op_index)]
+    if op in _GUARD_OPS and _guard_ok(op, arg, state, pos):
         _guard_apply(op, arg, state, pos)
-        return True
-
-    op_index = int(op_index)
-    if _take(op_index):
-        return op_index, False
-    legal = [bool(v) for v in legal_row]
-    if not any(legal):
-        legal = [True] * len(legal)
-    order = sorted(range(len(logp_row)), key=lambda j: -logp_row[j])
-    for j in order:
-        if j == op_index or not legal[j]:
-            continue
-        if _take(j):
-            return j, True
-    return op_index, False        # 全部都不行，維持原樣
 
 
 def decode_unit(op_index, qty_index=None):
