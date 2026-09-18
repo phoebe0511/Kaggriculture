@@ -174,6 +174,7 @@ def _one(job):
     ok_pairs = collections.Counter()
     atomic = collections.Counter()
     other = collections.Counter()      # 移動 / PASS：沒有 op 送進引擎的 unit-回合
+    destroyed = collections.Counter()  # DIG 生效時挖掉的是什麼
     turn = {"farm_ids": [], "tile_seen": {}}
 
     orig_unit = K._apply_unit_action
@@ -227,6 +228,15 @@ def _one(job):
         issued[op] += 1
         if changed:
             worked[op] += 1
+            if op == "DIG" and isinstance(b_tile, dict):
+                k = b_tile.get("kind")
+                if k == "PLANT":
+                    crop = b_tile.get("crop")
+                    age = day - b_tile.get("planted_day", day)
+                    yu = b_tile.get("yield_units", 0)
+                    destroyed[f"{crop}  age {age}天  yield {yu}"] += 1
+                else:
+                    destroyed[str(k)] += 1
         else:
             why[op][_why(op, item, b_tile, b_inv, b_shed, b_seeds, day,
                          pos in sheds, K.CROPS, K.ANIMALS)] += 1
@@ -270,7 +280,7 @@ def _one(job):
     finally:
         K._apply_unit_action = orig_unit
     return (issued, worked, why, dup, dup_waste, dup_pairs, ok_pairs,
-            atomic, other), None
+            atomic, other, destroyed), None
 
 
 def main(argv=None):
@@ -293,13 +303,14 @@ def main(argv=None):
     D = collections.Counter(); DW = collections.Counter()
     P = collections.Counter(); OK = collections.Counter()
     A = collections.Counter(); O = collections.Counter()
+    DES = collections.Counter()
     Y = collections.defaultdict(collections.Counter)
     for r, e in res:
         if r is None:
             print("  失敗:", e)
             continue
         I += r[0]; W += r[1]; D += r[3]; DW += r[4]
-        P += r[5]; OK += r[6]; A += r[7]; O += r[8]
+        P += r[5]; OK += r[6]; A += r[7]; O += r[8]; DES += r[9]
         for op, c in r[2].items():
             Y[op] += c
     ng = sum(1 for r, e in res if r is not None)
@@ -356,6 +367,11 @@ def main(argv=None):
     print("    ⚠️ 走路和 PASS 引擎都正常處理，不是白做。這張表只判斷"
           "「引擎有沒有執行」，")
     print("    不判斷「值不值得做」。")
+
+    if DES:
+        print(f"\n  DIG 生效時挖掉的是什麼（共 {sum(DES.values()):,} 次）")
+        for k, n in DES.most_common(12):
+            print(f"    {n:>7,}  {n / ng:>6.1f}/局   {k}")
 
     print("\n  同一個 tile 上，先動的 op -> 後動的 op")
     print(f"    [後面的白做]  共 {sum(P.values()):,} 次")
