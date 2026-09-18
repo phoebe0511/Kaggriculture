@@ -8,6 +8,11 @@
 CARROT、TOMATO、EGG 的稀缺側價格函式改為 `hinge`；§6 的表格已更新。其餘舊行號
 仍指 1.32.6 原始碼，待 T00 第二人複核時一併重標。
 
+🩸 **2026-09-18：那個位移量測出來了 —— 本檔的行號比 1.32.7 的實際檔案小 13 行。**
+本檔寫 `interpreter` 在行 881-952，實際 `def interpreter` 在行 894。位移來自
+`SHOPS` 之前插入的 13 行，所以整份一致。**查原始碼請用函式名 grep，不要照行號
+跳**；下面幾處今天實際核對過的已經改成 1.32.7 的行號並標了 (1.32.7)。
+
 **標記規則**（見 `CLAUDE.md`）：
 `VERIFIED` = 有原始碼行號或實測支撐；`UNVERIFIED` = 未經證實；`UNKNOWN` = 不知道。
 標 UNVERIFIED 時要另外註明數值是怎麼來的（例如從 replay 反推）。
@@ -62,7 +67,13 @@ CARROT、TOMATO、EGG 的稀缺側價格函式改為 `hinge`；§6 的表格已�
 
 > **`unknowns.md` #1 解答**：BUY / SELL / HIRE 走 `action["market"]` 這條獨立通道，
 > 跟 unit 動作完全分開。一回合最多 `maxMarketOrdersPerTurn = 10` 筆，超過的**靜默丟棄**
-> （`kaggriculture.json` 第 23 行）。
+> （`kaggriculture.json` 第 23 行）。截斷發生在**解析之前**（行 551/560，1.32.7），
+> 所以格式錯的空訂單也佔額度。
+
+> 🩸 **`BUY_SEED` 不吃 `shedCapacity`**（行 673-678，1.32.7）—— 種子進
+> `private["seeds"]`，那條路只檢查錢。`BUY_PRODUCT`（行 662-671）和
+> `BUY_ANIMAL`（行 679-686）都會先檢查 `sum(shed.values()) >= shedCapacity`
+> 才扣錢。倉庫滿的時候唯一還買得動的就是種子。
 
 **非法動作一律靜默 no-op**（行 300 docstring）—— 送出前必須自己過 `legal_mask`。
 
