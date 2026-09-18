@@ -1123,6 +1123,38 @@ _GUARD_OPS = frozenset((
     "BUILD_COOP", "BUILD_PASTURE", "FEED", "CARE", "COLLECT_FERTILIZER",
 ))
 
+#: 已經改成「逐 unit 序列化 mask」的 op —— policy 在**正確的候選集合**上取樣，
+#: 選到什麼就做什麼、logprob 就記什麼，PPO 拿得到 gradient。
+#:
+#: 不在這裡面的 op 仍然走 `turn_guard` 的事後重選，那條路 policy 學不到東西
+#: （被換掉的 unit 標 `op_exec=False`，不進 joint logprob）。所以這個集合最後
+#: 要長到跟 `_GUARD_OPS` 一樣大，重選那段就可以拿掉。
+#:
+#: 2026-09-18：先接不具破壞性的兩個。PLANT 是長出東西、WATER 是設一個旗標，
+#: 邏輯寫錯最壞是多種一株或漏澆一次；HARVEST 和 DIG 會把整個 tile 清成 None，
+#: 寫錯就是真的把作物弄不見。
+_SEQ_OPS = frozenset(("PLANT", "WATER"))
+
+
+def guard_mask_row(legal_row, state, pos):
+    """這個 unit 在「模擬到現在的狀態」下的 mask 列。
+
+    `legal_row` 是 `legal_unit_mask` 那一列（用**回合開始**的盤面算的）。引擎是
+    逐 unit 依序執行的（`kaggriculture.py:935-938`），第一個 unit 動完 tile 就
+    變了，所以後面的 unit 要重查一次。
+
+    呼叫端必須照引擎的順序走（索引 0 是 farmer、1 以後是 hands，見
+    `encode_units` 的 docstring），而且每個 unit 選完之後要讓 `turn_guard` 把
+    效果套回 `state` —— 那是後面的 unit 看得到改變的唯一途徑。
+
+    ⚠️ 移動和 PASS 不在 `_SEQ_OPS` 裡，所以整列不會被縮到全 False。
+    """
+    row = np.asarray(legal_row, dtype=bool).copy()
+    for j, (op, arg) in enumerate(UNIT_OPS):
+        if row[j] and op in _SEQ_OPS and not _guard_ok(op, arg, state, pos):
+            row[j] = False
+    return row
+
 
 def turn_guard_state(obs):
     """建立一回合的 guard 帳本：`{tiles, seeds, day}`。

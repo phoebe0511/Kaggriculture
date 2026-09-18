@@ -149,6 +149,22 @@ def masked_sample(logits, mask, greedy=False, gen=None):
     return idx, logp.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
 
 
+def _sample_row(logits_row, mask_row, greedy=False, gen=None):
+    """單一 unit 的 op 取樣。`logits_row` / `mask_row` 都是 `[K]`。
+
+    🩸 一定要走 `masked_log_softmax` —— update 端重算 logprob 用的是同一個函式
+    （`model/ppo.py:570`），這裡自己算會讓 epoch 0 的 ratio 不是 1。
+
+    ⚠️ 逐 unit 取樣比整批慢（`masked_sample` 的 docstring 記過：逐 unit 搬回
+    主機讓每步從 2.9 ms 變成 4.1 ms）。但 `_SEQ_OPS` 的合法性本來就相依於同一
+    回合稍早的 unit，整批算不出來。改前改後的 rollout 時間記在 journal §132。
+    """
+    lp = masked_log_softmax(logits_row.unsqueeze(0), mask_row.unsqueeze(0))[0]
+    idx = (int(lp.argmax()) if greedy
+           else int(torch.multinomial(lp.exp(), 1, generator=gen)))
+    return idx, float(lp[idx])
+
+
 class TorchPolicy:
     """把網路包成 `act(obs, config)`，順便吐出 PPO 要的 logprob / value。"""
 
@@ -479,11 +495,14 @@ class VecRollout:
         op_mask = torch.as_tensor(op_mask_np, device=dev)
         tgt_mask = torch.as_tensor(tgt_mask_np, device=dev)
         t_idx, t_lp = masked_sample(tgt_logits, tgt_mask, self.greedy, self.gen)
-        o_idx, o_lp = masked_sample(op_logits, op_mask, self.greedy, self.gen)
+        # 🩸 op **不在這裡整批取樣** —— `_SEQ_OPS` 那些 op 的合法性會被同一回合
+        # 稍早的 unit 改掉，所以要照引擎的順序逐 unit 縮 mask 再取樣。
+        # 見下面的迴圈與 `contracts.guard_mask_row`。
         # 🩸 qty 沒有合法性遮罩（1~12 都送得出去，超過的由引擎自己夾），所以
         # 餵一張全 True 進去 —— 走同一個 `masked_sample` 才跟 update 端一致。
-        q_idx = torch.zeros_like(o_idx)
-        q_lp = torch.zeros_like(o_lp)
+        q_idx = torch.zeros(op_logits.shape[0], dtype=torch.long,
+                            device=op_logits.device)
+        q_lp = torch.zeros(op_logits.shape[0], device=op_logits.device)
         if self.qty_factor:
             q_mask = torch.ones_like(qty_logits, dtype=torch.bool)
             q_idx, q_lp = masked_sample(qty_logits, q_mask, self.greedy,
@@ -499,22 +518,25 @@ class VecRollout:
         mk_lp, _mk_ent = market_logp_entropy(
             mk_present, mk_qty, mk_legal, mk_pres_act, mk_qty_act)
 
-        t_np, o_np = t_idx.cpu().numpy(), o_idx.cpu().numpy()
+        t_np = t_idx.cpu().numpy()
         # 🩸 target 和 op 的 logprob 要分開留一份 —— `--op-exec-only` 只把
         # **沒有真的執行到**的 op 那一項排除，target 一律留著。
-        t_lp_np, o_lp_np = t_lp.cpu().numpy(), o_lp.cpu().numpy()
-        lp_np = t_lp_np + o_lp_np
+        t_lp_np = t_lp.cpu().numpy()
         q_np, q_lp_np = q_idx.cpu().numpy(), q_lp.cpu().numpy()
-        # 只有帶數量的 op 才算 qty 那一項 —— 其他 op 的 qty 不是決策。
-        q_use_np = QTY_OPS[o_np] if self.qty_factor else np.zeros(
-            len(o_np), dtype=bool)
         v_np = value.cpu().numpy()
         mk_lp_np = mk_lp.cpu().numpy()
         mp_np = mk_pres_act.cpu().numpy()
         mq_np = mk_qty_act.cpu().numpy()
         ub_np = ub
+        # op 的取樣結果逐 unit 填進來（見下面的迴圈）。
+        n_u = op_logits.shape[0]
+        o_np = np.zeros(n_u, dtype=np.int64)
+        o_lp_np = np.zeros(n_u, dtype=np.float32)
+        lp_np = np.zeros(n_u, dtype=np.float32)
+        q_use_np = np.zeros(n_u, dtype=bool)
         # 🩸 `turn_guard` 要完整的機率列來找次佳動作，`masked_sample` 只回傳被選
-        # 中那一個。多算一次 log_softmax 比重收一批便宜得多。
+        # 中那一個。多算一次 log_softmax 比重收一批便宜得多。用回合開始的 mask
+        # 算就夠了 —— 那一列只拿來排偏好順序，合法性一律看傳進去的 `legal_row`。
         o_full_lp_np = masked_log_softmax(op_logits, op_mask).cpu().numpy()
 
         out = []
@@ -541,20 +563,39 @@ class VecRollout:
             # op（guard 是動作投影，當成環境的一部分，跟 `step_toward` 同一個
             # 處理方式），但 `--op-exec-only` 開著時不進 joint logprob。
             guard = C.turn_guard_state(o)
-            for k, (ti, oi) in enumerate(zip(t_np[sel], o_np[sel])):
-                tx, ty = C.target_xy(int(ti), board)
+            # 🩸 順序必須跟引擎一致（farmer 先、hands 按 index）—— `ub_np == bi`
+            # 是遞增的，`encode_units` 也是這個順序。
+            gidx = np.flatnonzero(sel)
+            for k, g in enumerate(gidx):
+                tx, ty = C.target_xy(int(t_np[g]), board)
                 cur = tuple(pos[k])
                 if (int(cur[0]), int(cur[1])) != (tx, ty):
+                    # 沒站到目標 tile：送移動，op 不進引擎。mask 不用縮
+                    # （這個 op 不會執行，縮了反而讓 update 端的分布對不上）。
+                    oi, olp = _sample_row(op_logits[g], op_mask[g],
+                                          self.greedy, self.gen)
                     units.append(step_toward(cur, (tx, ty)))
                     op_exec.append(False)
                 else:
+                    # 站到了：用模擬到現在的狀態把這一列縮好再取樣。
+                    row = C.guard_mask_row(op_mask_np[g], guard, (tx, ty))
+                    op_mask_np[g] = row        # 存進 trajectory 的就是這一列
+                    oi, olp = _sample_row(
+                        op_logits[g], torch.as_tensor(row, device=op_logits.device),
+                        self.greedy, self.gen)
+                    # `_SEQ_OPS` 的 op 這裡一定過得了，`turn_guard` 只是替其餘
+                    # 還沒搬進 mask 的 op 重選 —— 順便把效果套回 `guard`，
+                    # 那是後面的 unit 看得到改變的唯一途徑。
                     gi, changed = C.turn_guard(
-                        int(oi), o_full_lp_np[sel][k], op_mask_np[sel][k],
-                        guard, (tx, ty))
-                    qi = int(q_np[sel][k]) if self.qty_factor else None
+                        oi, o_full_lp_np[g], row, guard, (tx, ty))
+                    qi = int(q_np[g]) if self.qty_factor else None
                     units.append(C.decode_unit(gi, qi))
                     op_exec.append(not changed)
+                o_np[g], o_lp_np[g] = oi, olp
             op_exec = np.asarray(op_exec, dtype=bool)
+            lp_np[sel] = t_lp_np[sel] + o_lp_np[sel]
+            if self.qty_factor:
+                q_use_np[sel] = QTY_OPS[o_np[sel]]
             # 🩸 骨幹選的動作，logprob **不能算進去** —— 那些不是網路選的，
             # 算了就是在對別人的選擇做 policy gradient，而且 update 重算時會
             # 加回來，ratio 就錯了。所以哪一邊是骨幹，那一邊的 logprob 歸 0。

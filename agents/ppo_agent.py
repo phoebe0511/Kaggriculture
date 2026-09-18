@@ -127,7 +127,8 @@ def act(obs, config=None, params=None):
         o_lp = masked_log_softmax(op_logits, op_mask)
         t_lp = masked_log_softmax(tgt_logits, tgt_mask)
         if greedy:
-            o_idx = o_lp.argmax(-1)
+            # 🩸 op 不在這裡選 —— `_SEQ_OPS` 的合法性會被同一回合稍早的 unit
+            # 改掉，要逐 unit 縮 mask 再選。見下面的迴圈。
             t_idx = t_lp.argmax(-1)
             q_idx = qty_logits.argmax(-1)
             # 門檻 0 對應 sigmoid 0.5，跟 `decode_market_orders` 的預設一致。
@@ -138,14 +139,13 @@ def act(obs, config=None, params=None):
             mk_legal = torch.as_tensor(
                 C.legal_market_mask(obs, config)).unsqueeze(0)
             t_idx = torch.multinomial(t_lp.exp(), 1).squeeze(-1)
-            o_idx = torch.multinomial(o_lp.exp(), 1).squeeze(-1)
             q_idx = torch.multinomial(
                 torch.softmax(qty_logits, dim=-1), 1).squeeze(-1)
             pres, q = sample_market(mk_present, mk_qty, mk_legal)
             mk_pres, mk_q = pres[0], q[0]
 
     board = len(obs["farms"][obs["player"]]["tiles"])
-    t_np, o_np, q_np = t_idx.numpy(), o_idx.numpy(), q_idx.numpy()
+    t_np, q_np = t_idx.numpy(), q_idx.numpy()
     # `qty`：PICKUP / PLACE 的數量由網路選（跟 `--qty-factor` 訓出來的
     # checkpoint 配對）。預設關閉 —— 舊的 spec 行為一個位元都不變。
     use_qty = bool(p.get("qty", False))
@@ -169,8 +169,19 @@ def act(obs, config=None, params=None):
             # 沒站到目標 tile 的 unit 送出的是移動，不會動到任何共用狀態。
             units.append(step_toward(cur, (tx, ty)))
             continue
-        op_i, _changed = C.turn_guard(
-            int(o_np[i]), o_lp_np[i], op_mask_np[i], guard, (tx, ty))
+        # 🩸 逐 unit 縮 mask 再選：`_SEQ_OPS` 的合法性會被同一回合稍早的 unit
+        # 改掉。訓練側（`harness/ppo_rollout.py`）走同一套，兩邊不能分歧 ——
+        # 這就是 contracts.py 存在的理由。
+        row = C.guard_mask_row(op_mask_np[i], guard, (tx, ty))
+        with torch.no_grad():
+            row_lp = masked_log_softmax(
+                op_logits[i].unsqueeze(0),
+                torch.as_tensor(row).unsqueeze(0))[0]
+        op_sel = (int(row_lp.argmax()) if greedy
+                  else int(torch.multinomial(row_lp.exp(), 1)))
+        # 還沒搬進 mask 的 op 仍然由 `turn_guard` 重選，它同時把效果套回
+        # `guard` —— 那是後面的 unit 看得到改變的唯一途徑。
+        op_i, _changed = C.turn_guard(op_sel, o_lp_np[i], row, guard, (tx, ty))
         units.append(C.decode_unit(
             op_i, int(q_np[i]) if use_qty else None))
     if base_spec:
