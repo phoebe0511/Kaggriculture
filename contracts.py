@@ -1130,10 +1130,15 @@ _GUARD_OPS = frozenset((
 #: （被換掉的 unit 標 `op_exec=False`，不進 joint logprob）。所以這個集合最後
 #: 要長到跟 `_GUARD_OPS` 一樣大，重選那段就可以拿掉。
 #:
-#: 2026-09-18：先接不具破壞性的兩個。PLANT 是長出東西、WATER 是設一個旗標，
-#: 邏輯寫錯最壞是多種一株或漏澆一次；HARVEST 和 DIG 會把整個 tile 清成 None，
-#: 寫錯就是真的把作物弄不見。
-_SEQ_OPS = frozenset(("PLANT", "WATER"))
+#: 2026-09-18：植物鏈五個 op 全部接上，照「不具破壞性的先接」的順序做
+#: （PLANT / WATER -> FERTILIZE -> HARVEST / DIG）。後兩個會把整個 tile 清成
+#: None，寫錯就是真的把作物弄不見，所以放最後、而且驗收時特別盯 DIG 的生效數
+#: 有沒有上升（§131.3 量到 guard 的重選讓 DIG 挖自己作物從 53 變成 387 次）。
+#:
+#: ⚠️ 動物鏈（FEED / CARE / COLLECT_FERTILIZER / BUILD_*）還在 `_GUARD_OPS`
+#: 但不在這裡 —— 它們仍然走事後重選，PPO 學不到。那是下一輪的題目，要先照
+#: `tools/rule_probe.py` 的做法把動物鏈的規則逐條問過引擎。
+_SEQ_OPS = frozenset(("PLANT", "WATER", "FERTILIZE", "HARVEST", "DIG"))
 
 
 def guard_mask_row(legal_row, state, pos):
