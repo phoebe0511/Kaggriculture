@@ -856,8 +856,13 @@ def legal_unit_mask(obs, config=None):
     擋掉的話網路連學都學不到那個動作，而且 loss 會出現無限大；放寬只是讓
     引擎靜默忽略、浪費那個 unit 一個回合。所以下面的條件都取寬鬆的一側。
 
-    `tests/test_contracts.py::test_mask_never_blocks_teacher_action` 拿 60 局
-    replay 的每一個 unit-turn 驗這條 —— 有任何一筆被擋掉就是這裡寫錯了。
+    `tests/test_contracts.py::test_mask_rarely_blocks_what_the_teacher_actually_did`
+    拿 replay 的每一個 unit-turn 驗這條。
+
+    ⚠️ 但**判準是引擎收不收，不是老師做過什麼**。老師自己也會送出引擎靜默
+    no-op 的動作（2026-08-20 量到 0.12%），那種擋掉是對的。要驗「有沒有擋錯」
+    請跑 `tools/mask_audit.py` —— 它深複製一份狀態直接問引擎，比從人類做過
+    什麼反推準確。
 
     ## 同一天重複做的動作**要**擋（2026-08-20 補）
 
@@ -874,6 +879,26 @@ def legal_unit_mask(obs, config=None):
 
     它們是**漏掉**，不是刻意留給網路學的。（量過網路學不學得會：老師的局面上
     白費率 1.02%，自己下場 9.2% —— 學到八成，但閉迴路放大 14 倍。）
+
+    ## 又補兩條（2026-09-18）
+
+    上面那五條的形狀都一樣 —— tile 上的布林 `*_today` 旗標，加上 HARVEST 的
+    `yield_units > 0`。當初照這個 pattern 掃，所以形狀不一樣的兩條被漏掉了：
+
+        HARVEST     引擎行 453 還檢查 `day - planted_day >= first_yield_day`。
+                    而行 223 給非 ongoing 作物種下去就帶 1 個 yield_unit ——
+                    所以剛種好 mask 就說可以收。WHEAT / CARROT 各 2 天、
+                    MELON 整整 10 天的假合法窗口。
+        FERTILIZE   引擎行 481 是 `max(舊值, day + 2)`，同一天第二次不會變大；
+                    行 478 的 `_inv_take` 在它之前，肥料照扣。這是「同一天重複
+                    做」的同一類，只是它用整數日期而不是當日布林。
+
+    兩條都是 `tools/rule_probe.py` 用 scripted agent 對引擎逐條測出來的，不是
+    讀原始碼推的（S2 / S3 / S4）。`tools/mask_audit.py` 在 ckpt-140 4 局上量到
+    的偽陽性正好就是這兩個：HARVEST 359、FERTILIZE 27，其餘 op 全部 0。
+
+    DIG 同時從「列舉 kind」改成「補集」，跟引擎行 485/488 一致 —— 行為現在等價，
+    改寫是為了引擎哪天多一種 tile 時不會變成擋掉合法動作。
 
     ## 這裡**沒有**檢查的事
 
@@ -893,6 +918,8 @@ def legal_unit_mask(obs, config=None):
     seeds = private["seeds"]
     inventories = private["inventories"]
     sheds = set(_shed_tiles(board))
+    # HARVEST 的成熟度與 FERTILIZE 的「已經施過了」都要拿今天跟 tile 上的日期比。
+    day = int(obs.get("day", 0))
 
     positions = [tuple(farm["farmer"])] + [tuple(h) for h in farm["hands"]]
     mask = np.zeros((len(positions), N_UNIT_OPS), dtype=bool)
@@ -938,15 +965,32 @@ def legal_unit_mask(obs, config=None):
                 # ⚠️ 不只作物 —— 動物的 EGG / MILK / WOOL 也是 HARVEST 收的。
                 # 第一版只寫了 PLANT，replay 驗證時有 222 筆老師的 HARVEST 站在
                 # PASTURE 上被擋掉，才發現漏了這條。
+                td = tile if isinstance(tile, dict) else {}
+                ready = td.get("yield_units", 0) > 0
+                if ready and kind == "PLANT":
+                    # 🩸 未滿 first_yield_day 引擎直接拒收（引擎行 453），而非
+                    # ongoing 作物**種下去當場就帶 1 個 yield_unit**（行 223）——
+                    # 所以「yield_units > 0」不等於收得成。動物那一側沒有這條。
+                    spec = CROPS.get(td.get("crop")) or {}
+                    ready = (day - td.get("planted_day", day)
+                             >= spec.get("first_yield_day", 0))
                 mask[i, j] = bool(
-                    (kind == "PLANT" or (isinstance(tile, dict) and tile.get("animal")))
-                    and tile.get("yield_units", 0) > 0)
+                    ready and (kind == "PLANT" or td.get("animal")))
             elif op == "FERTILIZE":
-                mask[i, j] = kind == "PLANT" and inv.get("FERTILIZER", 0) > 0
+                # 🩸 引擎行 481 是 `fertilized_until_day = max(舊值, day + 2)`，
+                # 已經到 day+2 就再也長不上去；而行 478 的 `_inv_take` 在它之前，
+                # **肥料照扣、效果為零**。同一天第二次施肥就是燒掉一個 FERTILIZER。
+                td = tile if isinstance(tile, dict) else {}
+                mask[i, j] = bool(
+                    kind == "PLANT" and inv.get("FERTILIZER", 0) > 0
+                    and td.get("fertilized_until_day", -1) < day + 2)
             elif op == "DIG":
-                # 作物、雜草、空建物都能挖；有動物的建物不行（engine-notes §10.7）
-                mask[i, j] = kind in ("PLANT", "WEED") or (
-                    kind in ("COOP", "PASTURE")
+                # 作物、雜草、空建物都能挖；有動物的建物不行（engine-notes §10.7）。
+                # 引擎用的是**補集**（行 485/488：非 None、非動物就挖得掉），這裡
+                # 跟著用補集而不是列舉 kind —— 列舉要靠「四種 kind 列全了」撐著，
+                # 引擎哪天多一種 tile 就會變成擋掉合法動作。LOCKED 已在上面擋掉。
+                mask[i, j] = bool(
+                    tile is not None
                     and not (isinstance(tile, dict) and tile.get("animal")))
             elif op == "CARE":
                 mask[i, j] = bool(
